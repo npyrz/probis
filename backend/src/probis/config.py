@@ -1,0 +1,24 @@
+from __future__ import annotations
+
+from pydantic_settings import BaseSettings, SettingsConfigDict
+
+from typing import Optional
+
+
+class Settings(BaseSettings):
+    model_config = SettingsConfigDict(env_prefix="", env_file=".env", extra="ignore")
+
+    probis_env: str = "dev"
+    log_level: str = "INFO"
+
+    edge_threshold: float = 0.05
+
+    redis_url: str = "redis://localhost:6379/0"
+    database_url: Optional[str] = None
+
+    ollama_base_url: str = "http://localhost:11434"
+    ollama_model: str = "gemma2:2b"
+    llm_interval_seconds: int = 60
+
+
+settings = Settings()
