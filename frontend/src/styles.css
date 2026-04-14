@@ -348,11 +348,19 @@ textarea {
 }
 
 .focus-card,
+.focus-strip,
+.selection-feed,
 .form-grid,
 .notes-field,
 .action-bar,
 .error-banner {
   margin: 12px 14px 0;
+}
+
+.focus-strip {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 8px;
 }
 
 .focus-card {
@@ -371,6 +379,75 @@ textarea {
   grid-template-columns: repeat(4, minmax(0, 1fr));
   gap: 8px;
   margin-top: 10px;
+}
+
+.focus-detail-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px;
+  margin-top: 10px;
+}
+
+.detail-line {
+  display: grid;
+  gap: 4px;
+  padding: 8px 9px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: rgba(255, 255, 255, 0.02);
+}
+
+.detail-line span,
+.mini-header span:first-child {
+  font-family: 'IBM Plex Mono', monospace;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: var(--muted);
+  font-size: 0.66rem;
+}
+
+.detail-line strong {
+  font-size: 0.8rem;
+  word-break: break-word;
+}
+
+.selection-feed {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px;
+}
+
+.selection-feed-block {
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  background: rgba(7, 15, 23, 0.92);
+  overflow: hidden;
+}
+
+.mini-header {
+  display: flex;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 8px 10px;
+  border-bottom: 1px solid var(--line);
+}
+
+.mini-list {
+  display: grid;
+  gap: 6px;
+  padding: 8px 10px;
+}
+
+.mini-row {
+  display: flex;
+  justify-content: space-between;
+  gap: 8px;
+  font-size: 0.78rem;
+  color: var(--muted);
+}
+
+.mini-row strong {
+  color: var(--text);
 }
 
 .metric-card {
@@ -600,10 +677,16 @@ textarea {
   }
 
   .focus-metrics,
+  .focus-strip,
+  .selection-feed,
   .form-grid,
   .hero-meta,
   .account-grid {
     grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .focus-detail-grid {
+    grid-template-columns: 1fr;
   }
 
   .chip-list {

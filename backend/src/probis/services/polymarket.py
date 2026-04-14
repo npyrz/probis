@@ -40,6 +40,19 @@ SPORT_CODE_LABELS = {
     "masters": "Masters",
     "rbcheri": "RBC Heritage",
 }
+PREFERRED_DESK_VIEWS = (
+    "NBA",
+    "MLB",
+    "NHL",
+    "UFC",
+    "ATP",
+    "WTA",
+    "EPL",
+    "MLS",
+    "UCL",
+    "NFL",
+    "Politics",
+)
 
 
 def _safe_float(value: Any) -> Optional[float]:
@@ -147,11 +160,15 @@ def _diversify_sports_markets(markets: list[dict[str, Any]], *, sport_labels: di
         label = _infer_market_type(slug, sport_labels) or "Sports"
         grouped.setdefault(label, []).append(item)
 
+    ordered_labels = [label for label in PREFERRED_DESK_VIEWS if label in grouped]
+    ordered_labels.extend(sorted(label for label in grouped if label not in set(ordered_labels)))
+
     diversified: list[dict[str, Any]] = []
     index = 0
     while len(diversified) < limit:
         added = False
-        for items in grouped.values():
+        for label in ordered_labels:
+            items = grouped[label]
             if index < len(items):
                 diversified.append(items[index])
                 added = True
@@ -170,7 +187,7 @@ class PolymarketClient:
         client = PolymarketUS()
         try:
             politics_limit = max(limit, 12)
-            sports_limit = max(limit * 8, 160)
+            sports_limit = max(limit * 20, 500)
             category_responses = await asyncio.gather(
                 asyncio.to_thread(
                     client.markets.list,

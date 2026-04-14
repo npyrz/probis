@@ -135,6 +135,13 @@ function getDeskViewLabel(market: TerminalSnapshot['markets'][number]) {
   return getMarketTypeLabel(market)
 }
 
+function computeSpread(bestBid: number | null | undefined, bestAsk: number | null | undefined) {
+  if (bestBid == null || bestAsk == null || Number.isNaN(bestBid) || Number.isNaN(bestAsk)) {
+    return '--'
+  }
+  return `${((bestAsk - bestBid) * 100).toFixed(1)} pts`
+}
+
 function App() {
   const [snapshot, setSnapshot] = useState<TerminalSnapshot>(emptySnapshot)
   const [selectedMarketId, setSelectedMarketId] = useState<string>('')
@@ -230,10 +237,16 @@ function App() {
 
   const selectedMarket = scopedMarkets.find((market) => market.market === selectedMarketId) ?? globallyFilteredMarkets.find((market) => market.market === selectedMarketId) ?? snapshot.markets.find((market) => market.market === selectedMarketId) ?? scopedMarkets[0] ?? globallyFilteredMarkets[0] ?? snapshot.markets[0] ?? null
   const account = snapshot.account
+  const selectedDeskLabel = selectedMarket ? getDeskViewLabel(selectedMarket) : deskFilter === 'all' ? 'All' : deskFilter
+  const selectedDeskMarkets = globallyFilteredMarkets.filter((market) => deskFilter === 'all' || getDeskViewLabel(market) === deskFilter)
+  const selectedDeskMonitored = selectedDeskMarkets.filter((market) => market.monitored).length
 
   const selectedSession = !selectedMarket?.session_id
     ? null
     : snapshot.sessions.find((session) => session.session_id === selectedMarket.session_id) ?? null
+  const selectedMarketFills = selectedMarket
+    ? snapshot.fills.filter((fill) => fill.market === selectedMarket.market).slice(0, 6)
+    : []
 
   const recentActivity = [...snapshot.fills.slice(0, 8).map((fill) => ({
       id: fill.order_id,
@@ -397,22 +410,29 @@ function App() {
                 </button>
               )
             })}
-            {scopedMarkets.length === 0 ? <p className="empty-state">No markets match the current subject, type, and search filters.</p> : null}
+            {scopedMarkets.length === 0 ? <p className="empty-state">No markets match the current view and search filters.</p> : null}
           </div>
         </section>
 
         <section className="panel panel-focus">
           <div className="panel-header">
             <h2>Control</h2>
-            <span>{selectedSession?.status ?? 'ready'}</span>
+            <span>{selectedDeskLabel} / {selectedSession?.status ?? 'ready'}</span>
           </div>
           {selectedMarket ? (
             <>
+              <div className="focus-strip">
+                <MetricCard label="View" value={selectedDeskLabel} />
+                <MetricCard label="In View" value={String(selectedDeskMarkets.length)} />
+                <MetricCard label="Live Sessions" value={String(selectedDeskMonitored)} />
+                <MetricCard label="Spread" value={computeSpread(selectedMarket.best_bid, selectedMarket.best_ask)} />
+              </div>
+
               <div className="focus-card focus-card-tight">
                 <div>
                   <p className="focus-label">Selected Market</p>
                   <h3>{selectedMarket.title}</h3>
-                  <p className="focus-subtitle">{selectedMarket.category} / {selectedMarket.outcome} / {selectedMarket.venue}</p>
+                  <p className="focus-subtitle">{selectedDeskLabel} / {selectedMarket.outcome} / {selectedMarket.venue}</p>
                 </div>
                 <div className="focus-metrics">
                   <MetricCard label="Market" value={formatProbability(selectedMarket.last_price)} />
@@ -423,6 +443,46 @@ function App() {
                   <MetricCard label="Last" value={formatProbability(selectedMarket.last_trade_price)} />
                   <MetricCard label="Position" value={selectedMarket.position.toFixed(2)} />
                   <MetricCard label="Ends" value={selectedMarket.end_date ? selectedMarket.end_date.slice(0, 10) : '--'} />
+                </div>
+                <div className="focus-detail-grid">
+                  <div className="detail-line"><span>Slug</span><strong>{selectedMarket.market}</strong></div>
+                  <div className="detail-line"><span>Category</span><strong>{selectedMarket.category}</strong></div>
+                  <div className="detail-line"><span>Type</span><strong>{selectedDeskLabel}</strong></div>
+                  <div className="detail-line"><span>Status</span><strong>{selectedMarket.monitored ? 'live monitored' : 'watch only'}</strong></div>
+                </div>
+              </div>
+
+              <div className="selection-feed">
+                <div className="selection-feed-block">
+                  <div className="mini-header">
+                    <span>Live Market Fills</span>
+                    <span>{selectedMarketFills.length}</span>
+                  </div>
+                  <div className="mini-list">
+                    {selectedMarketFills.length === 0 ? (
+                      <p className="empty-state">No fills for this market yet. Quotes above refresh live as websocket updates arrive.</p>
+                    ) : (
+                      selectedMarketFills.map((fill) => (
+                        <div className="mini-row" key={fill.order_id}>
+                          <span>{formatTimestamp(fill.ts)}</span>
+                          <strong className={fill.side === 'buy' ? 'tone-positive' : 'tone-negative'}>{fill.side.toUpperCase()}</strong>
+                          <span>{fill.size.toFixed(2)} @ {fill.price.toFixed(3)}</span>
+                        </div>
+                      ))
+                    )}
+                  </div>
+                </div>
+                <div className="selection-feed-block">
+                  <div className="mini-header">
+                    <span>Selection Context</span>
+                    <span>{selectedDeskLabel}</span>
+                  </div>
+                  <div className="mini-list">
+                    <div className="mini-row"><span>Current Price</span><strong>{formatProbability(selectedMarket.last_price)}</strong></div>
+                    <div className="mini-row"><span>Best Bid / Ask</span><strong>{formatProbability(selectedMarket.best_bid)} / {formatProbability(selectedMarket.best_ask)}</strong></div>
+                    <div className="mini-row"><span>Model / Edge</span><strong>{formatProbability(selectedMarket.model_probability)} / {formatSignedProbability(selectedMarket.edge)}</strong></div>
+                    <div className="mini-row"><span>Live View Count</span><strong>{selectedDeskMarkets.length} markets</strong></div>
+                  </div>
                 </div>
               </div>
 
