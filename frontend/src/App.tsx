@@ -127,12 +127,19 @@ function getMarketTypeLabel(market: TerminalSnapshot['markets'][number]) {
   return market.market_type ?? titleCase(inferMarketType(market.category, market.title))
 }
 
+function getDeskViewLabel(market: TerminalSnapshot['markets'][number]) {
+  const category = (market.category || '').toLowerCase()
+  if (category && category !== 'sports') {
+    return titleCase(category)
+  }
+  return getMarketTypeLabel(market)
+}
+
 function App() {
   const [snapshot, setSnapshot] = useState<TerminalSnapshot>(emptySnapshot)
   const [selectedMarketId, setSelectedMarketId] = useState<string>('')
   const [globalSearch, setGlobalSearch] = useState<string>('')
-  const [subjectFilter, setSubjectFilter] = useState<string>('all')
-  const [typeFilter, setTypeFilter] = useState<string>('all')
+  const [deskFilter, setDeskFilter] = useState<string>('all')
   const [localSearch, setLocalSearch] = useState<string>('')
   const [settings, setSettings] = useState<MonitorSettings>(defaultSettings)
   const [connectionState, setConnectionState] = useState<'connecting' | 'live' | 'offline'>('connecting')
@@ -198,8 +205,7 @@ function App() {
   const globalQuery = normalizeSearch(globalSearch)
   const localQuery = normalizeSearch(localSearch)
 
-  const subjects = Array.from(new Set(snapshot.markets.map((market) => market.category || 'Uncategorized'))).sort((left, right) => left.localeCompare(right))
-  const marketTypes = Array.from(new Set(snapshot.markets.map((market) => getMarketTypeLabel(market)))).sort((left, right) => left.localeCompare(right))
+  const deskViews = Array.from(new Set(snapshot.markets.map((market) => getDeskViewLabel(market)))).sort((left, right) => left.localeCompare(right))
 
   const globallyFilteredMarkets = snapshot.markets.filter((market) => {
     if (!globalQuery) {
@@ -210,10 +216,9 @@ function App() {
   })
 
   const scopedMarkets = globallyFilteredMarkets.filter((market) => {
-    const subjectMatch = subjectFilter === 'all' || (market.category || 'Uncategorized') === subjectFilter
-    const typeMatch = typeFilter === 'all' || getMarketTypeLabel(market) === typeFilter
+    const deskMatch = deskFilter === 'all' || getDeskViewLabel(market) === deskFilter
     const localMatch = !localQuery || `${market.title} ${market.market} ${market.category}`.toLowerCase().includes(localQuery)
-    return subjectMatch && typeMatch && localMatch
+    return deskMatch && localMatch
   })
 
   useEffect(() => {
@@ -333,40 +338,20 @@ function App() {
           <div className="market-filters">
             <div className="market-filter-group">
               <div className="filter-header">
-                <span>Subjects</span>
-                <button className={`filter-chip ${subjectFilter === 'all' ? 'active' : ''}`} onClick={() => setSubjectFilter('all')} type="button">
+                <span>Views</span>
+                <button className={`filter-chip ${deskFilter === 'all' ? 'active' : ''}`} onClick={() => setDeskFilter('all')} type="button">
                   All
                 </button>
               </div>
               <div className="chip-list">
-                {subjects.map((subject) => (
+                {deskViews.map((view) => (
                   <button
-                    className={`filter-chip ${subjectFilter === subject ? 'active' : ''}`}
-                    key={subject}
-                    onClick={() => setSubjectFilter(subject)}
+                    className={`filter-chip ${deskFilter === view ? 'active' : ''}`}
+                    key={view}
+                    onClick={() => setDeskFilter(view)}
                     type="button"
                   >
-                    {compactLabel(subject)}
-                  </button>
-                ))}
-              </div>
-            </div>
-            <div className="market-filter-group">
-              <div className="filter-header">
-                <span>Types</span>
-                <button className={`filter-chip ${typeFilter === 'all' ? 'active' : ''}`} onClick={() => setTypeFilter('all')} type="button">
-                  All
-                </button>
-              </div>
-              <div className="chip-list">
-                {marketTypes.map((type) => (
-                  <button
-                    className={`filter-chip ${typeFilter === type ? 'active' : ''}`}
-                    key={type}
-                    onClick={() => setTypeFilter(type)}
-                    type="button"
-                  >
-                    {type}
+                    {view}
                   </button>
                 ))}
               </div>
@@ -377,7 +362,7 @@ function App() {
                 type="search"
                 value={localSearch}
                 onChange={(event) => setLocalSearch(event.target.value)}
-                placeholder="Filter inside chosen subject/type"
+                placeholder="Filter inside chosen view"
               />
             </label>
           </div>

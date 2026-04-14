@@ -16,6 +16,30 @@ log = logging.getLogger(__name__)
 
 PRICE_CHANNEL = "prices"
 DEFAULT_MARKET_CATEGORIES = ("sports", "politics")
+SPORT_CODE_LABELS = {
+    "nba": "NBA",
+    "nfl": "NFL",
+    "mlb": "MLB",
+    "nhl": "NHL",
+    "ufc": "UFC",
+    "epl": "EPL",
+    "mls": "MLS",
+    "ucl": "UCL",
+    "wta": "WTA",
+    "atp": "ATP",
+    "cbb": "CBB",
+    "cfb": "CFB",
+    "wcbb": "WCBB",
+    "cs2": "CS2",
+    "lol": "LoL",
+    "cod": "COD",
+    "ipl": "IPL",
+    "lal": "LaLiga",
+    "bun": "Bundesliga",
+    "sea": "Serie A",
+    "masters": "Masters",
+    "rbcheri": "RBC Heritage",
+}
 
 
 def _safe_float(value: Any) -> Optional[float]:
@@ -78,7 +102,7 @@ def _build_sport_labels(sports_payload: Any, series_payload: Any) -> dict[str, s
         if not code:
             continue
         series_id = str(item.get("series") or "").strip()
-        label = series_by_id.get(series_id) or series_by_slug.get(code) or _titleize_code(code)
+        label = SPORT_CODE_LABELS.get(code) or series_by_id.get(series_id) or series_by_slug.get(code) or _titleize_code(code)
         labels[code] = label
     return labels
 
@@ -116,26 +140,56 @@ def _merge_category_results(category_results: list[list[dict[str, Any]]], *, lim
     return merged
 
 
+def _diversify_sports_markets(markets: list[dict[str, Any]], *, sport_labels: dict[str, str], limit: int) -> list[dict[str, Any]]:
+    grouped: dict[str, list[dict[str, Any]]] = {}
+    for item in markets:
+        slug = str(item.get("slug") or item.get("marketSlug") or "")
+        label = _infer_market_type(slug, sport_labels) or "Sports"
+        grouped.setdefault(label, []).append(item)
+
+    diversified: list[dict[str, Any]] = []
+    index = 0
+    while len(diversified) < limit:
+        added = False
+        for items in grouped.values():
+            if index < len(items):
+                diversified.append(items[index])
+                added = True
+                if len(diversified) >= limit:
+                    break
+        if not added:
+            break
+        index += 1
+    return diversified
+
+
 class PolymarketClient:
     async def fetch_active_markets(self, *, limit: int) -> list[MarketDescriptor]:
         from polymarket_us import PolymarketUS
 
         client = PolymarketUS()
         try:
-            per_category_limit = max(limit, 12)
+            politics_limit = max(limit, 12)
+            sports_limit = max(limit * 8, 160)
             category_responses = await asyncio.gather(
-                *[
-                    asyncio.to_thread(
-                        client.markets.list,
-                        {
-                            "limit": per_category_limit,
-                            "closed": False,
-                            "categories": [category],
-                            "includeHidden": False,
-                        },
-                    )
-                    for category in DEFAULT_MARKET_CATEGORIES
-                ],
+                asyncio.to_thread(
+                    client.markets.list,
+                    {
+                        "limit": sports_limit,
+                        "closed": False,
+                        "categories": ["sports"],
+                        "includeHidden": False,
+                    },
+                ),
+                asyncio.to_thread(
+                    client.markets.list,
+                    {
+                        "limit": politics_limit,
+                        "closed": False,
+                        "categories": ["politics"],
+                        "includeHidden": False,
+                    },
+                ),
                 asyncio.to_thread(client.sports.list),
                 asyncio.to_thread(client.series.list, {"limit": 250}),
             )
@@ -144,17 +198,26 @@ class PolymarketClient:
 
         *market_responses, sports_resp, series_resp = category_responses
 
-        raw_category_results: list[list[dict[str, Any]]] = []
-        for response in market_responses:
+        raw_category_results: dict[str, list[dict[str, Any]]] = {}
+        for category, response in zip(DEFAULT_MARKET_CATEGORIES, market_responses):
             if isinstance(response, list):
-                raw_category_results.append([item for item in response if isinstance(item, dict)])
+                raw_category_results[category] = [item for item in response if isinstance(item, dict)]
             elif isinstance(response, dict):
                 items = response.get("markets") or response.get("data") or []
-                raw_category_results.append([item for item in items if isinstance(item, dict)])
-
-        raw_markets = _merge_category_results(raw_category_results, limit=limit)
+                raw_category_results[category] = [item for item in items if isinstance(item, dict)]
+            else:
+                raw_category_results[category] = []
 
         sport_labels = _build_sport_labels(sports_resp, series_resp)
+        diversified_sports = _diversify_sports_markets(
+            raw_category_results.get("sports", []),
+            sport_labels=sport_labels,
+            limit=sports_limit,
+        )
+        raw_markets = _merge_category_results(
+            [diversified_sports, raw_category_results.get("politics", [])],
+            limit=limit,
+        )
 
         markets: list[MarketDescriptor] = []
         for item in raw_markets:
