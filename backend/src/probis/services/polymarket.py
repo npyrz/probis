@@ -1,15 +1,10 @@
 from __future__ import annotations
 
 import asyncio
-import json
 import logging
 from typing import Any
 from typing import Optional
 from typing import Union
-
-import httpx
-import websockets
-from websockets.client import WebSocketClientProtocol
 
 from ..bus import EventBus, InMemoryBus
 from ..config import settings
@@ -18,20 +13,7 @@ from ..models import MarketDescriptor
 
 log = logging.getLogger(__name__)
 
-USER_AGENT = "Probis/0.1 (+https://github.com/noah/probis)"
 PRICE_CHANNEL = "prices"
-
-
-def _parse_jsonish_list(value: Any) -> list[Any]:
-    if isinstance(value, list):
-        return value
-    if isinstance(value, str) and value:
-        try:
-            parsed = json.loads(value)
-        except json.JSONDecodeError:
-            return []
-        return parsed if isinstance(parsed, list) else []
-    return []
 
 
 def _safe_float(value: Any) -> Optional[float]:
@@ -54,68 +36,57 @@ def _mid_price(best_bid: Optional[float], best_ask: Optional[float], last_trade:
 
 
 class PolymarketClient:
-    def __init__(self) -> None:
-        self._headers = {
-            "User-Agent": USER_AGENT,
-            "Accept": "application/json",
-        }
-
     async def fetch_active_markets(self, *, limit: int) -> list[MarketDescriptor]:
-        params = {
-            "active": "true",
-            "closed": "false",
-            "limit": str(limit),
-            "order": "volume24hr",
-            "ascending": "false",
-        }
-        async with httpx.AsyncClient(headers=self._headers, timeout=20.0) as client:
-            response = await client.get(f"{settings.polymarket_api_url}/markets", params=params)
-            response.raise_for_status()
-            payload = response.json()
+        from polymarket_us import PolymarketUS
+
+        client = PolymarketUS()
+        try:
+            resp = await asyncio.to_thread(
+                client.markets.list,
+                {"limit": limit, "active": True, "closed": False},
+            )
+        finally:
+            client.close()
+
+        raw_markets: list[Any] = []
+        if isinstance(resp, list):
+            raw_markets = resp
+        elif isinstance(resp, dict):
+            raw_markets = resp.get("markets") or resp.get("data") or []
 
         markets: list[MarketDescriptor] = []
-        for item in payload:
-            descriptor = self._market_descriptor_from_payload(item)
-            if descriptor is not None:
-                markets.append(descriptor)
+        for item in raw_markets:
+            if isinstance(item, dict):
+                descriptor = self._market_descriptor_from_payload(item)
+                if descriptor is not None:
+                    markets.append(descriptor)
         return markets
 
     def _market_descriptor_from_payload(self, item: dict[str, Any]) -> Optional[MarketDescriptor]:
-        outcomes = _parse_jsonish_list(item.get("outcomes"))
-        prices = _parse_jsonish_list(item.get("outcomePrices"))
-        token_ids = _parse_jsonish_list(item.get("clobTokenIds"))
-        if not outcomes or not token_ids:
+        slug = item.get("slug") or item.get("marketSlug")
+        if not slug:
             return None
 
-        normalized_outcomes = [str(outcome) for outcome in outcomes]
-        yes_index = 0
-        for index, outcome in enumerate(normalized_outcomes):
-            if outcome.lower() == "yes":
-                yes_index = index
-                break
+        title = item.get("title") or item.get("question") or str(slug)
+        category = item.get("category") or item.get("eventTitle") or "Polymarket US"
 
-        event = (item.get("events") or [{}])[0]
-        reference_price = _safe_float(prices[yes_index] if yes_index < len(prices) else None)
-        best_bid = _safe_float(item.get("bestBid"))
-        best_ask = _safe_float(item.get("bestAsk"))
-        last_trade_price = _safe_float(item.get("lastTradePrice"))
-        reference_price = _mid_price(best_bid, best_ask, last_trade_price) or reference_price or 0.5
+        best_bid = _safe_float(item.get("bestBid") or item.get("best_bid"))
+        best_ask = _safe_float(item.get("bestAsk") or item.get("best_ask"))
+        last_trade_price = _safe_float(item.get("lastTradePrice") or item.get("last_trade_price"))
+        reference_price = _mid_price(best_bid, best_ask, last_trade_price) or 0.5
 
         return MarketDescriptor(
-            market=str(item.get("slug") or item.get("conditionId") or item.get("id")),
-            title=str(item.get("question") or event.get("title") or "Polymarket Market"),
-            category=str(event.get("title") or "Polymarket"),
-            outcome=str(normalized_outcomes[yes_index]),
+            market=str(slug),
+            title=str(title),
+            category=str(category),
+            outcome="Yes",
             venue="polymarket",
             reference_price=reference_price,
-            condition_id=item.get("conditionId"),
-            asset_id=str(token_ids[yes_index]) if yes_index < len(token_ids) else None,
-            no_asset_id=str(token_ids[1 - yes_index]) if len(token_ids) > 1 else None,
             best_bid=best_bid,
             best_ask=best_ask,
             last_trade_price=last_trade_price,
-            end_date=item.get("endDate"),
-            image=item.get("image") or event.get("image"),
+            end_date=item.get("endDate") or item.get("closeDate"),
+            image=item.get("imageUrl") or item.get("image"),
         )
 
 
@@ -127,93 +98,113 @@ class PolymarketMarketStream:
     async def run(self) -> None:
         backoff_seconds = 2.0
         while True:
-            asset_ids = self.controller.stream_asset_ids()
+            market_slugs = self.controller.stream_market_slugs()
             version = self.controller.catalog_version()
-            if not asset_ids:
+            if not market_slugs:
                 await asyncio.sleep(5.0)
                 continue
 
             try:
-                await self.controller.emit_log(level="INFO", message=f"Connecting to Polymarket market stream for {len(asset_ids)} assets")
-                await self._stream(asset_ids=asset_ids, version=version)
+                await self.controller.emit_log(
+                    level="INFO",
+                    message=f"Connecting to Polymarket US market stream for {len(market_slugs)} markets",
+                )
+                await self._stream(market_slugs=market_slugs, version=version)
                 backoff_seconds = 2.0
             except asyncio.CancelledError:
                 raise
             except Exception:
-                log.exception("Polymarket websocket stream failed")
-                await self.controller.emit_log(level="WARN", message="Polymarket stream disconnected; retrying")
+                log.exception("Polymarket US websocket stream failed")
+                await self.controller.emit_log(level="WARN", message="Polymarket US stream disconnected; retrying")
                 await asyncio.sleep(backoff_seconds)
                 backoff_seconds = min(backoff_seconds * 2.0, 30.0)
 
-    async def _stream(self, *, asset_ids: list[str], version: int) -> None:
-        async with websockets.connect(
-            settings.polymarket_market_ws_url,
-            ping_interval=None,
-            open_timeout=20,
-            close_timeout=5,
-            user_agent_header=USER_AGENT,
-        ) as socket:
-            await self._subscribe(socket=socket, asset_ids=asset_ids)
-            heartbeat = asyncio.create_task(self._heartbeat(socket))
-            try:
-                while True:
-                    if self.controller.catalog_version() != version:
-                        return
-                    try:
-                        raw = await asyncio.wait_for(socket.recv(), timeout=1.0)
-                    except asyncio.TimeoutError:
-                        continue
-                    if raw == "PONG":
-                        continue
-                    await self._handle_message(raw)
-            finally:
-                heartbeat.cancel()
+    async def _stream(self, *, market_slugs: list[str], version: int) -> None:
+        from polymarket_us import PolymarketUS
 
-    async def _subscribe(self, *, socket: WebSocketClientProtocol, asset_ids: list[str]) -> None:
-        await socket.send(
-            json.dumps(
-                {
-                    "assets_ids": asset_ids,
-                    "type": "market",
-                    "custom_feature_enabled": True,
-                }
-            )
-        )
+        queue: asyncio.Queue = asyncio.Queue()
+        client = PolymarketUS()
+        markets_ws = client.ws.markets()
+        markets_ws.on("trade", lambda d: queue.put_nowait(("trade", d)))
+        markets_ws.on("market_data", lambda d: queue.put_nowait(("market_data", d)))
+        markets_ws.on("error", lambda e: log.error("Polymarket US WS error: %s", e))
+        markets_ws.on("close", lambda _: queue.put_nowait(("close", {})))
 
-    async def _heartbeat(self, socket: WebSocketClientProtocol) -> None:
+        await markets_ws.connect()
+        for i, slug in enumerate(market_slugs):
+            await markets_ws.subscribe(f"trade-{i}", "SUBSCRIPTION_TYPE_TRADE", [slug])
+
         try:
             while True:
-                await asyncio.sleep(10.0)
-                await socket.send("PING")
-        except asyncio.CancelledError:
+                if self.controller.catalog_version() != version:
+                    return
+                try:
+                    event_type, data = await asyncio.wait_for(queue.get(), timeout=1.0)
+                except asyncio.TimeoutError:
+                    continue
+
+                if event_type == "close":
+                    raise ConnectionError("WebSocket closed by server")
+                elif event_type == "trade":
+                    await self._handle_trade(data)
+                elif event_type == "market_data":
+                    await self._handle_market_data(data)
+        finally:
+            try:
+                await markets_ws.close()
+            except Exception:
+                pass
+            client.close()
+
+    async def _handle_trade(self, data: Any) -> None:
+        trade = data.get("trade") if isinstance(data, dict) else data
+        if not isinstance(trade, dict):
             return
+        slug = trade.get("marketSlug") or trade.get("slug") or trade.get("market")
+        price = _safe_float(trade.get("price") or trade.get("lastPrice"))
+        if not slug or price is None:
+            return
+        descriptor = self.controller.market_for_slug(str(slug))
+        if descriptor is None:
+            return
+        self.controller.update_market_quote(
+            market=descriptor.market,
+            best_bid=descriptor.best_bid,
+            best_ask=descriptor.best_ask,
+            last_trade_price=price,
+        )
+        await self.bus.publish(
+            PRICE_CHANNEL,
+            {
+                "source": "polymarket",
+                "market": descriptor.market,
+                "outcome": descriptor.outcome,
+                "price": price,
+            },
+        )
 
-    async def _handle_message(self, raw: str) -> None:
-        payload = json.loads(raw)
-        events = payload if isinstance(payload, list) else [payload]
-        for event in events:
-            if not isinstance(event, dict):
-                continue
-            await self._handle_event(event)
-
-    async def _handle_event(self, event: dict[str, Any]) -> None:
-        event_type = event.get("event_type")
-        if event_type == "best_bid_ask":
-            asset_id = str(event.get("asset_id") or "")
-            best_bid = _safe_float(event.get("best_bid"))
-            best_ask = _safe_float(event.get("best_ask"))
-            price = _mid_price(best_bid, best_ask, None)
-            if price is None:
-                return
-            descriptor = self.controller.market_for_asset(asset_id)
-            if descriptor is None:
-                return
-            self.controller.update_market_quote(
-                market=descriptor.market,
-                best_bid=best_bid,
-                best_ask=best_ask,
-                last_trade_price=descriptor.last_trade_price,
-            )
+    async def _handle_market_data(self, data: Any) -> None:
+        book = data.get("marketData") if isinstance(data, dict) else data
+        if not isinstance(book, dict):
+            return
+        slug = book.get("marketSlug") or book.get("slug") or book.get("market")
+        if not slug:
+            return
+        bids = book.get("bids") or []
+        asks = book.get("asks") or []
+        best_bid = _safe_float(bids[0].get("price") if bids else None)
+        best_ask = _safe_float(asks[0].get("price") if asks else None)
+        price = _mid_price(best_bid, best_ask, None)
+        descriptor = self.controller.market_for_slug(str(slug))
+        if descriptor is None:
+            return
+        self.controller.update_market_quote(
+            market=descriptor.market,
+            best_bid=best_bid,
+            best_ask=best_ask,
+            last_trade_price=descriptor.last_trade_price,
+        )
+        if price is not None:
             await self.bus.publish(
                 PRICE_CHANNEL,
                 {
@@ -223,37 +214,6 @@ class PolymarketMarketStream:
                     "price": price,
                 },
             )
-            return
-
-        if event_type == "last_trade_price":
-            asset_id = str(event.get("asset_id") or "")
-            price = _safe_float(event.get("price"))
-            if price is None:
-                return
-            descriptor = self.controller.market_for_asset(asset_id)
-            if descriptor is None:
-                return
-            self.controller.update_market_quote(
-                market=descriptor.market,
-                best_bid=descriptor.best_bid,
-                best_ask=descriptor.best_ask,
-                last_trade_price=price,
-            )
-            await self.bus.publish(
-                PRICE_CHANNEL,
-                {
-                    "source": "polymarket",
-                    "market": descriptor.market,
-                    "outcome": descriptor.outcome,
-                    "price": price,
-                },
-            )
-            return
-
-        if event_type == "market_resolved":
-            market_slug = event.get("slug")
-            if market_slug:
-                self.controller.mark_market_resolved(str(market_slug), str(event.get("winning_outcome") or "resolved"))
 
 
 async def catalog_refresh_worker(*, client: PolymarketClient, controller: Any) -> None:
@@ -263,12 +223,15 @@ async def catalog_refresh_worker(*, client: PolymarketClient, controller: Any) -
             controller.replace_catalog(markets)
             await controller.emit_log(
                 level="INFO",
-                message=f"Polymarket catalog synced: {len(markets)} active markets",
+                message=f"Polymarket US catalog synced: {len(markets)} active markets",
             )
         except asyncio.CancelledError:
             raise
         except Exception:
-            log.exception("Failed to refresh Polymarket catalog")
-            await controller.emit_log(level="WARN", message="Polymarket catalog refresh failed")
+            log.exception("Failed to refresh Polymarket US catalog")
+            await controller.emit_log(level="WARN", message="Polymarket US catalog refresh failed")
 
         await asyncio.sleep(settings.polymarket_discovery_interval_seconds)
+
+
+

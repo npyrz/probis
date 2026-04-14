@@ -175,10 +175,7 @@ async def processing_worker(*, bus: Union[EventBus, InMemoryBus], state: MarketS
 
 
 async def execution_worker(*, bus: Union[EventBus, InMemoryBus], state: MarketState) -> None:
-    """Exec worker: receives orders, sim-fills them.
-
-    Replace this with Polymarket API calls later; keep retries/slippage here.
-    """
+    """Exec worker: receives orders, places them via the Polymarket US API."""
 
     async for msg in bus.subscribe(ORDER_CHANNEL):
         try:
@@ -187,15 +184,39 @@ async def execution_worker(*, bus: Union[EventBus, InMemoryBus], state: MarketSt
             log.exception("Invalid order")
             continue
 
-        # Simulated instant fill at limit.
+        try:
+            from polymarket_us import AsyncPolymarketUS
+
+            intent = "ORDER_INTENT_BUY_LONG" if order.side == "buy" else "ORDER_INTENT_SELL_LONG"
+            async with AsyncPolymarketUS(
+                key_id=settings.polymarket_key_id,
+                secret_key=settings.polymarket_secret_key,
+            ) as client:
+                result = await client.orders.create({
+                    "marketSlug": order.market,
+                    "intent": intent,
+                    "type": "ORDER_TYPE_LIMIT",
+                    "price": {"value": str(round(order.limit_price, 4)), "currency": "USD"},
+                    "quantity": order.size,
+                    "tif": "TIME_IN_FORCE_GOOD_TILL_CANCEL",
+                })
+
+            order_id = result.get("id") if isinstance(result, dict) else None
+            price_field = (result.get("price") or {}) if isinstance(result, dict) else {}
+            fill_price = float(price_field.get("value", order.limit_price)) if price_field else order.limit_price
+            fill_size = float(result.get("quantity", order.size)) if isinstance(result, dict) else order.size
+        except Exception:
+            log.exception("Order placement failed for %s %s", order.market, order.side)
+            continue
+
         fill = TradeFill(
             market=order.market,
             outcome=order.outcome,
             side=order.side,
-            size=order.size,
-            price=order.limit_price,
-            venue="sim",
-            order_id=str(uuid.uuid4()),
+            size=fill_size,
+            price=fill_price,
+            venue="polymarket",
+            order_id=order_id or str(uuid.uuid4()),
             session_id=order.session_id,
             reason=order.reason,
         )

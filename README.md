@@ -16,8 +16,8 @@ That single command starts the backend and frontend together, prepares missing l
 
 ```mermaid
 flowchart LR
-	A[Polymarket Gamma API] --> B[Market Discovery]
-	C[Polymarket Market WebSocket] --> D[Live Quote Ingestion]
+	A[Polymarket US API] --> B[Market Discovery]
+	C[Polymarket US WebSocket] --> D[Live Quote Ingestion]
 	B --> E[In-Memory Market State]
 	D --> E
 	F[LLM Signal Layer] --> G[Structured Signals]
@@ -51,7 +51,7 @@ sequenceDiagram
 
 	U->>T: Select market and thresholds
 	T->>A: Start monitor session
-	A->>P: Subscribe to live quotes
+	A->>P: Subscribe to live quotes (Polymarket US)
 	P-->>A: Best bid / ask / trade updates
 	A->>A: Compute model probability and edge
 	A-->>T: Stream terminal updates
@@ -87,20 +87,20 @@ The backend is a FastAPI service with asyncio workers and an in-memory state cor
 
 Key responsibilities:
 
-- Discover active Polymarket markets.
-- Subscribe to the public Polymarket market websocket.
+- Discover active Polymarket US markets.
+- Subscribe to the Polymarket US market websocket.
 - Maintain live market state in memory.
 - Run deterministic processing and decision logic.
 - Manage monitor sessions and stream terminal updates.
-- Simulate execution while preserving the shape of a real execution pipeline.
+- Place real signed orders via the Polymarket US API.
 
 ### Data Sources
 
 Current live inputs:
 
-- Polymarket Gamma API for market discovery.
-- Polymarket public market websocket for best bid, best ask, and trade-driven price updates.
-- Optional authenticated Polymarket CLOB account refresh for server-side wallet status, balance, allowance, and open-order visibility.
+- Polymarket US API for market discovery (`polymarket-us` SDK).
+- Polymarket US market websocket for real-time best bid, best ask, and trade-driven price updates.
+- Authenticated Polymarket US account refresh for server-side balance, open orders, and position visibility.
 
 Current optional input:
 
@@ -112,7 +112,7 @@ Current optional input:
 - `backend/src/probis/main.py` : backend startup and worker orchestration.
 - `backend/src/probis/api.py` : REST and websocket API surface for the terminal.
 - `backend/src/probis/controller.py` : live market catalog management and session lifecycle.
-- `backend/src/probis/services/polymarket.py` : Polymarket discovery and websocket ingestion.
+- `backend/src/probis/services/polymarket.py` : Polymarket US discovery and websocket ingestion.
 - `backend/src/probis/workers.py` : processing, decision, execution, and signal workers.
 - `backend/src/probis/state.py` : shared in-memory state used across the backend runtime.
 - `frontend/src/App.tsx` : primary operator terminal UI.
@@ -123,23 +123,19 @@ Current optional input:
 
 ### Live Today
 
-- Market discovery is live.
-- Quote display is live.
+- Market discovery is live via the Polymarket US API.
+- Quote display is live via the Polymarket US websocket.
 - Session control is live.
 - Edge computation is deterministic.
 - Terminal updates stream in real time.
-
-### Still Simulated
-
-- Trade execution and fills are still simulated locally.
-- Signed Polymarket order placement is not yet enabled.
+- Real signed order placement is live via the Polymarket US API.
 
 ### Account Connection
 
-- The backend now exposes a server-side Polymarket account status path at the terminal level.
-- Account refresh uses the authenticated CLOB flow: signer key, funder/signature type, and API credentials derived or loaded on the backend.
-- The frontend never receives private keys; it only triggers a backend refresh and renders the resulting status snapshot.
-- The official `py-clob-client` currently requires Python `3.9.10+`, so authenticated account refresh will stay unavailable on older interpreters even though the rest of the app still runs.
+- The backend exposes a server-side Polymarket US account status path at the terminal level.
+- Account refresh uses `POLYMARKET_KEY_ID` and `POLYMARKET_SECRET_KEY` (Ed25519 API keys generated at polymarket.us/developer).
+- The frontend never receives credentials; it only triggers a backend refresh and renders the resulting status snapshot.
+- Execution is gated on `trading_ready`; the backend blocks order placement until account credentials are configured and the connection is confirmed.
 
 ## Roadmap / Upcoming Features
 
@@ -147,15 +143,15 @@ Current optional input:
 
 #### Polymarket Account Integration
 
-- Securely connect a Polymarket account.
-- Surface account state, balances, allowances, and open orders inside the terminal.
-- Support authenticated trading flows.
+- ✅ Securely connect a Polymarket US account via API key.
+- ✅ Surface account state, balances, open orders, and positions inside the terminal.
+- ✅ Authenticated trading via the official `polymarket-us` SDK.
 
 #### Automated Trade Execution
 
-- Place and manage trades programmatically.
+- ✅ Real signed order placement via the Polymarket US API.
 - Track open orders and positions in real time.
-- Replace simulated execution with real signed Polymarket order flow.
+- Add order amendment and cancellation flows.
 
 ### Data & Signals
 
@@ -219,9 +215,9 @@ Current optional input:
 
 ## Stack
 
-- Backend: Python, FastAPI, asyncio, NumPy
+- Backend: Python 3.11+, FastAPI, asyncio, NumPy
 - Frontend: React, TypeScript, Vite
-- Live Market Data: Polymarket Gamma API and market websocket
+- Live Market Data: Polymarket US API and websocket (`polymarket-us` SDK)
 - Local Infra: Redis and PostgreSQL ready for expansion
 - Signal Layer: Ollama / Gemma, isolated from the execution path
 

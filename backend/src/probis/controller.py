@@ -18,7 +18,6 @@ class MonitorController:
         self.account_service = account_service
         self._catalog: list[MarketDescriptor] = []
         self._markets_by_name: dict[str, MarketDescriptor] = {}
-        self._asset_to_market: dict[str, str] = {}
         self._catalog_version = 0
 
         if self.account_service is not None and hasattr(self.account_service, "current"):
@@ -87,21 +86,15 @@ class MonitorController:
     def catalog_version(self) -> int:
         return self._catalog_version
 
-    def stream_asset_ids(self) -> list[str]:
-        return [market.asset_id for market in self._catalog if market.asset_id]
+    def stream_market_slugs(self) -> list[str]:
+        return [market.market for market in self._catalog]
 
-    def market_for_asset(self, asset_id: str) -> Optional[MarketDescriptor]:
-        market_name = self._asset_to_market.get(asset_id)
-        if market_name is None:
-            return None
-        return self._markets_by_name.get(market_name)
+    def market_for_slug(self, slug: str) -> Optional[MarketDescriptor]:
+        return self._markets_by_name.get(slug)
 
     def replace_catalog(self, markets: list[MarketDescriptor]) -> None:
         self._catalog = markets
         self._markets_by_name = {market.market: market for market in markets}
-        self._asset_to_market = {
-            market.asset_id: market.market for market in markets if market.asset_id is not None
-        }
         self._catalog_version += 1
         self.state.market_catalog = [market.model_dump(mode="json") for market in markets]
         for market in markets:

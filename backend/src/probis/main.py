@@ -50,7 +50,7 @@ async def _run() -> None:
         log.exception("Failed to load initial Polymarket catalog")
         await controller.emit_log(level="WARN", message="Failed to load initial Polymarket catalog")
 
-    if settings.polymarket_private_key:
+    if settings.polymarket_key_id:
         await controller.refresh_polymarket_account()
 
     app = create_app(state=state, controller=controller)
