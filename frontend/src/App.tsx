@@ -123,6 +123,10 @@ function titleCase(value: string) {
   return value.charAt(0).toUpperCase() + value.slice(1)
 }
 
+function getMarketTypeLabel(market: TerminalSnapshot['markets'][number]) {
+  return market.market_type ?? titleCase(inferMarketType(market.category, market.title))
+}
+
 function App() {
   const [snapshot, setSnapshot] = useState<TerminalSnapshot>(emptySnapshot)
   const [selectedMarketId, setSelectedMarketId] = useState<string>('')
@@ -195,7 +199,7 @@ function App() {
   const localQuery = normalizeSearch(localSearch)
 
   const subjects = Array.from(new Set(snapshot.markets.map((market) => market.category || 'Uncategorized'))).sort((left, right) => left.localeCompare(right))
-  const marketTypes = Array.from(new Set(snapshot.markets.map((market) => inferMarketType(market.category, market.title)))).sort((left, right) => left.localeCompare(right))
+  const marketTypes = Array.from(new Set(snapshot.markets.map((market) => getMarketTypeLabel(market)))).sort((left, right) => left.localeCompare(right))
 
   const globallyFilteredMarkets = snapshot.markets.filter((market) => {
     if (!globalQuery) {
@@ -207,7 +211,7 @@ function App() {
 
   const scopedMarkets = globallyFilteredMarkets.filter((market) => {
     const subjectMatch = subjectFilter === 'all' || (market.category || 'Uncategorized') === subjectFilter
-    const typeMatch = typeFilter === 'all' || inferMarketType(market.category, market.title) === typeFilter
+    const typeMatch = typeFilter === 'all' || getMarketTypeLabel(market) === typeFilter
     const localMatch = !localQuery || `${market.title} ${market.market} ${market.category}`.toLowerCase().includes(localQuery)
     return subjectMatch && typeMatch && localMatch
   })
@@ -362,7 +366,7 @@ function App() {
                     onClick={() => setTypeFilter(type)}
                     type="button"
                   >
-                    {titleCase(type)}
+                    {type}
                   </button>
                 ))}
               </div>

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import re
 from typing import Any
 from typing import Optional
 from typing import Union
@@ -35,15 +36,75 @@ def _mid_price(best_bid: Optional[float], best_ask: Optional[float], last_trade:
     return last_trade
 
 
+def _titleize_code(value: str) -> str:
+    parts = re.split(r"[^a-z0-9]+", value.lower())
+    if not parts:
+        return value.upper()
+    acronyms = {"nba", "nfl", "mlb", "nhl", "ufc", "epl", "mls", "ucl", "wta", "atp", "ipl", "cs2", "lol", "cod", "cfb", "cbb", "wcbb"}
+    formatted: list[str] = []
+    for part in parts:
+        if not part:
+            continue
+        formatted.append(part.upper() if part in acronyms else part.capitalize())
+    return " ".join(formatted) if formatted else value.upper()
+
+
+def _build_sport_labels(sports_payload: Any, series_payload: Any) -> dict[str, str]:
+    sports = []
+    if isinstance(sports_payload, dict):
+        sports = sports_payload.get("sports") or []
+
+    series = []
+    if isinstance(series_payload, dict):
+        series = series_payload.get("series") or []
+
+    series_by_id = {
+        str(item.get("id")): str(item.get("title"))
+        for item in series
+        if isinstance(item, dict) and item.get("id") and item.get("title")
+    }
+    series_by_slug = {
+        str(item.get("slug")): str(item.get("title"))
+        for item in series
+        if isinstance(item, dict) and item.get("slug") and item.get("title")
+    }
+
+    labels: dict[str, str] = {}
+    for item in sports:
+        if not isinstance(item, dict):
+            continue
+        code = str(item.get("sport") or "").strip().lower()
+        if not code:
+            continue
+        series_id = str(item.get("series") or "").strip()
+        label = series_by_id.get(series_id) or series_by_slug.get(code) or _titleize_code(code)
+        labels[code] = label
+    return labels
+
+
+def _infer_market_type(slug: str, sport_labels: dict[str, str]) -> Optional[str]:
+    slug_lower = slug.lower()
+    parts = [part for part in re.split(r"[^a-z0-9]+", slug_lower) if part]
+    part_set = set(parts)
+    for code in sorted(sport_labels, key=len, reverse=True):
+        if code in part_set or f"-{code}-" in f"-{slug_lower}-":
+            return sport_labels[code]
+    return None
+
+
 class PolymarketClient:
     async def fetch_active_markets(self, *, limit: int) -> list[MarketDescriptor]:
         from polymarket_us import PolymarketUS
 
         client = PolymarketUS()
         try:
-            resp = await asyncio.to_thread(
-                client.markets.list,
-                {"limit": limit, "active": True, "closed": False},
+            resp, sports_resp, series_resp = await asyncio.gather(
+                asyncio.to_thread(
+                    client.markets.list,
+                    {"limit": limit, "active": True, "closed": False},
+                ),
+                asyncio.to_thread(client.sports.list),
+                asyncio.to_thread(client.series.list, {"limit": 250}),
             )
         finally:
             client.close()
@@ -54,15 +115,17 @@ class PolymarketClient:
         elif isinstance(resp, dict):
             raw_markets = resp.get("markets") or resp.get("data") or []
 
+        sport_labels = _build_sport_labels(sports_resp, series_resp)
+
         markets: list[MarketDescriptor] = []
         for item in raw_markets:
             if isinstance(item, dict):
-                descriptor = self._market_descriptor_from_payload(item)
+                descriptor = self._market_descriptor_from_payload(item, sport_labels=sport_labels)
                 if descriptor is not None:
                     markets.append(descriptor)
         return markets
 
-    def _market_descriptor_from_payload(self, item: dict[str, Any]) -> Optional[MarketDescriptor]:
+    def _market_descriptor_from_payload(self, item: dict[str, Any], *, sport_labels: dict[str, str]) -> Optional[MarketDescriptor]:
         slug = item.get("slug") or item.get("marketSlug")
         if not slug:
             return None
@@ -79,6 +142,7 @@ class PolymarketClient:
             market=str(slug),
             title=str(title),
             category=str(category),
+            market_type=_infer_market_type(str(slug), sport_labels),
             outcome="Yes",
             venue="polymarket",
             reference_price=reference_price,

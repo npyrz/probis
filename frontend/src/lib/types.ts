@@ -2,6 +2,7 @@ export type Market = {
   market: string
   title: string
   category: string
+  market_type?: string | null
   outcome: string
   venue: 'polymarket' | 'sim'
   reference_price: number

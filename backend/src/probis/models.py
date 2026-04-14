@@ -61,6 +61,7 @@ class MarketDescriptor(BaseModel):
     market: str
     title: str
     category: str
+    market_type: Optional[str] = None
     outcome: str = "YES"
     venue: Literal["polymarket", "sim"] = "sim"
     reference_price: float = 0.5
