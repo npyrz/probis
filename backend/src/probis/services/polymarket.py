@@ -15,6 +15,7 @@ from ..models import MarketDescriptor
 log = logging.getLogger(__name__)
 
 PRICE_CHANNEL = "prices"
+DEFAULT_MARKET_CATEGORIES = ("sports", "politics")
 
 
 def _safe_float(value: Any) -> Optional[float]:
@@ -92,28 +93,66 @@ def _infer_market_type(slug: str, sport_labels: dict[str, str]) -> Optional[str]
     return None
 
 
+def _merge_category_results(category_results: list[list[dict[str, Any]]], *, limit: int) -> list[dict[str, Any]]:
+    merged: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    index = 0
+    while len(merged) < limit:
+        added = False
+        for results in category_results:
+            if index >= len(results):
+                continue
+            item = results[index]
+            slug = str(item.get("slug") or item.get("marketSlug") or "")
+            if slug and slug not in seen:
+                seen.add(slug)
+                merged.append(item)
+                added = True
+                if len(merged) >= limit:
+                    break
+        if not added:
+            break
+        index += 1
+    return merged
+
+
 class PolymarketClient:
     async def fetch_active_markets(self, *, limit: int) -> list[MarketDescriptor]:
         from polymarket_us import PolymarketUS
 
         client = PolymarketUS()
         try:
-            resp, sports_resp, series_resp = await asyncio.gather(
-                asyncio.to_thread(
-                    client.markets.list,
-                    {"limit": limit, "active": True, "closed": False},
-                ),
+            per_category_limit = max(limit, 12)
+            category_responses = await asyncio.gather(
+                *[
+                    asyncio.to_thread(
+                        client.markets.list,
+                        {
+                            "limit": per_category_limit,
+                            "closed": False,
+                            "categories": [category],
+                            "includeHidden": False,
+                        },
+                    )
+                    for category in DEFAULT_MARKET_CATEGORIES
+                ],
                 asyncio.to_thread(client.sports.list),
                 asyncio.to_thread(client.series.list, {"limit": 250}),
             )
         finally:
             client.close()
 
-        raw_markets: list[Any] = []
-        if isinstance(resp, list):
-            raw_markets = resp
-        elif isinstance(resp, dict):
-            raw_markets = resp.get("markets") or resp.get("data") or []
+        *market_responses, sports_resp, series_resp = category_responses
+
+        raw_category_results: list[list[dict[str, Any]]] = []
+        for response in market_responses:
+            if isinstance(response, list):
+                raw_category_results.append([item for item in response if isinstance(item, dict)])
+            elif isinstance(response, dict):
+                items = response.get("markets") or response.get("data") or []
+                raw_category_results.append([item for item in items if isinstance(item, dict)])
+
+        raw_markets = _merge_category_results(raw_category_results, limit=limit)
 
         sport_labels = _build_sport_labels(sports_resp, series_resp)
 
