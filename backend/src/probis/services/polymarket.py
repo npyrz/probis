@@ -320,7 +320,9 @@ class PolymarketMarketStream:
         markets_ws.on("close", lambda _: queue.put_nowait(("close", {})))
 
         await markets_ws.connect()
+        log.info("Polymarket websocket connected, subscribing to %d markets", len(market_slugs))
         await markets_ws.subscribe("market-trades", "SUBSCRIPTION_TYPE_TRADE", market_slugs)
+        log.info("Subscribed to market trades")
 
         try:
             while True:
@@ -352,6 +354,7 @@ class PolymarketMarketStream:
         price = _safe_float(trade.get("price") or trade.get("lastPrice"))
         if not slug or price is None:
             return
+        log.info("Trade event: slug=%s price=%s", slug, price)
         descriptor = self.controller.market_for_slug(str(slug))
         if descriptor is None:
             return
@@ -383,6 +386,7 @@ class PolymarketMarketStream:
         best_bid = _safe_float(bids[0].get("price") if bids else None)
         best_ask = _safe_float(asks[0].get("price") if asks else None)
         price = _mid_price(best_bid, best_ask, None)
+        log.info("Market data: slug=%s bid=%s ask=%s mid=%s", slug, best_bid, best_ask, price)
         descriptor = self.controller.market_for_slug(str(slug))
         if descriptor is None:
             return
