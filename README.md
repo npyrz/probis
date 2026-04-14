@@ -31,6 +31,17 @@ flowchart LR
 
 ## Operator Flow
 
+### Product Framing
+
+1. Connect account.
+2. Pick market.
+3. Configure strategy and limits.
+4. Let the engine manage entry, scaling, monitoring, and exit.
+5. Auto-sell on target, stop, or rule trigger.
+6. Manual exit always available.
+
+The intended operating model is constrained automation, not open-ended autonomous trading. The user defines what the system is allowed to do, and the engine executes only within those permissions and limits.
+
 ```mermaid
 sequenceDiagram
 	participant U as Operator
@@ -48,6 +59,14 @@ sequenceDiagram
 	T->>A: Abort request
 	A-->>T: Session stopped
 ```
+
+### Intended Execution Model
+
+- The operator authorizes strategies, markets, and limits.
+- The backend owns account connectivity and execution.
+- The strategy engine monitors entry, add, hold, and exit conditions.
+- Positions close automatically on rule satisfaction or manually on command.
+- LLM outputs inform signals, but deterministic trading rules make execution decisions.
 
 ## Architecture
 
@@ -166,6 +185,7 @@ Current optional input:
 - Let users select which trade types and strategies are allowed to run.
 - Run each approved strategy independently under its own constraints.
 - Keep each strategy active until it exits, sells, or the user ends it manually.
+- Bound model behavior to approved trade types, capital limits, and exit rules.
 
 ### Strategy Engine
 
