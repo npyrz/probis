@@ -27,6 +27,48 @@ def _safe_str(payload: Any, *keys: str) -> Optional[str]:
     return None
 
 
+def _balances_list(payload: Any) -> list[dict[str, Any]]:
+    if isinstance(payload, dict):
+        balances = payload.get("balances")
+        if isinstance(balances, list):
+            return [item for item in balances if isinstance(item, dict)]
+    if isinstance(payload, list):
+        return [item for item in payload if isinstance(item, dict)]
+    return []
+
+
+def _currency_rank(balance: dict[str, Any]) -> tuple[int, str]:
+    currency = str(balance.get("currency") or "").upper()
+    if currency in {"USD", "USDC"}:
+        return (0, currency)
+    if currency:
+        return (1, currency)
+    return (2, "")
+
+
+def _extract_balance_usd(payload: Any) -> Optional[str]:
+    balances = _balances_list(payload)
+    if not balances:
+        if isinstance(payload, dict):
+            return _safe_str(payload, "currentBalance", "buyingPower", "balance", "availableBalance", "available", "usdc")
+        return None
+
+    sorted_balances = sorted(balances, key=_currency_rank)
+    for balance in sorted_balances:
+        value = _safe_str(
+            balance,
+            "currentBalance",
+            "buyingPower",
+            "assetAvailable",
+            "balance",
+            "availableBalance",
+            "available",
+        )
+        if value not in {None, ""}:
+            return value
+    return None
+
+
 class PolymarketAccountService:
     def __init__(self) -> None:
         self._snapshot = self._disconnected_snapshot()
@@ -67,7 +109,7 @@ class PolymarketAccountService:
             positions_resp = client.portfolio.positions()
             client.close()
 
-            balance_usd = _safe_str(balances, "balance", "availableBalance", "available", "usdc")
+            balance_usd = _extract_balance_usd(balances)
             if balance_usd is None and isinstance(balances, dict):
                 # Grab first numeric-looking value as fallback
                 balance_usd = next(

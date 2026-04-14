@@ -86,9 +86,50 @@ function mergeSession(sessions: MonitorSession[], next: MonitorSession) {
   return [next, ...existing].sort((left, right) => right.started_at.localeCompare(left.started_at))
 }
 
+function normalizeSearch(value: string) {
+  return value.trim().toLowerCase()
+}
+
+function inferMarketType(category: string | null | undefined, title: string | null | undefined) {
+  const haystack = `${category ?? ''} ${title ?? ''}`.toLowerCase()
+  if (/nba|nfl|mlb|nhl|soccer|football|basketball|baseball|tennis|golf|fight|ufc|f1|formula 1/.test(haystack)) {
+    return 'sports'
+  }
+  if (/election|president|senate|house|governor|democrat|republican|vote|policy|politic/.test(haystack)) {
+    return 'politics'
+  }
+  if (/btc|bitcoin|eth|ethereum|solana|crypto|token|coin/.test(haystack)) {
+    return 'crypto'
+  }
+  if (/fed|cpi|inflation|gdp|rates|recession|economy|tariff|jobs/.test(haystack)) {
+    return 'macro'
+  }
+  if (/tesla|apple|nvidia|meta|google|microsoft|earnings|company|stock/.test(haystack)) {
+    return 'companies'
+  }
+  if (/movie|oscar|music|tv|celebrity|show|album/.test(haystack)) {
+    return 'culture'
+  }
+  if (/court|judge|trial|legal|scotus|law/.test(haystack)) {
+    return 'legal'
+  }
+  if (/war|country|prime minister|president of|geopolitic|china|russia|ukraine|israel/.test(haystack)) {
+    return 'world'
+  }
+  return 'general'
+}
+
+function titleCase(value: string) {
+  return value.charAt(0).toUpperCase() + value.slice(1)
+}
+
 function App() {
   const [snapshot, setSnapshot] = useState<TerminalSnapshot>(emptySnapshot)
   const [selectedMarketId, setSelectedMarketId] = useState<string>('')
+  const [globalSearch, setGlobalSearch] = useState<string>('')
+  const [subjectFilter, setSubjectFilter] = useState<string>('all')
+  const [typeFilter, setTypeFilter] = useState<string>('all')
+  const [localSearch, setLocalSearch] = useState<string>('')
   const [settings, setSettings] = useState<MonitorSettings>(defaultSettings)
   const [connectionState, setConnectionState] = useState<'connecting' | 'live' | 'offline'>('connecting')
   const [operatorStatus, setOperatorStatus] = useState<string>('Booting terminal...')
@@ -150,13 +191,35 @@ function App() {
     }
   }, [])
 
-  useEffect(() => {
-    if (!selectedMarketId && snapshot.markets[0]) {
-      setSelectedMarketId(snapshot.markets[0].market)
-    }
-  }, [selectedMarketId, snapshot.markets])
+  const globalQuery = normalizeSearch(globalSearch)
+  const localQuery = normalizeSearch(localSearch)
 
-  const selectedMarket = snapshot.markets.find((market) => market.market === selectedMarketId) ?? snapshot.markets[0] ?? null
+  const subjects = Array.from(new Set(snapshot.markets.map((market) => market.category || 'Uncategorized'))).sort((left, right) => left.localeCompare(right))
+  const marketTypes = Array.from(new Set(snapshot.markets.map((market) => inferMarketType(market.category, market.title)))).sort((left, right) => left.localeCompare(right))
+
+  const globallyFilteredMarkets = snapshot.markets.filter((market) => {
+    if (!globalQuery) {
+      return true
+    }
+    const haystack = `${market.title} ${market.market} ${market.category} ${market.outcome}`.toLowerCase()
+    return haystack.includes(globalQuery)
+  })
+
+  const scopedMarkets = globallyFilteredMarkets.filter((market) => {
+    const subjectMatch = subjectFilter === 'all' || (market.category || 'Uncategorized') === subjectFilter
+    const typeMatch = typeFilter === 'all' || inferMarketType(market.category, market.title) === typeFilter
+    const localMatch = !localQuery || `${market.title} ${market.market} ${market.category}`.toLowerCase().includes(localQuery)
+    return subjectMatch && typeMatch && localMatch
+  })
+
+  useEffect(() => {
+    const nextSelected = scopedMarkets.find((market) => market.market === selectedMarketId) ?? scopedMarkets[0] ?? globallyFilteredMarkets[0] ?? snapshot.markets[0] ?? null
+    if (nextSelected && nextSelected.market !== selectedMarketId) {
+      setSelectedMarketId(nextSelected.market)
+    }
+  }, [selectedMarketId, scopedMarkets, globallyFilteredMarkets, snapshot.markets])
+
+  const selectedMarket = scopedMarkets.find((market) => market.market === selectedMarketId) ?? globallyFilteredMarkets.find((market) => market.market === selectedMarketId) ?? snapshot.markets.find((market) => market.market === selectedMarketId) ?? scopedMarkets[0] ?? globallyFilteredMarkets[0] ?? snapshot.markets[0] ?? null
   const account = snapshot.account
 
   const selectedSession = !selectedMarket?.session_id
@@ -240,6 +303,15 @@ function App() {
           <p className="hero-kicker">PROBIS / OPERATOR TERMINAL</p>
           <h1>Market Desk</h1>
         </div>
+        <label className="search-box search-box-global">
+          <span>Search All Markets</span>
+          <input
+            type="search"
+            value={globalSearch}
+            onChange={(event) => setGlobalSearch(event.target.value)}
+            placeholder="Search title, category, slug"
+          />
+        </label>
         <div className="hero-meta hero-meta-compact">
           <StatusPill label="Feed" value={connectionState} />
           <StatusPill label="Account" value={account.status} />
@@ -252,10 +324,61 @@ function App() {
         <section className="panel panel-markets">
           <div className="panel-header">
             <h2>Markets</h2>
-            <span>{snapshot.markets.length} instruments</span>
+            <span>{scopedMarkets.length} shown</span>
+          </div>
+          <div className="market-filters">
+            <div className="market-filter-group">
+              <div className="filter-header">
+                <span>Subjects</span>
+                <button className={`filter-chip ${subjectFilter === 'all' ? 'active' : ''}`} onClick={() => setSubjectFilter('all')} type="button">
+                  All
+                </button>
+              </div>
+              <div className="chip-list">
+                {subjects.map((subject) => (
+                  <button
+                    className={`filter-chip ${subjectFilter === subject ? 'active' : ''}`}
+                    key={subject}
+                    onClick={() => setSubjectFilter(subject)}
+                    type="button"
+                  >
+                    {compactLabel(subject)}
+                  </button>
+                ))}
+              </div>
+            </div>
+            <div className="market-filter-group">
+              <div className="filter-header">
+                <span>Types</span>
+                <button className={`filter-chip ${typeFilter === 'all' ? 'active' : ''}`} onClick={() => setTypeFilter('all')} type="button">
+                  All
+                </button>
+              </div>
+              <div className="chip-list">
+                {marketTypes.map((type) => (
+                  <button
+                    className={`filter-chip ${typeFilter === type ? 'active' : ''}`}
+                    key={type}
+                    onClick={() => setTypeFilter(type)}
+                    type="button"
+                  >
+                    {titleCase(type)}
+                  </button>
+                ))}
+              </div>
+            </div>
+            <label className="search-box search-box-local">
+              <span>Search In Selection</span>
+              <input
+                type="search"
+                value={localSearch}
+                onChange={(event) => setLocalSearch(event.target.value)}
+                placeholder="Filter inside chosen subject/type"
+              />
+            </label>
           </div>
           <div className="market-list">
-            {snapshot.markets.map((market) => {
+            {scopedMarkets.map((market) => {
               const selected = selectedMarket?.market === market.market
               return (
                 <button
@@ -285,6 +408,7 @@ function App() {
                 </button>
               )
             })}
+            {scopedMarkets.length === 0 ? <p className="empty-state">No markets match the current subject, type, and search filters.</p> : null}
           </div>
         </section>
 

@@ -114,6 +114,41 @@ textarea {
   min-width: 420px;
 }
 
+.search-box {
+  display: grid;
+  gap: 6px;
+}
+
+.search-box span,
+.filter-header span {
+  font-family: 'IBM Plex Mono', monospace;
+  text-transform: uppercase;
+  letter-spacing: 0.1em;
+  color: var(--muted);
+  font-size: 0.66rem;
+}
+
+.search-box input {
+  width: 100%;
+  border-radius: 10px;
+  border: 1px solid var(--line-strong);
+  background: rgba(6, 14, 22, 0.9);
+  color: var(--text);
+  padding: 9px 10px;
+  outline: none;
+}
+
+.search-box input:focus {
+  border-color: rgba(102, 214, 255, 0.5);
+  box-shadow: 0 0 0 3px rgba(102, 214, 255, 0.12);
+}
+
+.search-box-global {
+  min-width: 320px;
+  flex: 1;
+  max-width: 520px;
+}
+
 .hero-meta-compact {
   grid-template-columns: repeat(4, minmax(0, 1fr));
 }
@@ -201,6 +236,49 @@ textarea {
   padding: 10px;
   display: grid;
   gap: 8px;
+}
+
+.market-filters {
+  display: grid;
+  gap: 10px;
+  padding: 10px;
+  border-bottom: 1px solid var(--line);
+}
+
+.market-filter-group {
+  display: grid;
+  gap: 7px;
+}
+
+.filter-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.chip-list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.filter-chip {
+  border: 1px solid var(--line);
+  background: rgba(6, 12, 18, 0.9);
+  color: var(--muted);
+  border-radius: 999px;
+  padding: 4px 8px;
+  cursor: pointer;
+  font-family: 'IBM Plex Mono', monospace;
+  font-size: 0.68rem;
+}
+
+.filter-chip.active,
+.filter-chip:hover {
+  color: var(--text);
+  border-color: rgba(102, 214, 255, 0.4);
+  background: rgba(16, 32, 46, 0.95);
 }
 
 .market-row,
@@ -502,6 +580,12 @@ textarea {
     width: 100%;
     min-width: 0;
   }
+
+  .search-box-global {
+    width: 100%;
+    max-width: none;
+    min-width: 0;
+  }
 }
 
 @media (max-width: 760px) {
@@ -520,6 +604,10 @@ textarea {
   .hero-meta,
   .account-grid {
     grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .chip-list {
+    gap: 5px;
   }
 
   .market-stats-row,
