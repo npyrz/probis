@@ -198,6 +198,58 @@ textarea {
   padding: 16px 20px 0;
 }
 
+.search-panel {
+  display: grid;
+  gap: 12px;
+  padding: 18px 20px 0;
+}
+
+.search-panel-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  font-family: 'IBM Plex Mono', monospace;
+  font-size: 0.74rem;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--muted);
+}
+
+.search-results {
+  display: grid;
+  gap: 10px;
+  max-height: 320px;
+  overflow-y: auto;
+}
+
+.search-result {
+  display: grid;
+  gap: 6px;
+  width: 100%;
+  padding: 14px;
+  border: 1px solid var(--line);
+  border-radius: 16px;
+  text-align: left;
+  background: rgba(5, 12, 20, 0.88);
+  color: var(--text);
+}
+
+.search-result strong {
+  font-size: 0.96rem;
+}
+
+.search-result span {
+  font-family: 'IBM Plex Mono', monospace;
+  font-size: 0.72rem;
+  color: var(--muted);
+}
+
+.search-result.selected {
+  border-color: rgba(124, 226, 163, 0.5);
+  background: linear-gradient(135deg, rgba(18, 42, 35, 0.96), rgba(12, 28, 23, 0.96));
+}
+
 .field-block input,
 .field-block textarea {
   width: 100%;
