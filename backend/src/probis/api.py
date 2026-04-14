@@ -8,15 +8,16 @@ from fastapi import FastAPI, HTTPException, WebSocket
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import ORJSONResponse
 
+from .services.analysis import MarketAnalysisService
 from .controller import MonitorController
-from .models import StartMonitorRequest
+from .models import AnalyzeMarketRequest, StartMonitorRequest
 from .state import MarketState
 
 
 log = logging.getLogger(__name__)
 
 
-def create_app(*, state: MarketState, controller: MonitorController) -> FastAPI:
+def create_app(*, state: MarketState, controller: MonitorController, analysis_service: MarketAnalysisService | None = None) -> FastAPI:
     app = FastAPI(default_response_class=ORJSONResponse, title="Probis")
     app.add_middleware(
         CORSMiddleware,
@@ -55,6 +56,17 @@ def create_app(*, state: MarketState, controller: MonitorController) -> FastAPI:
     @app.post("/polymarket/account/refresh")
     async def refresh_polymarket_account() -> dict:
         return {"account": await controller.refresh_polymarket_account()}
+
+    @app.post("/analyze-market")
+    async def analyze_market(request: AnalyzeMarketRequest) -> dict:
+        if analysis_service is None:
+            raise HTTPException(status_code=503, detail="analysis service unavailable")
+        try:
+            report = await analysis_service.analyze_slug(slug=request.slug, notes=request.notes)
+        except RuntimeError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+        controller.add_manual_market(report.market)
+        return {"report": report.model_dump(mode="json")}
 
     @app.get("/monitor-sessions")
     async def get_sessions() -> dict:

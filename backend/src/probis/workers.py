@@ -126,9 +126,43 @@ async def processing_worker(*, bus: Union[EventBus, InMemoryBus], state: MarketS
         exit_threshold = float(config["exit_threshold"])
         take_profit = float(config["take_profit"])
         stop_loss = float(config["stop_loss"])
+        entry_price_min = config.get("entry_price_min")
+        entry_price_max = config.get("entry_price_max")
+        add_price = config.get("add_price")
+        add_order_size = config.get("add_order_size")
+        trim_price = config.get("trim_price")
+        trim_order_size = config.get("trim_order_size")
+        take_profit_price = config.get("take_profit_price")
+        stop_loss_price = config.get("stop_loss_price")
 
         order: Optional[OrderRequest] = None
-        if decision.edge > threshold and current_position < max_position:
+        in_entry_range = True
+        if entry_price_min is not None and tick.price < float(entry_price_min):
+            in_entry_range = False
+        if entry_price_max is not None and tick.price > float(entry_price_max):
+            in_entry_range = False
+
+        if (
+            add_price is not None
+            and add_order_size is not None
+            and not config.get("add_executed")
+            and current_position > 0
+            and current_position < max_position
+            and tick.price <= float(add_price)
+        ):
+            size = min(float(add_order_size), max_position - current_position)
+            if size > 0:
+                config["add_executed"] = True
+                order = OrderRequest(
+                    market=tick.market,
+                    outcome=tick.outcome,
+                    side="buy",
+                    size=size,
+                    limit_price=tick.price,
+                    session_id=config.get("session_id"),
+                    reason="price-add",
+                )
+        elif decision.edge > threshold and current_position < max_position and in_entry_range:
             size = min(order_size, max_position - current_position)
             if size > 0:
                 order = OrderRequest(
@@ -141,16 +175,37 @@ async def processing_worker(*, bus: Union[EventBus, InMemoryBus], state: MarketS
                     reason="edge-entry",
                 )
         elif current_position > 0:
-            profit_hit = avg_entry is not None and (tick.price - avg_entry) >= take_profit
-            stop_hit = avg_entry is not None and (avg_entry - tick.price) >= stop_loss
+            trim_hit = (
+                trim_price is not None
+                and trim_order_size is not None
+                and not config.get("trim_executed")
+                and tick.price >= float(trim_price)
+            )
+            profit_hit = (take_profit_price is not None and tick.price >= float(take_profit_price)) or (
+                avg_entry is not None and (tick.price - avg_entry) >= take_profit
+            )
+            stop_hit = (stop_loss_price is not None and tick.price <= float(stop_loss_price)) or (
+                avg_entry is not None and (avg_entry - tick.price) >= stop_loss
+            )
             edge_exit = decision.edge <= -exit_threshold
-            if profit_hit or stop_hit or edge_exit:
+            if trim_hit:
+                config["trim_executed"] = True
+                order = OrderRequest(
+                    market=tick.market,
+                    outcome=tick.outcome,
+                    side="sell",
+                    size=min(float(trim_order_size), current_position),
+                    limit_price=tick.price,
+                    session_id=config.get("session_id"),
+                    reason="price-trim",
+                )
+            elif profit_hit or stop_hit or edge_exit:
                 reason = "take-profit" if profit_hit else "stop-loss" if stop_hit else "edge-exit"
                 order = OrderRequest(
                     market=tick.market,
                     outcome=tick.outcome,
                     side="sell",
-                    size=min(order_size, current_position),
+                    size=current_position,
                     limit_price=tick.price,
                     session_id=config.get("session_id"),
                     reason=reason,

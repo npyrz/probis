@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import json
+
 import httpx
 
 
@@ -20,6 +22,19 @@ class OllamaClient:
             f"Text: {text}"
         )
 
+        return await self._generate_json(prompt)
+
+    async def analyze_trade(self, *, payload: dict) -> dict:
+        prompt = (
+            "You are analyzing a prediction-market trade. Return ONLY valid JSON with keys: "
+            "verdict, confidence, estimated_probability, summary, thesis, catalysts, risks. "
+            "Rules: verdict must be one of buy/watch/avoid. confidence and estimated_probability must be in [0,1]. "
+            "thesis, catalysts, risks must be arrays of short strings.\n\n"
+            f"Payload: {json.dumps(payload, ensure_ascii=True)}"
+        )
+        return await self._generate_json(prompt)
+
+    async def _generate_json(self, prompt: str) -> dict:
         async with httpx.AsyncClient(timeout=30) as client:
             resp = await client.post(
                 f"{self._base_url}/api/generate",
@@ -28,12 +43,9 @@ class OllamaClient:
             resp.raise_for_status()
             data = resp.json()
 
-        # Ollama returns { response: "..." }
         raw = data.get("response", "{}").strip()
-        # Best-effort JSON parse; if it fails, return empty signal.
         try:
-            import json
-
             return json.loads(raw)
         except Exception:
             return {}
+

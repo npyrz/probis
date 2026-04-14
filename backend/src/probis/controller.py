@@ -17,6 +17,8 @@ class MonitorController:
         self.bus = bus
         self.account_service = account_service
         self._catalog: list[MarketDescriptor] = []
+        self._fetched_catalog: list[MarketDescriptor] = []
+        self._manual_markets: dict[str, MarketDescriptor] = {}
         self._markets_by_name: dict[str, MarketDescriptor] = {}
         self._catalog_version = 0
 
@@ -93,11 +95,22 @@ class MonitorController:
         return self._markets_by_name.get(slug)
 
     def replace_catalog(self, markets: list[MarketDescriptor]) -> None:
-        self._catalog = markets
-        self._markets_by_name = {market.market: market for market in markets}
+        self._fetched_catalog = markets
+        self._rebuild_catalog()
+
+    def add_manual_market(self, market: MarketDescriptor) -> None:
+        self._manual_markets[market.market] = market
+        self._rebuild_catalog()
+
+    def _rebuild_catalog(self) -> None:
+        combined: dict[str, MarketDescriptor] = {market.market: market for market in self._fetched_catalog}
+        for slug, market in self._manual_markets.items():
+            combined[slug] = market
+        self._catalog = list(combined.values())
+        self._markets_by_name = combined
         self._catalog_version += 1
-        self.state.market_catalog = [market.model_dump(mode="json") for market in markets]
-        for market in markets:
+        self.state.market_catalog = [market.model_dump(mode="json") for market in self._catalog]
+        for market in self._catalog:
             key = (market.market, market.outcome)
             self.state.prices.setdefault(key, market.reference_price)
             self.state.model_probs.setdefault(key, market.reference_price)

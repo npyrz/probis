@@ -12,6 +12,8 @@ from .bus import EventBus, InMemoryBus
 from .config import settings
 from .controller import MonitorController
 from .logging import configure_logging
+from .services.analysis import MarketAnalysisService
+from .services.news import NewsService
 from .services.polymarket_account import PolymarketAccountService
 from .services.polymarket import PolymarketClient, PolymarketMarketStream, catalog_refresh_worker
 from .state import MarketState
@@ -41,6 +43,7 @@ async def _run() -> None:
     account_service = PolymarketAccountService()
     controller = MonitorController(state=state, bus=bus, account_service=account_service)
     polymarket_client = PolymarketClient()
+    analysis_service = MarketAnalysisService(polymarket_client=polymarket_client, news_service=NewsService())
 
     try:
         markets = await polymarket_client.fetch_active_markets(limit=settings.polymarket_market_limit)
@@ -53,7 +56,7 @@ async def _run() -> None:
     if settings.polymarket_key_id:
         await controller.refresh_polymarket_account()
 
-    app = create_app(state=state, controller=controller)
+    app = create_app(state=state, controller=controller, analysis_service=analysis_service)
 
     # Workers
     tasks = [

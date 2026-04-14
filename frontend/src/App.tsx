@@ -1,6 +1,6 @@
-import { startTransition, useEffect, useMemo, useState } from 'react'
-import { createTerminalSocket, fetchTerminalSnapshot, refreshPolymarketAccount } from './lib/api'
-import type { Market, PolymarketAccount, TerminalEvent, TerminalSnapshot } from './lib/types'
+import { useEffect, useState } from 'react'
+import { analyzeMarket, fetchTerminalSnapshot, refreshPolymarketAccount, startMonitoring } from './lib/api'
+import type { MarketAnalysisResponse, MonitorSettings, PolymarketAccount } from './lib/types'
 
 const emptyAccount: PolymarketAccount = {
   status: 'disconnected',
@@ -14,23 +14,18 @@ const emptyAccount: PolymarketAccount = {
   updated_at: new Date(0).toISOString(),
 }
 
-const emptySnapshot: TerminalSnapshot = {
-  markets: [],
-  account: emptyAccount,
-}
-
-function formatPrice(value: number | null | undefined) {
-  if (value == null || Number.isNaN(value)) {
-    return '--'
-  }
-  return `$${value.toFixed(3)}`
-}
-
 function formatProbability(value: number | null | undefined) {
   if (value == null || Number.isNaN(value)) {
     return '--'
   }
   return `${(value * 100).toFixed(1)}%`
+}
+
+function formatDecimal(value: number | null | undefined, digits = 2) {
+  if (value == null || Number.isNaN(value)) {
+    return '--'
+  }
+  return value.toFixed(digits)
 }
 
 function formatDate(value: string | null | undefined) {
@@ -51,401 +46,290 @@ function formatMoney(value: string | number | null | undefined) {
   return `$${numeric.toFixed(2)}`
 }
 
-function normalizeSearch(value: string) {
-  return value.trim().toLowerCase()
-}
-
-function titleCase(value: string) {
-  if (!value) {
-    return value
-  }
-  return value.charAt(0).toUpperCase() + value.slice(1)
-}
-
 function getLoginLabel(account: PolymarketAccount) {
-  if (account.configured) {
-    return 'logged in via .env'
-  }
-  return 'not logged in'
-}
-
-function getConnectionLabel(account: PolymarketAccount) {
-  if (account.status === 'connected') {
-    return 'connected'
-  }
-  if (account.status === 'error') {
-    return 'credentials rejected'
-  }
-  if (account.configured) {
-    return 'credentials loaded'
-  }
-  return 'awaiting credentials'
-}
-
-function outcomeEntries(market: Market) {
-  const labels = market.outcomes.length > 0 ? market.outcomes : ['Yes']
-  return labels.map((label, index) => ({
-    label,
-    price: market.outcome_prices[index] ?? null,
-  }))
+  return account.configured ? 'logged in via .env' : 'not logged in'
 }
 
 function App() {
-  const [snapshot, setSnapshot] = useState<TerminalSnapshot>(emptySnapshot)
-  const [search, setSearch] = useState('')
-  const [selectedCategory, setSelectedCategory] = useState('all')
-  const [selectedType, setSelectedType] = useState('all')
-  const [selectedMarketId, setSelectedMarketId] = useState('')
-  const [statusText, setStatusText] = useState('Loading Polymarket markets...')
+  const [account, setAccount] = useState<PolymarketAccount>(emptyAccount)
+  const [slug, setSlug] = useState('')
+  const [notes, setNotes] = useState('')
+  const [report, setReport] = useState<MarketAnalysisResponse | null>(null)
+  const [settings, setSettings] = useState<MonitorSettings | null>(null)
+  const [statusText, setStatusText] = useState('Paste a Polymarket slug to begin analysis.')
+  const [analysisBusy, setAnalysisBusy] = useState(false)
+  const [accountBusy, setAccountBusy] = useState(false)
+  const [tradeBusy, setTradeBusy] = useState(false)
   const [errorMessage, setErrorMessage] = useState('')
-  const [connectionState, setConnectionState] = useState<'connecting' | 'live' | 'offline'>('connecting')
-  const [refreshingAccount, setRefreshingAccount] = useState(false)
+  const [tradeMessage, setTradeMessage] = useState('')
 
   useEffect(() => {
     let active = true
-
-    async function loadSnapshot() {
+    async function load() {
       try {
-        const nextSnapshot = await fetchTerminalSnapshot()
+        const snapshot = await fetchTerminalSnapshot()
         if (!active) {
           return
         }
-        setSnapshot(nextSnapshot)
-        setStatusText(`Loaded ${nextSnapshot.markets.length} live Polymarket markets.`)
-      } catch (error) {
+        setAccount(snapshot.account)
+      } catch {
         if (!active) {
           return
         }
-        setErrorMessage(error instanceof Error ? error.message : 'Failed to load market catalog')
-        setStatusText('Backend unavailable.')
       }
     }
-
-    loadSnapshot()
+    load()
     return () => {
       active = false
     }
   }, [])
 
-  useEffect(() => {
-    const socket = createTerminalSocket()
-
-    socket.onopen = () => {
-      setConnectionState('live')
-      setStatusText('Live market updates connected.')
+  async function handleAnalyze() {
+    const trimmedSlug = slug.trim()
+    if (!trimmedSlug) {
+      setErrorMessage('Enter a Polymarket slug.')
+      return
     }
 
-    socket.onclose = () => {
-      setConnectionState('offline')
-      setStatusText('Live market updates disconnected.')
+    setAnalysisBusy(true)
+    setTradeMessage('')
+    setErrorMessage('')
+    setStatusText(`Analyzing ${trimmedSlug}...`)
+    try {
+      const response = await analyzeMarket({ slug: trimmedSlug, notes: notes.trim() || undefined })
+      setReport(response.report)
+      setSettings(response.report.recommended_settings)
+      setStatusText(`Analysis complete for ${response.report.market.title}.`)
+    } catch (error) {
+      setErrorMessage(error instanceof Error ? error.message : 'Failed to analyze slug')
+      setReport(null)
+      setSettings(null)
+      setStatusText('Analysis failed.')
+    } finally {
+      setAnalysisBusy(false)
     }
-
-    socket.onerror = () => {
-      setConnectionState('offline')
-    }
-
-    socket.onmessage = (event) => {
-      const payload = JSON.parse(event.data) as TerminalEvent
-      startTransition(() => {
-        setSnapshot((current) => applyTerminalEvent(current, payload))
-      })
-    }
-
-    return () => {
-      socket.close()
-    }
-  }, [])
-
-  const query = normalizeSearch(search)
-  const categoryOptions = useMemo(() => {
-    return Array.from(new Set(snapshot.markets.map((market) => String(market.category || '').toLowerCase()).filter(Boolean))).sort()
-  }, [snapshot.markets])
-
-  const typeOptions = useMemo(() => {
-    return Array.from(new Set(snapshot.markets.map((market) => market.market_type?.trim()).filter(Boolean) as string[])).sort((left, right) => left.localeCompare(right))
-  }, [snapshot.markets])
-
-  const filteredMarkets = useMemo(() => {
-    return snapshot.markets.filter((market) => {
-      const categoryMatch = selectedCategory === 'all' || String(market.category || '').toLowerCase() === selectedCategory
-      const typeMatch = selectedType === 'all' || (market.market_type ?? '') === selectedType
-      if (!categoryMatch || !typeMatch) {
-        return false
-      }
-      if (!query) {
-        return true
-      }
-      const haystack = [
-        market.title,
-        market.category,
-        market.market,
-        market.subtitle,
-        market.description,
-        market.market_type,
-        ...market.outcomes,
-      ]
-        .filter(Boolean)
-        .join(' ')
-        .toLowerCase()
-      return haystack.includes(query)
-    })
-  }, [snapshot.markets, query, selectedCategory, selectedType])
-
-  useEffect(() => {
-    const candidate = filteredMarkets[0]?.market ?? snapshot.markets[0]?.market ?? ''
-    if (!selectedMarketId || !filteredMarkets.some((market) => market.market === selectedMarketId)) {
-      setSelectedMarketId(candidate)
-    }
-  }, [filteredMarkets, selectedMarketId, snapshot.markets])
-
-  const selectedMarket = filteredMarkets.find((market) => market.market === selectedMarketId)
-    ?? snapshot.markets.find((market) => market.market === selectedMarketId)
-    ?? filteredMarkets[0]
-    ?? snapshot.markets[0]
-    ?? null
+  }
 
   async function handleRefreshAccount() {
-    setRefreshingAccount(true)
+    setAccountBusy(true)
     setErrorMessage('')
     try {
       const response = await refreshPolymarketAccount()
-      setSnapshot((current) => ({ ...current, account: response.account }))
+      setAccount(response.account)
       setStatusText(`Account refresh complete: ${response.account.status}.`)
     } catch (error) {
       setErrorMessage(error instanceof Error ? error.message : 'Failed to refresh account')
     } finally {
-      setRefreshingAccount(false)
+      setAccountBusy(false)
     }
   }
 
-  const loginLabel = getLoginLabel(snapshot.account)
-  const connectionLabel = getConnectionLabel(snapshot.account)
-  const selectedOutcomes = selectedMarket ? outcomeEntries(selectedMarket) : []
+  async function handleStartAutomation() {
+    if (!report || !settings) {
+      return
+    }
+
+    setTradeBusy(true)
+    setErrorMessage('')
+    try {
+      const response = await startMonitoring({
+        market: report.market.market,
+        outcome: report.market.outcome,
+        settings,
+      })
+      setTradeMessage(`Automation started: ${response.session.session_id}`)
+      setStatusText(`Automation running for ${response.session.title}.`)
+    } catch (error) {
+      setErrorMessage(error instanceof Error ? error.message : 'Failed to start automation')
+    } finally {
+      setTradeBusy(false)
+    }
+  }
+
+  function updateSetting<K extends keyof MonitorSettings>(key: K, value: MonitorSettings[K]) {
+    setSettings((current) => (current ? { ...current, [key]: value } : current))
+  }
+
+  const loginLabel = getLoginLabel(account)
 
   return (
     <main className="app-shell">
-      <section className="topbar">
-        <div>
-          <p className="eyebrow">Probis / frontend terminal</p>
-          <h1>Polymarket trade browser</h1>
-          <p className="subhead">Browse live markets, confirm your backend account state, and click any market to inspect prices and contract details.</p>
+      <section className="hero-panel">
+        <div className="hero-copy">
+          <p className="eyebrow">Probis / slug terminal</p>
+          <h1>Paste a Polymarket slug. Get a trade memo. Then automate it.</h1>
+          <p className="subhead">This terminal pulls the live Polymarket US market, optional live news, deterministic pricing and risk logic, AI synthesis, and then lets you edit the execution rules before handing control to the model.</p>
         </div>
+
         <div className="status-grid">
-          <StatusCard label="Login" value={loginLabel} tone={snapshot.account.configured ? 'positive' : 'neutral'} />
-          <StatusCard label="Account" value={connectionLabel} tone={snapshot.account.status === 'error' ? 'negative' : snapshot.account.status === 'connected' ? 'positive' : 'neutral'} />
-          <StatusCard label="Feed" value={connectionState} tone={connectionState === 'live' ? 'positive' : 'negative'} />
-          <StatusCard label="Markets" value={String(filteredMarkets.length)} tone="neutral" />
+          <StatusCard label="Login" value={loginLabel} tone={account.configured ? 'positive' : 'neutral'} />
+          <StatusCard label="Account" value={account.status} tone={account.status === 'connected' ? 'positive' : account.status === 'error' ? 'negative' : 'neutral'} />
+          <StatusCard label="Trading" value={account.trading_ready ? 'ready' : 'blocked'} tone={account.trading_ready ? 'positive' : 'negative'} />
+          <StatusCard label="Balance" value={formatMoney(account.balance_usd)} tone="neutral" />
         </div>
       </section>
 
       <section className="workspace-grid">
-        <aside className="panel list-panel">
+        <section className="panel input-panel">
           <div className="panel-header">
             <div>
-              <p className="eyebrow">Available trades</p>
-              <h2>All active markets</h2>
+              <p className="eyebrow">1 / Input</p>
+              <h2>Analyze a slug</h2>
             </div>
-            <span>{snapshot.markets.length} total</span>
-          </div>
-
-          <label className="search-box">
-            <span>Search</span>
-            <input
-              type="search"
-              value={search}
-              onChange={(event) => setSearch(event.target.value)}
-              placeholder="Search market, category, slug, or outcome"
-            />
-          </label>
-
-          <div className="filter-stack">
-            <div className="chip-group">
-              <span className="chip-group-label">Categories</span>
-              <div className="chip-row">
-                <button className={`filter-chip ${selectedCategory === 'all' ? 'active' : ''}`} onClick={() => setSelectedCategory('all')} type="button">
-                  All
-                </button>
-                {categoryOptions.map((category) => (
-                  <button
-                    className={`filter-chip ${selectedCategory === category ? 'active' : ''}`}
-                    key={category}
-                    onClick={() => setSelectedCategory(category)}
-                    type="button"
-                  >
-                    {titleCase(category)}
-                  </button>
-                ))}
-              </div>
-            </div>
-
-            <div className="chip-group">
-              <span className="chip-group-label">Sports / Types</span>
-              <div className="chip-row">
-                <button className={`filter-chip ${selectedType === 'all' ? 'active' : ''}`} onClick={() => setSelectedType('all')} type="button">
-                  All
-                </button>
-                {typeOptions.map((type) => (
-                  <button
-                    className={`filter-chip ${selectedType === type ? 'active' : ''}`}
-                    key={type}
-                    onClick={() => setSelectedType(type)}
-                    type="button"
-                  >
-                    {type}
-                  </button>
-                ))}
-              </div>
-            </div>
-          </div>
-
-          <div className="market-list">
-            {filteredMarkets.map((market) => {
-              const selected = selectedMarket?.market === market.market
-              return (
-                <button
-                  className={`market-card ${selected ? 'selected' : ''}`}
-                  key={market.market}
-                  onClick={() => setSelectedMarketId(market.market)}
-                  type="button"
-                >
-                  <div className="market-card-header">
-                    <span>{market.category}</span>
-                    <span>{market.market_type ?? market.venue}</span>
-                  </div>
-                  <strong>{market.title}</strong>
-                  <p>{market.subtitle || market.market}</p>
-                  <div className="market-prices">
-                    <Metric label="Last" value={formatProbability(market.last_price)} />
-                    <Metric label="Bid" value={formatProbability(market.best_bid)} />
-                    <Metric label="Ask" value={formatProbability(market.best_ask)} />
-                  </div>
-                </button>
-              )
-            })}
-            {filteredMarkets.length === 0 ? <p className="empty-state">No markets matched the current search.</p> : null}
-          </div>
-        </aside>
-
-        <section className="panel detail-panel">
-          <div className="panel-header">
-            <div>
-              <p className="eyebrow">Selected trade</p>
-              <h2>{selectedMarket?.title ?? 'No market selected'}</h2>
-            </div>
-            <button className="secondary-button" disabled={refreshingAccount} onClick={handleRefreshAccount} type="button">
-              {refreshingAccount ? 'Refreshing...' : 'Refresh account'}
+            <button className="secondary-button" disabled={accountBusy} onClick={handleRefreshAccount} type="button">
+              {accountBusy ? 'Refreshing...' : 'Refresh account'}
             </button>
           </div>
 
-          {selectedMarket ? (
-            <div className="detail-layout">
-              <section className="hero-card">
-                <div className="hero-copy">
-                  <p className="eyebrow">{selectedMarket.category}</p>
-                  <h3>{selectedMarket.title}</h3>
-                  <p>{selectedMarket.description || selectedMarket.subtitle || 'No extra market description was provided by the API.'}</p>
+          <label className="field-block">
+            <span>Slug</span>
+            <input value={slug} onChange={(event) => setSlug(event.target.value)} placeholder="aec-ufc-johcas-marvol-2026-04-18" type="text" />
+          </label>
+
+          <label className="field-block">
+            <span>Notes for the model</span>
+            <textarea value={notes} onChange={(event) => setNotes(event.target.value)} placeholder="Optional thesis, risk limits, or things you want the AI to focus on." rows={5} />
+          </label>
+
+          <div className="action-row">
+            <button className="primary-button" disabled={analysisBusy} onClick={handleAnalyze} type="button">
+              {analysisBusy ? 'Analyzing...' : 'Analyze slug'}
+            </button>
+            <p className="terminal-line">{statusText}</p>
+          </div>
+          {errorMessage ? <p className="terminal-line error">{errorMessage}</p> : null}
+          {tradeMessage ? <p className="terminal-line success">{tradeMessage}</p> : null}
+        </section>
+
+        <section className="panel report-panel">
+          <div className="panel-header">
+            <div>
+              <p className="eyebrow">2 / Report</p>
+              <h2>{report?.market.title ?? 'No analysis yet'}</h2>
+            </div>
+          </div>
+
+          {report ? (
+            <div className="report-layout">
+              <section className="market-hero">
+                <div>
+                  <p className="eyebrow">Polymarket info</p>
+                  <h3>{report.market.title}</h3>
+                  <p className="hero-description">{report.market.description || report.market.subtitle || 'No extra market description available.'}</p>
                 </div>
-                <div className="hero-meta-grid">
-                  <StatusCard label="Last price" value={formatProbability(selectedMarket.last_price)} tone="neutral" />
-                  <StatusCard label="Best bid" value={formatProbability(selectedMarket.best_bid)} tone="neutral" />
-                  <StatusCard label="Best ask" value={formatProbability(selectedMarket.best_ask)} tone="neutral" />
-                  <StatusCard label="Last trade" value={formatProbability(selectedMarket.last_trade_price)} tone="neutral" />
+                <div className="metric-grid">
+                  <StatusCard label="Category" value={report.market.category} tone="neutral" />
+                  <StatusCard label="Type" value={report.market.market_type ?? report.market.venue} tone="neutral" />
+                  <StatusCard label="Market" value={formatProbability(report.deterministic.market_probability)} tone="neutral" />
+                  <StatusCard label="Fair" value={formatProbability(report.deterministic.fair_probability)} tone={report.deterministic.edge > 0 ? 'positive' : 'negative'} />
                 </div>
               </section>
 
-              <section className="split-grid">
+              <section className="detail-grid">
                 <article className="detail-card">
-                  <p className="eyebrow">Trade details</p>
-                  <DetailRow label="Slug" value={selectedMarket.market} />
-                  <DetailRow label="Venue" value={selectedMarket.venue} />
-                  <DetailRow label="Type" value={selectedMarket.market_type ?? '--'} />
-                  <DetailRow label="Start date" value={formatDate(selectedMarket.start_date)} />
-                  <DetailRow label="End date" value={formatDate(selectedMarket.end_date)} />
-                  <DetailRow label="Updated" value={formatDate(selectedMarket.updated_at)} />
-                  <DetailRow label="Min tick" value={formatPrice(selectedMarket.min_tick_size)} />
-                  <DetailRow label="Reference" value={formatProbability(selectedMarket.reference_price)} />
-                  <DetailRow label="Status" value={selectedMarket.closed ? 'closed' : selectedMarket.active ? 'active' : 'inactive'} />
-                </article>
-
-                <article className="detail-card">
-                  <p className="eyebrow">Outcome prices</p>
-                  <div className="outcome-list">
-                    {selectedOutcomes.map((entry) => (
-                      <div className="outcome-row" key={entry.label}>
-                        <span>{entry.label}</span>
-                        <strong>{formatProbability(entry.price)}</strong>
-                      </div>
+                  <p className="eyebrow">Deterministic pricing / risk</p>
+                  <DetailRow label="Best bid" value={formatProbability(report.deterministic.best_bid)} />
+                  <DetailRow label="Best ask" value={formatProbability(report.deterministic.best_ask)} />
+                  <DetailRow label="Spread" value={report.deterministic.spread == null ? '--' : formatProbability(report.deterministic.spread)} />
+                  <DetailRow label="Edge" value={formatProbability(report.deterministic.edge)} />
+                  <DetailRow label="Liquidity score" value={formatDecimal(report.deterministic.liquidity_score)} />
+                  <DetailRow label="Risk score" value={formatDecimal(report.deterministic.risk_score)} />
+                  <DetailRow label="Open interest" value={formatDecimal(report.deterministic.open_interest, 0)} />
+                  <DetailRow label="Shares traded" value={formatDecimal(report.deterministic.shares_traded, 0)} />
+                  <div className="pill-list">
+                    {report.deterministic.risk_flags.map((flag) => (
+                      <span className="info-pill" key={flag}>{flag}</span>
                     ))}
                   </div>
                 </article>
-              </section>
 
-              <section className="split-grid">
                 <article className="detail-card">
-                  <p className="eyebrow">Backend account</p>
-                  <DetailRow label="Logged in" value={loginLabel} />
-                  <DetailRow label="Connection" value={connectionLabel} />
-                  <DetailRow label="Trading ready" value={snapshot.account.trading_ready ? 'yes' : 'no'} />
-                  <DetailRow label="Balance" value={formatMoney(snapshot.account.balance_usd)} />
-                  <DetailRow label="Open orders" value={String(snapshot.account.open_orders)} />
-                  <DetailRow label="Positions" value={String(snapshot.account.position_count)} />
-                  <DetailRow label="Key fingerprint" value={snapshot.account.key_id_fingerprint ?? '--'} />
-                </article>
-
-                <article className="detail-card terminal-card">
-                  <p className="eyebrow">Terminal</p>
-                  <p className="terminal-line">{statusText}</p>
-                  <p className="terminal-line muted">{snapshot.account.error ?? 'Account credentials are read only on the backend from .env.'}</p>
-                  {errorMessage ? <p className="terminal-line error">{errorMessage}</p> : null}
+                  <p className="eyebrow">AI synthesis</p>
+                  <DetailRow label="Status" value={report.ai.status} />
+                  <DetailRow label="Verdict" value={report.ai.verdict} />
+                  <DetailRow label="Confidence" value={formatProbability(report.ai.confidence)} />
+                  <DetailRow label="Estimated probability" value={formatProbability(report.ai.estimated_probability)} />
+                  <p className="summary-copy">{report.ai.summary}</p>
+                  <TextBlock label="Thesis" items={report.ai.thesis} />
+                  <TextBlock label="Catalysts" items={report.ai.catalysts} />
+                  <TextBlock label="Risks" items={report.ai.risks} />
                 </article>
               </section>
+
+              <section className="detail-grid">
+                <article className="detail-card">
+                  <p className="eyebrow">External event data</p>
+                  {report.event_context.length === 0 ? (
+                    <p className="muted-copy">No extra event context was available for this market.</p>
+                  ) : (
+                    report.event_context.map((item) => <DetailRow key={`${item.label}-${item.value}`} label={item.label} value={item.value} />)
+                  )}
+                  <DetailRow label="Starts" value={formatDate(report.market.start_date)} />
+                  <DetailRow label="Ends" value={formatDate(report.market.end_date)} />
+                  <DetailRow label="Updated" value={formatDate(report.market.updated_at)} />
+                </article>
+
+                <article className="detail-card">
+                  <p className="eyebrow">Live news API</p>
+                  {report.news.length === 0 ? (
+                    <p className="muted-copy">No live news articles were returned. Configure NEWS_API_KEY to populate this section.</p>
+                  ) : (
+                    <div className="news-list">
+                      {report.news.map((article) => (
+                        <a className="news-card" href={article.url} key={article.url} rel="noreferrer" target="_blank">
+                          <strong>{article.title}</strong>
+                          <span>{article.source} / {formatDate(article.published_at)}</span>
+                          <p>{article.summary || 'Open source article'}</p>
+                        </a>
+                      ))}
+                    </div>
+                  )}
+                </article>
+              </section>
+
+              {settings ? (
+                <section className="detail-card settings-card">
+                  <div className="settings-header">
+                    <div>
+                      <p className="eyebrow">3 / Execution settings</p>
+                      <h3>Adjust rules, then let the model trade</h3>
+                    </div>
+                    <button className="primary-button" disabled={tradeBusy || !account.trading_ready} onClick={handleStartAutomation} type="button">
+                      {tradeBusy ? 'Starting...' : 'Start automation'}
+                    </button>
+                  </div>
+
+                  <div className="settings-grid">
+                    <NumberField label="Entry min" value={settings.entry_price_min} onChange={(value) => updateSetting('entry_price_min', value)} />
+                    <NumberField label="Entry max" value={settings.entry_price_max} onChange={(value) => updateSetting('entry_price_max', value)} />
+                    <NumberField label="Order size" value={settings.order_size} onChange={(value) => updateSetting('order_size', value ?? 0)} />
+                    <NumberField label="Max position" value={settings.max_position} onChange={(value) => updateSetting('max_position', value ?? 0)} />
+                    <NumberField label="Add price" value={settings.add_price} onChange={(value) => updateSetting('add_price', value)} />
+                    <NumberField label="Add size" value={settings.add_order_size} onChange={(value) => updateSetting('add_order_size', value)} />
+                    <NumberField label="Trim price" value={settings.trim_price} onChange={(value) => updateSetting('trim_price', value)} />
+                    <NumberField label="Trim size" value={settings.trim_order_size} onChange={(value) => updateSetting('trim_order_size', value)} />
+                    <NumberField label="Take-profit price" value={settings.take_profit_price} onChange={(value) => updateSetting('take_profit_price', value)} />
+                    <NumberField label="Stop-loss price" value={settings.stop_loss_price} onChange={(value) => updateSetting('stop_loss_price', value)} />
+                    <NumberField label="Edge threshold" value={settings.edge_threshold} onChange={(value) => updateSetting('edge_threshold', value ?? 0)} />
+                    <NumberField label="Exit threshold" value={settings.exit_threshold} onChange={(value) => updateSetting('exit_threshold', value ?? 0)} />
+                  </div>
+
+                  <label className="field-block field-block-wide">
+                    <span>Trading notes</span>
+                    <textarea rows={4} value={settings.author_notes} onChange={(event) => updateSetting('author_notes', event.target.value)} />
+                  </label>
+                </section>
+              ) : null}
             </div>
           ) : (
-            <div className="empty-detail">
-              <p>No market data is available yet. Start the backend and wait for the Polymarket catalog to load.</p>
+            <div className="empty-state">
+              <p>Paste a slug, run analysis, and this panel will show Polymarket data, AI synthesis, live news, deterministic risk logic, and editable automation settings.</p>
             </div>
           )}
         </section>
       </section>
     </main>
   )
-}
-
-function applyTerminalEvent(current: TerminalSnapshot, event: TerminalEvent): TerminalSnapshot {
-  if (event.type === 'snapshot') {
-    return {
-      markets: event.markets,
-      account: event.account,
-    }
-  }
-
-  if (event.type === 'account') {
-    return {
-      ...current,
-      account: event.account,
-    }
-  }
-
-  if (event.type === 'market') {
-    return {
-      ...current,
-      markets: current.markets.map((market) =>
-        market.market === event.market && market.outcome === event.outcome
-          ? {
-              ...market,
-              last_price: event.market_probability,
-              model_probability: event.your_probability,
-              edge: event.edge,
-              position: event.position,
-              monitored: event.session_id !== null,
-              session_id: event.session_id,
-            }
-          : market,
-      ),
-    }
-  }
-
-  return current
 }
 
 function StatusCard({ label, value, tone }: { label: string; value: string; tone: 'positive' | 'negative' | 'neutral' }) {
@@ -457,21 +341,42 @@ function StatusCard({ label, value, tone }: { label: string; value: string; tone
   )
 }
 
-function Metric({ label, value }: { label: string; value: string }) {
-  return (
-    <div className="metric-chip">
-      <span>{label}</span>
-      <strong>{value}</strong>
-    </div>
-  )
-}
-
 function DetailRow({ label, value }: { label: string; value: string }) {
   return (
     <div className="detail-row">
       <span>{label}</span>
       <strong>{value}</strong>
     </div>
+  )
+}
+
+function TextBlock({ label, items }: { label: string; items: string[] }) {
+  if (items.length === 0) {
+    return null
+  }
+  return (
+    <div className="text-block">
+      <span>{label}</span>
+      <ul>
+        {items.map((item) => (
+          <li key={item}>{item}</li>
+        ))}
+      </ul>
+    </div>
+  )
+}
+
+function NumberField({ label, value, onChange }: { label: string; value: number | null | undefined; onChange: (value: number | null) => void }) {
+  return (
+    <label className="field-block">
+      <span>{label}</span>
+      <input
+        type="number"
+        step="0.01"
+        value={value ?? ''}
+        onChange={(event) => onChange(event.target.value === '' ? null : Number(event.target.value))}
+      />
+    </label>
   )
 }
 

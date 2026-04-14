@@ -92,6 +92,14 @@ class MonitorSettings(BaseModel):
     max_position: float = Field(default=3.0, gt=0.0)
     take_profit: float = Field(default=0.08, ge=0.0, le=1.0)
     stop_loss: float = Field(default=0.04, ge=0.0, le=1.0)
+    entry_price_min: Optional[float] = Field(default=None, ge=0.0, le=1.0)
+    entry_price_max: Optional[float] = Field(default=None, ge=0.0, le=1.0)
+    add_price: Optional[float] = Field(default=None, ge=0.0, le=1.0)
+    add_order_size: Optional[float] = Field(default=None, gt=0.0)
+    trim_price: Optional[float] = Field(default=None, ge=0.0, le=1.0)
+    trim_order_size: Optional[float] = Field(default=None, gt=0.0)
+    take_profit_price: Optional[float] = Field(default=None, ge=0.0, le=1.0)
+    stop_loss_price: Optional[float] = Field(default=None, ge=0.0, le=1.0)
     author_notes: str = "Deterministic edge-based monitoring."
 
 
@@ -125,3 +133,60 @@ class PolymarketAccountSnapshot(BaseModel):
     position_count: int = 0
     error: Optional[str] = None
     updated_at: datetime = Field(default_factory=datetime.utcnow)
+
+
+class AnalyzeMarketRequest(BaseModel):
+    slug: str = Field(min_length=1)
+    notes: Optional[str] = None
+
+
+class NewsArticle(BaseModel):
+    title: str
+    source: str
+    url: str
+    published_at: Optional[str] = None
+    summary: Optional[str] = None
+
+
+class EventContext(BaseModel):
+    label: str
+    value: str
+
+
+class DeterministicAnalysis(BaseModel):
+    market_probability: float = Field(ge=0.0, le=1.0)
+    fair_probability: float = Field(ge=0.0, le=1.0)
+    edge: float
+    best_bid: Optional[float] = Field(default=None, ge=0.0, le=1.0)
+    best_ask: Optional[float] = Field(default=None, ge=0.0, le=1.0)
+    spread: Optional[float] = Field(default=None, ge=0.0, le=1.0)
+    spread_bps: Optional[float] = None
+    last_trade_price: Optional[float] = Field(default=None, ge=0.0, le=1.0)
+    open_interest: Optional[float] = None
+    shares_traded: Optional[float] = None
+    bid_depth: Optional[float] = None
+    ask_depth: Optional[float] = None
+    liquidity_score: float = Field(ge=0.0, le=1.0)
+    risk_score: float = Field(ge=0.0, le=1.0)
+    risk_flags: list[str] = Field(default_factory=list)
+
+
+class AITradeAnalysis(BaseModel):
+    status: Literal["available", "fallback", "unavailable"] = "fallback"
+    verdict: Literal["buy", "watch", "avoid"] = "watch"
+    confidence: float = Field(default=0.5, ge=0.0, le=1.0)
+    estimated_probability: Optional[float] = Field(default=None, ge=0.0, le=1.0)
+    summary: str = ""
+    thesis: list[str] = Field(default_factory=list)
+    catalysts: list[str] = Field(default_factory=list)
+    risks: list[str] = Field(default_factory=list)
+
+
+class MarketAnalysisResponse(BaseModel):
+    market: MarketDescriptor
+    event_context: list[EventContext] = Field(default_factory=list)
+    news: list[NewsArticle] = Field(default_factory=list)
+    deterministic: DeterministicAnalysis
+    ai: AITradeAnalysis
+    recommended_settings: MonitorSettings
+    trading_ready: bool = False

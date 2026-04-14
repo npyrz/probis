@@ -274,6 +274,38 @@ class PolymarketClient:
                     markets.append(descriptor)
         return markets
 
+    async def fetch_market_snapshot(self, *, slug: str) -> tuple[dict[str, Any], MarketDescriptor, dict[str, Any], dict[str, Any]]:
+        from polymarket_us import PolymarketUS
+
+        client = PolymarketUS()
+        try:
+            market_response, bbo_response, book_response, sports_resp, series_resp = await asyncio.gather(
+                asyncio.to_thread(client.markets.retrieve_by_slug, slug),
+                asyncio.to_thread(client.markets.bbo, slug),
+                asyncio.to_thread(client.markets.book, slug),
+                asyncio.to_thread(client.sports.list),
+                asyncio.to_thread(client.series.list, {"limit": 250}),
+            )
+        finally:
+            client.close()
+
+        payload = market_response.get("market") if isinstance(market_response, dict) else None
+        if not isinstance(payload, dict):
+            raise RuntimeError(f"market slug not found: {slug}")
+
+        sport_labels = _build_sport_labels(sports_resp, series_resp)
+        descriptor = self._market_descriptor_from_payload(payload, sport_labels=sport_labels)
+        if descriptor is None:
+            raise RuntimeError(f"could not normalize market slug: {slug}")
+
+        bbo_market = bbo_response.get("marketData") if isinstance(bbo_response, dict) else {}
+        descriptor.best_bid = _safe_float(((bbo_market.get("bestBid") or {}).get("value") if isinstance(bbo_market.get("bestBid"), dict) else bbo_market.get("bestBid")))
+        descriptor.best_ask = _safe_float(((bbo_market.get("bestAsk") or {}).get("value") if isinstance(bbo_market.get("bestAsk"), dict) else bbo_market.get("bestAsk")))
+        descriptor.last_trade_price = _safe_float(((bbo_market.get("lastTradePx") or {}).get("value") if isinstance(bbo_market.get("lastTradePx"), dict) else bbo_market.get("lastTradePx")))
+        descriptor.reference_price = _mid_price(descriptor.best_bid, descriptor.best_ask, descriptor.last_trade_price) or descriptor.reference_price
+
+        return market_response, descriptor, book_response if isinstance(book_response, dict) else {}, bbo_response if isinstance(bbo_response, dict) else {}
+
     def _market_descriptor_from_payload(self, item: dict[str, Any], *, sport_labels: dict[str, str]) -> Optional[MarketDescriptor]:
         slug = item.get("slug") or item.get("marketSlug")
         if not slug:
