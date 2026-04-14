@@ -145,6 +145,41 @@ textarea {
   margin-top: 18px;
 }
 
+.account-ribbon {
+  display: grid;
+  grid-template-columns: minmax(260px, 0.9fr) minmax(0, 1.4fr) minmax(220px, 0.7fr);
+  gap: 18px;
+  align-items: center;
+  margin-top: 18px;
+  padding: 20px 24px;
+  border: 1px solid var(--line);
+  border-radius: 24px;
+  background: linear-gradient(180deg, rgba(10, 23, 35, 0.92), rgba(5, 13, 20, 0.98));
+  box-shadow: var(--shadow);
+}
+
+.account-ribbon-copy strong {
+  display: block;
+  font-size: 1.1rem;
+}
+
+.account-ribbon-subtitle {
+  margin: 10px 0 0;
+  color: var(--muted);
+}
+
+.account-ribbon-metrics {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 12px;
+}
+
+.account-ribbon-actions {
+  display: grid;
+  gap: 10px;
+  justify-items: start;
+}
+
 .panel {
   border-radius: 24px;
   border: 1px solid var(--line);
@@ -441,6 +476,10 @@ textarea {
     width: 100%;
     grid-template-columns: repeat(3, minmax(0, 1fr));
   }
+
+  .account-ribbon {
+    grid-template-columns: 1fr;
+  }
 }
 
 @media (max-width: 760px) {
@@ -456,13 +495,15 @@ textarea {
 
   .focus-metrics,
   .form-grid,
-  .hero-meta {
+  .hero-meta,
+  .account-ribbon-metrics {
     grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 
   .market-stats-row,
   .session-card-meta,
-  .action-bar {
+  .action-bar,
+  .account-ribbon-actions {
     flex-direction: column;
   }
 }

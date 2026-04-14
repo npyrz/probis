@@ -30,6 +30,7 @@ class MarketState:
     fills: list[dict[str, Any]] = field(default_factory=list)
     logs: list[dict[str, Any]] = field(default_factory=list)
     market_catalog: list[dict[str, Any]] = field(default_factory=list)
+    account: dict[str, Any] = field(default_factory=dict)
 
     # Broadcast queue for API websocket updates
     updates: asyncio.Queue[dict[str, Any]] = field(default_factory=lambda: asyncio.Queue(maxsize=10_000))

@@ -100,6 +100,7 @@ Current live inputs:
 
 - Polymarket Gamma API for market discovery.
 - Polymarket public market websocket for best bid, best ask, and trade-driven price updates.
+- Optional authenticated Polymarket CLOB account refresh for server-side wallet status, balance, allowance, and open-order visibility.
 
 Current optional input:
 
@@ -131,7 +132,14 @@ Current optional input:
 ### Still Simulated
 
 - Trade execution and fills are still simulated locally.
-- Account connectivity and signed Polymarket order flow are not yet enabled.
+- Signed Polymarket order placement is not yet enabled.
+
+### Account Connection
+
+- The backend now exposes a server-side Polymarket account status path at the terminal level.
+- Account refresh uses the authenticated CLOB flow: signer key, funder/signature type, and API credentials derived or loaded on the backend.
+- The frontend never receives private keys; it only triggers a backend refresh and renders the resulting status snapshot.
+- The official `py-clob-client` currently requires Python `3.9.10+`, so authenticated account refresh will stay unavailable on older interpreters even though the rest of the app still runs.
 
 ## Roadmap / Upcoming Features
 
@@ -140,8 +148,8 @@ Current optional input:
 #### Polymarket Account Integration
 
 - Securely connect a Polymarket account.
+- Surface account state, balances, allowances, and open orders inside the terminal.
 - Support authenticated trading flows.
-- Surface account state, balances, and positions inside the terminal.
 
 #### Automated Trade Execution
 

@@ -40,6 +40,17 @@ export async function abortMonitoring(sessionId: string) {
   return response.json()
 }
 
+export async function refreshPolymarketAccount() {
+  const response = await fetch(`${API_BASE_URL}/polymarket/account/refresh`, {
+    method: 'POST',
+  })
+  if (!response.ok) {
+    const errorText = await response.text()
+    throw new Error(errorText || 'failed to refresh polymarket account')
+  }
+  return response.json()
+}
+
 export function createTerminalSocket() {
   const url = new URL(getApiBaseUrl())
   url.protocol = url.protocol === 'https:' ? 'wss:' : 'ws:'

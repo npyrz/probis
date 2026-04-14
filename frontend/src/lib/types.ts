@@ -45,6 +45,26 @@ export type MonitorSession = {
   last_price: number | null
 }
 
+export type PolymarketAccount = {
+  status: 'disconnected' | 'unsupported' | 'connected' | 'error'
+  configured: boolean
+  trading_ready: boolean
+  address: string | null
+  funder_address: string | null
+  signature_type: number | null
+  signature_type_label: string | null
+  chain_id: number | null
+  host: string | null
+  api_key_present: boolean
+  api_key_fingerprint: string | null
+  collateral_balance: string | null
+  collateral_allowance: string | null
+  open_orders: number
+  closed_only_mode: boolean | null
+  error: string | null
+  updated_at: string
+}
+
 export type Fill = {
   type?: 'fill'
   ts: string
@@ -74,6 +94,7 @@ export type TerminalSnapshot = {
   fills: Fill[]
   logs: LogEntry[]
   positions: Record<string, number>
+  account: PolymarketAccount
 }
 
 export type TerminalEvent =
@@ -81,4 +102,5 @@ export type TerminalEvent =
   | ({ type: 'market'; market: string; outcome: string; market_probability: number; your_probability: number; edge: number; should_trade: boolean; position: number; session_id: string | null; ts: string })
   | ({ type: 'fill' } & Fill)
   | ({ type: 'log' } & LogEntry)
+  | { type: 'account'; account: PolymarketAccount }
   | { type: 'session'; action: 'started' | 'aborted'; session: MonitorSession }

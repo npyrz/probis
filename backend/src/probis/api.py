@@ -48,6 +48,14 @@ def create_app(*, state: MarketState, controller: MonitorController) -> FastAPI:
     async def get_terminal() -> dict:
         return controller.snapshot_terminal()
 
+    @app.get("/polymarket/account")
+    async def get_polymarket_account() -> dict:
+        return {"account": controller.account_snapshot()}
+
+    @app.post("/polymarket/account/refresh")
+    async def refresh_polymarket_account() -> dict:
+        return {"account": await controller.refresh_polymarket_account()}
+
     @app.get("/monitor-sessions")
     async def get_sessions() -> dict:
         return {"sessions": list(state.sessions.values())}

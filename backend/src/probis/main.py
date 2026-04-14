@@ -12,6 +12,7 @@ from .bus import EventBus, InMemoryBus
 from .config import settings
 from .controller import MonitorController
 from .logging import configure_logging
+from .services.polymarket_account import PolymarketAccountService
 from .services.polymarket import PolymarketClient, PolymarketMarketStream, catalog_refresh_worker
 from .state import MarketState
 from .workers import execution_worker, processing_worker, llm_worker
@@ -37,7 +38,8 @@ async def _run() -> None:
 
     state = MarketState()
     bus = await _connect_bus()
-    controller = MonitorController(state=state, bus=bus)
+    account_service = PolymarketAccountService()
+    controller = MonitorController(state=state, bus=bus, account_service=account_service)
     polymarket_client = PolymarketClient()
 
     try:
@@ -47,6 +49,9 @@ async def _run() -> None:
     except Exception:
         log.exception("Failed to load initial Polymarket catalog")
         await controller.emit_log(level="WARN", message="Failed to load initial Polymarket catalog")
+
+    if settings.polymarket_private_key:
+        await controller.refresh_polymarket_account()
 
     app = create_app(state=state, controller=controller)
 

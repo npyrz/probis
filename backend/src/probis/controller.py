@@ -1,23 +1,29 @@
 from __future__ import annotations
 
+import asyncio
 import uuid
 from datetime import datetime
 from typing import Optional
 from typing import Union
 
 from .bus import EventBus, InMemoryBus
-from .models import MarketDescriptor, MonitorSession, StartMonitorRequest
+from .models import MarketDescriptor, MonitorSession, PolymarketAccountSnapshot, StartMonitorRequest
 from .state import MarketState
 
 
 class MonitorController:
-    def __init__(self, *, state: MarketState, bus: Union[EventBus, InMemoryBus]):
+    def __init__(self, *, state: MarketState, bus: Union[EventBus, InMemoryBus], account_service: Optional[object] = None):
         self.state = state
         self.bus = bus
+        self.account_service = account_service
         self._catalog: list[MarketDescriptor] = []
         self._markets_by_name: dict[str, MarketDescriptor] = {}
         self._asset_to_market: dict[str, str] = {}
         self._catalog_version = 0
+
+        if self.account_service is not None and hasattr(self.account_service, "current"):
+            snapshot = self.account_service.current()
+            self.state.account = snapshot.model_dump(mode="json") if isinstance(snapshot, PolymarketAccountSnapshot) else {}
 
     def list_markets(self) -> list[dict]:
         markets: list[dict] = []
@@ -44,7 +50,28 @@ class MonitorController:
             "fills": self.state.fills,
             "logs": self.state.logs,
             "positions": {f"{m}:{o}": s for (m, o), s in self.state.positions.items()},
+            "account": self.account_snapshot(),
         }
+
+    def account_snapshot(self) -> dict:
+        return self.state.account
+
+    async def refresh_polymarket_account(self) -> dict:
+        if self.account_service is None or not hasattr(self.account_service, "refresh"):
+            return self.state.account
+
+        snapshot = await asyncio.to_thread(self.account_service.refresh)
+        payload = snapshot.model_dump(mode="json") if isinstance(snapshot, PolymarketAccountSnapshot) else {}
+        self.state.account = payload
+        self.state.push_update({"type": "account", "account": payload})
+
+        status = payload.get("status")
+        if status == "connected":
+            await self.emit_log(level="INFO", message="Polymarket account connection refreshed")
+        elif payload.get("error"):
+            await self.emit_log(level="WARN", message=f"Polymarket account connection failed: {payload['error']}")
+
+        return payload
 
     async def emit_log(self, *, level: str, message: str, session_id: Optional[str] = None) -> None:
         payload = {

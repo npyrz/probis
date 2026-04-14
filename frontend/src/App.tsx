@@ -1,6 +1,6 @@
 import { startTransition, useEffect, useState } from 'react'
-import { abortMonitoring, createTerminalSocket, fetchTerminalSnapshot, startMonitoring } from './lib/api'
-import type { MonitorSession, MonitorSettings, TerminalEvent, TerminalSnapshot } from './lib/types'
+import { abortMonitoring, createTerminalSocket, fetchTerminalSnapshot, refreshPolymarketAccount, startMonitoring } from './lib/api'
+import type { MonitorSession, MonitorSettings, PolymarketAccount, TerminalEvent, TerminalSnapshot } from './lib/types'
 
 const defaultSettings: MonitorSettings = {
   edge_threshold: 0.05,
@@ -18,6 +18,25 @@ const emptySnapshot: TerminalSnapshot = {
   fills: [],
   logs: [],
   positions: {},
+  account: {
+    status: 'disconnected',
+    configured: false,
+    trading_ready: false,
+    address: null,
+    funder_address: null,
+    signature_type: null,
+    signature_type_label: null,
+    chain_id: null,
+    host: null,
+    api_key_present: false,
+    api_key_fingerprint: null,
+    collateral_balance: null,
+    collateral_allowance: null,
+    open_orders: 0,
+    closed_only_mode: null,
+    error: null,
+    updated_at: new Date(0).toISOString(),
+  },
 }
 
 function formatProbability(value: number | null | undefined) {
@@ -49,6 +68,16 @@ function compactLabel(value: string | null | undefined) {
   return value.length > 22 ? `${value.slice(0, 22)}…` : value
 }
 
+function formatNullable(value: string | number | boolean | null | undefined) {
+  if (value == null || value === '') {
+    return '--'
+  }
+  if (typeof value === 'boolean') {
+    return value ? 'yes' : 'no'
+  }
+  return String(value)
+}
+
 function mergeSession(sessions: MonitorSession[], next: MonitorSession) {
   const existing = sessions.filter((session) => session.session_id !== next.session_id)
   return [next, ...existing].sort((left, right) => right.started_at.localeCompare(left.started_at))
@@ -62,6 +91,7 @@ function App() {
   const [operatorStatus, setOperatorStatus] = useState<string>('Booting terminal...')
   const [errorMessage, setErrorMessage] = useState<string>('')
   const [busy, setBusy] = useState<boolean>(false)
+  const [accountBusy, setAccountBusy] = useState<boolean>(false)
 
   useEffect(() => {
     let alive = true
@@ -124,6 +154,7 @@ function App() {
   }, [selectedMarketId, snapshot.markets])
 
   const selectedMarket = snapshot.markets.find((market) => market.market === selectedMarketId) ?? snapshot.markets[0] ?? null
+  const account = snapshot.account
 
   const selectedSession = !selectedMarket?.session_id
     ? null
@@ -181,6 +212,20 @@ function App() {
     }
   }
 
+  async function handleRefreshAccount() {
+    setAccountBusy(true)
+    setErrorMessage('')
+    try {
+      const response = await refreshPolymarketAccount()
+      setSnapshot((current) => ({ ...current, account: response.account }))
+      setOperatorStatus(`Polymarket account status: ${response.account.status}.`)
+    } catch (error) {
+      setErrorMessage(error instanceof Error ? error.message : 'Failed to refresh Polymarket account')
+    } finally {
+      setAccountBusy(false)
+    }
+  }
+
   return (
     <main className="shell">
       <section className="hero-bar">
@@ -193,8 +238,33 @@ function App() {
         </div>
         <div className="hero-meta">
           <StatusPill label="Feed" value={connectionState} />
+          <StatusPill label="Account" value={account.status} />
           <StatusPill label="Mode" value="live polymarket" />
           <StatusPill label="Engine" value="deterministic" />
+        </div>
+      </section>
+
+      <section className="account-ribbon">
+        <div className="account-ribbon-copy">
+          <p className="hero-kicker">POLYMARKET ACCOUNT</p>
+          <strong>{account.address ?? 'Server-side account not configured'}</strong>
+          <p className="account-ribbon-subtitle">
+            {account.error ?? 'Authenticated CLOB status is managed entirely by the backend.'}
+          </p>
+        </div>
+        <div className="account-ribbon-metrics">
+          <MetricCard label="Status" value={account.status} tone={account.status === 'connected' ? 'positive' : account.status === 'error' ? 'negative' : 'neutral'} />
+          <MetricCard label="Trading" value={account.trading_ready ? 'ready' : 'not ready'} tone={account.trading_ready ? 'positive' : 'negative'} />
+          <MetricCard label="USDC Bal" value={formatNullable(account.collateral_balance)} />
+          <MetricCard label="Allowance" value={formatNullable(account.collateral_allowance)} />
+          <MetricCard label="Orders" value={String(account.open_orders)} />
+          <MetricCard label="API Key" value={account.api_key_fingerprint ?? (account.api_key_present ? 'loaded' : '--')} />
+        </div>
+        <div className="account-ribbon-actions">
+          <button className="action-primary" disabled={accountBusy} onClick={handleRefreshAccount} type="button">
+            Refresh Account
+          </button>
+          <p className="operator-status">Updated {formatTimestamp(account.updated_at)}</p>
         </div>
       </section>
 
@@ -383,6 +453,14 @@ function applyTerminalEvent(current: TerminalSnapshot, event: TerminalEvent): Te
       fills: event.fills,
       logs: event.logs,
       positions: event.positions,
+      account: event.account,
+    }
+  }
+
+  if (event.type === 'account') {
+    return {
+      ...current,
+      account: event.account,
     }
   }
 

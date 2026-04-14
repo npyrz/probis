@@ -102,3 +102,23 @@ class MonitorSession(BaseModel):
     reason: Optional[str] = None
     last_action: str = "Monitoring"
     last_price: Optional[float] = None
+
+
+class PolymarketAccountSnapshot(BaseModel):
+    status: Literal["disconnected", "unsupported", "connected", "error"] = "disconnected"
+    configured: bool = False
+    trading_ready: bool = False
+    address: Optional[str] = None
+    funder_address: Optional[str] = None
+    signature_type: Optional[int] = None
+    signature_type_label: Optional[str] = None
+    chain_id: Optional[int] = None
+    host: Optional[str] = None
+    api_key_present: bool = False
+    api_key_fingerprint: Optional[str] = None
+    collateral_balance: Optional[str] = None
+    collateral_allowance: Optional[str] = None
+    open_orders: int = 0
+    closed_only_mode: Optional[bool] = None
+    error: Optional[str] = None
+    updated_at: datetime = Field(default_factory=datetime.utcnow)
