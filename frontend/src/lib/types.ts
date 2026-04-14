@@ -46,21 +46,13 @@ export type MonitorSession = {
 }
 
 export type PolymarketAccount = {
-  status: 'disconnected' | 'unsupported' | 'connected' | 'error'
+  status: 'disconnected' | 'connected' | 'error'
   configured: boolean
   trading_ready: boolean
-  address: string | null
-  funder_address: string | null
-  signature_type: number | null
-  signature_type_label: string | null
-  chain_id: number | null
-  host: string | null
-  api_key_present: boolean
-  api_key_fingerprint: string | null
-  collateral_balance: string | null
-  collateral_allowance: string | null
+  key_id_fingerprint: string | null
+  balance_usd: string | null
   open_orders: number
-  closed_only_mode: boolean | null
+  position_count: number
   error: string | null
   updated_at: string
 }

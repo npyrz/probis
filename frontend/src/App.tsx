@@ -22,18 +22,10 @@ const emptySnapshot: TerminalSnapshot = {
     status: 'disconnected',
     configured: false,
     trading_ready: false,
-    address: null,
-    funder_address: null,
-    signature_type: null,
-    signature_type_label: null,
-    chain_id: null,
-    host: null,
-    api_key_present: false,
-    api_key_fingerprint: null,
-    collateral_balance: null,
-    collateral_allowance: null,
+    key_id_fingerprint: null,
+    balance_usd: null,
     open_orders: 0,
-    closed_only_mode: null,
+    position_count: 0,
     error: null,
     updated_at: new Date(0).toISOString(),
   },
@@ -76,6 +68,17 @@ function formatNullable(value: string | number | boolean | null | undefined) {
     return value ? 'yes' : 'no'
   }
   return String(value)
+}
+
+function formatMoney(value: string | number | null | undefined) {
+  if (value == null || value === '') {
+    return '--'
+  }
+  const numeric = Number(value)
+  if (Number.isNaN(numeric)) {
+    return String(value)
+  }
+  return `$${numeric.toFixed(2)}`
 }
 
 function mergeSession(sessions: MonitorSession[], next: MonitorSession) {
@@ -174,6 +177,10 @@ function App() {
     .sort((left, right) => right.ts.localeCompare(left.ts))
     .slice(0, 14)
 
+  const orderHistory = snapshot.fills.slice(0, 14)
+  const activeSessions = snapshot.sessions.filter((session) => session.status === 'running')
+  const inactiveSessions = snapshot.sessions.filter((session) => session.status !== 'running').slice(0, 8)
+
   async function handleStartMonitoring() {
     if (!selectedMarket) {
       return
@@ -228,50 +235,23 @@ function App() {
 
   return (
     <main className="shell">
-      <section className="hero-bar">
-        <div>
+      <section className="hero-bar compact">
+        <div className="hero-title-block">
           <p className="hero-kicker">PROBIS / OPERATOR TERMINAL</p>
-          <h1>Prediction Market Command Deck</h1>
-          <p className="hero-copy">
-            Deterministic execution, event-driven monitoring, and author-controlled thresholds.
-          </p>
+          <h1>Market Desk</h1>
         </div>
-        <div className="hero-meta">
+        <div className="hero-meta hero-meta-compact">
           <StatusPill label="Feed" value={connectionState} />
           <StatusPill label="Account" value={account.status} />
-          <StatusPill label="Mode" value="live polymarket" />
+          <StatusPill label="Trading" value={account.trading_ready ? 'ready' : 'blocked'} />
           <StatusPill label="Engine" value="deterministic" />
-        </div>
-      </section>
-
-      <section className="account-ribbon">
-        <div className="account-ribbon-copy">
-          <p className="hero-kicker">POLYMARKET ACCOUNT</p>
-          <strong>{account.address ?? 'Server-side account not configured'}</strong>
-          <p className="account-ribbon-subtitle">
-            {account.error ?? 'Authenticated CLOB status is managed entirely by the backend.'}
-          </p>
-        </div>
-        <div className="account-ribbon-metrics">
-          <MetricCard label="Status" value={account.status} tone={account.status === 'connected' ? 'positive' : account.status === 'error' ? 'negative' : 'neutral'} />
-          <MetricCard label="Trading" value={account.trading_ready ? 'ready' : 'not ready'} tone={account.trading_ready ? 'positive' : 'negative'} />
-          <MetricCard label="USDC Bal" value={formatNullable(account.collateral_balance)} />
-          <MetricCard label="Allowance" value={formatNullable(account.collateral_allowance)} />
-          <MetricCard label="Orders" value={String(account.open_orders)} />
-          <MetricCard label="API Key" value={account.api_key_fingerprint ?? (account.api_key_present ? 'loaded' : '--')} />
-        </div>
-        <div className="account-ribbon-actions">
-          <button className="action-primary" disabled={accountBusy} onClick={handleRefreshAccount} type="button">
-            Refresh Account
-          </button>
-          <p className="operator-status">Updated {formatTimestamp(account.updated_at)}</p>
         </div>
       </section>
 
       <section className="layout-grid">
         <section className="panel panel-markets">
           <div className="panel-header">
-            <h2>Market Scope</h2>
+            <h2>Markets</h2>
             <span>{snapshot.markets.length} instruments</span>
           </div>
           <div className="market-list">
@@ -290,7 +270,7 @@ function App() {
                       {market.monitored ? 'LIVE' : 'IDLE'}
                     </span>
                   </div>
-                  <strong>{market.title}</strong>
+                  <strong>{compactLabel(market.title)}</strong>
                   <div className="market-stats-row">
                     <span>PX {formatProbability(market.last_price)}</span>
                     <span>BID {formatProbability(market.best_bid)}</span>
@@ -310,12 +290,12 @@ function App() {
 
         <section className="panel panel-focus">
           <div className="panel-header">
-            <h2>Session Control</h2>
+            <h2>Control</h2>
             <span>{selectedSession?.status ?? 'ready'}</span>
           </div>
           {selectedMarket ? (
             <>
-              <div className="focus-card">
+              <div className="focus-card focus-card-tight">
                 <div>
                   <p className="focus-label">Selected Market</p>
                   <h3>{selectedMarket.title}</h3>
@@ -397,25 +377,48 @@ function App() {
           )}
         </section>
 
+        <section className="panel panel-account">
+          <div className="panel-header">
+            <h2>Account</h2>
+            <span>updated {formatTimestamp(account.updated_at)}</span>
+          </div>
+          <div className="account-panel-body">
+            <div className="account-grid">
+              <MetricCard label="Status" value={account.status} tone={account.status === 'connected' ? 'positive' : account.status === 'error' ? 'negative' : 'neutral'} />
+              <MetricCard label="Trading" value={account.trading_ready ? 'ready' : 'blocked'} tone={account.trading_ready ? 'positive' : 'negative'} />
+              <MetricCard label="Balance" value={formatMoney(account.balance_usd)} />
+              <MetricCard label="Open Orders" value={String(account.open_orders)} />
+              <MetricCard label="Positions" value={String(account.position_count)} />
+              <MetricCard label="Key ID" value={account.key_id_fingerprint ?? '--'} />
+            </div>
+            <div className="account-actions-row">
+              <button className="action-primary" disabled={accountBusy} onClick={handleRefreshAccount} type="button">
+                Refresh Account
+              </button>
+              <p className="operator-status">{account.error ?? 'Account data is fetched server-side through the Polymarket US SDK.'}</p>
+            </div>
+          </div>
+        </section>
+
         <section className="panel panel-sessions">
           <div className="panel-header">
-            <h2>Live Sessions</h2>
+            <h2>Sessions</h2>
             <span>{snapshot.sessions.length} tracked</span>
           </div>
-          <div className="session-list">
+          <div className="session-list compact-list">
             {snapshot.sessions.length === 0 ? (
-              <p className="empty-state">No active sessions. Select a market and engage monitoring.</p>
+              <p className="empty-state">No sessions yet.</p>
             ) : (
-              snapshot.sessions.map((session) => (
+              [...activeSessions, ...inactiveSessions].map((session) => (
                 <article className="session-card" key={session.session_id}>
                   <div className="session-card-top">
-                    <strong>{session.title}</strong>
+                    <strong>{compactLabel(session.title)}</strong>
                     <span className={`market-flag ${session.status === 'running' ? 'live' : ''}`}>{session.status}</span>
                   </div>
                   <p>{session.last_action}</p>
                   <div className="session-card-meta">
-                    <span>Started {formatTimestamp(session.started_at)}</span>
-                    <span>Last Px {session.last_price == null ? '--' : session.last_price.toFixed(3)}</span>
+                    <span>{formatTimestamp(session.started_at)}</span>
+                    <span>{session.last_price == null ? '--' : session.last_price.toFixed(3)}</span>
                   </div>
                 </article>
               ))
@@ -423,9 +426,46 @@ function App() {
           </div>
         </section>
 
+        <section className="panel panel-orders">
+          <div className="panel-header">
+            <h2>Order History</h2>
+            <span>{orderHistory.length} recent fills</span>
+          </div>
+          <div className="orders-table-wrap">
+            {orderHistory.length === 0 ? (
+              <p className="empty-state">No orders filled yet.</p>
+            ) : (
+              <table className="orders-table">
+                <thead>
+                  <tr>
+                    <th>Time</th>
+                    <th>Side</th>
+                    <th>Market</th>
+                    <th>Qty</th>
+                    <th>Price</th>
+                    <th>Reason</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {orderHistory.map((fill) => (
+                    <tr key={fill.order_id}>
+                      <td>{formatTimestamp(fill.ts)}</td>
+                      <td className={fill.side === 'buy' ? 'tone-positive' : 'tone-negative'}>{fill.side.toUpperCase()}</td>
+                      <td>{compactLabel(fill.market)}</td>
+                      <td>{fill.size.toFixed(2)}</td>
+                      <td>{fill.price.toFixed(3)}</td>
+                      <td>{fill.reason}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            )}
+          </div>
+        </section>
+
         <section className="panel panel-activity">
           <div className="panel-header">
-            <h2>Operator Tape</h2>
+            <h2>Tape</h2>
             <span>fills + logs</span>
           </div>
           <div className="tape-list">
