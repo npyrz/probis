@@ -55,6 +55,13 @@ function normalizeSearch(value: string) {
   return value.trim().toLowerCase()
 }
 
+function titleCase(value: string) {
+  if (!value) {
+    return value
+  }
+  return value.charAt(0).toUpperCase() + value.slice(1)
+}
+
 function getLoginLabel(account: PolymarketAccount) {
   if (account.configured) {
     return 'logged in via .env'
@@ -86,6 +93,8 @@ function outcomeEntries(market: Market) {
 function App() {
   const [snapshot, setSnapshot] = useState<TerminalSnapshot>(emptySnapshot)
   const [search, setSearch] = useState('')
+  const [selectedCategory, setSelectedCategory] = useState('all')
+  const [selectedType, setSelectedType] = useState('all')
   const [selectedMarketId, setSelectedMarketId] = useState('')
   const [statusText, setStatusText] = useState('Loading Polymarket markets...')
   const [errorMessage, setErrorMessage] = useState('')
@@ -148,8 +157,21 @@ function App() {
   }, [])
 
   const query = normalizeSearch(search)
+  const categoryOptions = useMemo(() => {
+    return Array.from(new Set(snapshot.markets.map((market) => String(market.category || '').toLowerCase()).filter(Boolean))).sort()
+  }, [snapshot.markets])
+
+  const typeOptions = useMemo(() => {
+    return Array.from(new Set(snapshot.markets.map((market) => market.market_type?.trim()).filter(Boolean) as string[])).sort((left, right) => left.localeCompare(right))
+  }, [snapshot.markets])
+
   const filteredMarkets = useMemo(() => {
     return snapshot.markets.filter((market) => {
+      const categoryMatch = selectedCategory === 'all' || String(market.category || '').toLowerCase() === selectedCategory
+      const typeMatch = selectedType === 'all' || (market.market_type ?? '') === selectedType
+      if (!categoryMatch || !typeMatch) {
+        return false
+      }
       if (!query) {
         return true
       }
@@ -167,7 +189,7 @@ function App() {
         .toLowerCase()
       return haystack.includes(query)
     })
-  }, [snapshot.markets, query])
+  }, [snapshot.markets, query, selectedCategory, selectedType])
 
   useEffect(() => {
     const candidate = filteredMarkets[0]?.market ?? snapshot.markets[0]?.market ?? ''
@@ -235,6 +257,46 @@ function App() {
               placeholder="Search market, category, slug, or outcome"
             />
           </label>
+
+          <div className="filter-stack">
+            <div className="chip-group">
+              <span className="chip-group-label">Categories</span>
+              <div className="chip-row">
+                <button className={`filter-chip ${selectedCategory === 'all' ? 'active' : ''}`} onClick={() => setSelectedCategory('all')} type="button">
+                  All
+                </button>
+                {categoryOptions.map((category) => (
+                  <button
+                    className={`filter-chip ${selectedCategory === category ? 'active' : ''}`}
+                    key={category}
+                    onClick={() => setSelectedCategory(category)}
+                    type="button"
+                  >
+                    {titleCase(category)}
+                  </button>
+                ))}
+              </div>
+            </div>
+
+            <div className="chip-group">
+              <span className="chip-group-label">Sports / Types</span>
+              <div className="chip-row">
+                <button className={`filter-chip ${selectedType === 'all' ? 'active' : ''}`} onClick={() => setSelectedType('all')} type="button">
+                  All
+                </button>
+                {typeOptions.map((type) => (
+                  <button
+                    className={`filter-chip ${selectedType === type ? 'active' : ''}`}
+                    key={type}
+                    onClick={() => setSelectedType(type)}
+                    type="button"
+                  >
+                    {type}
+                  </button>
+                ))}
+              </div>
+            </div>
+          </div>
 
           <div className="market-list">
             {filteredMarkets.map((market) => {

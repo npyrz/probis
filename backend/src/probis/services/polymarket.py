@@ -157,6 +157,30 @@ def _diversify_sports_markets(markets: list[dict[str, Any]], *, sport_labels: di
     return diversified
 
 
+def _interleave_market_groups(groups: list[list[dict[str, Any]]], *, limit: int) -> list[dict[str, Any]]:
+    merged: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    index = 0
+    while len(merged) < limit:
+        added = False
+        for group in groups:
+            if index >= len(group):
+                continue
+            item = group[index]
+            slug = str(item.get("slug") or item.get("marketSlug") or "")
+            if not slug or slug in seen:
+                continue
+            seen.add(slug)
+            merged.append(item)
+            added = True
+            if len(merged) >= limit:
+                break
+        if not added:
+            break
+        index += 1
+    return merged
+
+
 def _parse_outcome_strings(value: Any) -> list[str]:
     if isinstance(value, list):
         return [str(item) for item in value if item not in (None, "")]
@@ -186,11 +210,12 @@ class PolymarketClient:
 
         client = PolymarketUS()
         try:
+            discovery_limit = max(limit, 500)
             market_response, sports_resp, series_resp = await asyncio.gather(
                 asyncio.to_thread(
                     client.markets.list,
                     {
-                        "limit": max(limit, 100),
+                        "limit": discovery_limit,
                         "closed": False,
                         "includeHidden": False,
                     },
@@ -214,7 +239,21 @@ class PolymarketClient:
         sports_markets = [item for item in raw_markets if str(item.get("category") or "").lower() == "sports"]
         non_sports_markets = [item for item in raw_markets if str(item.get("category") or "").lower() != "sports"]
         diversified_sports = _diversify_sports_markets(sports_markets, sport_labels=sport_labels, limit=limit)
-        selected_raw_markets = diversified_sports + non_sports_markets
+
+        non_sports_by_category: dict[str, list[dict[str, Any]]] = {}
+        for item in non_sports_markets:
+            category_key = str(item.get("category") or "other").lower()
+            non_sports_by_category.setdefault(category_key, []).append(item)
+
+        preferred_non_sports = [
+            non_sports_by_category.pop("politics", []),
+            non_sports_by_category.pop("macro", []),
+        ]
+        remaining_non_sports = [non_sports_by_category[key] for key in sorted(non_sports_by_category)]
+        selected_raw_markets = _interleave_market_groups(
+            [group for group in [*preferred_non_sports, diversified_sports, *remaining_non_sports] if group],
+            limit=limit,
+        )
 
         deduped_markets: list[dict[str, Any]] = []
         seen_slugs: set[str] = set()

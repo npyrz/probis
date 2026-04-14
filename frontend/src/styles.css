@@ -198,6 +198,47 @@ input {
   box-shadow: 0 0 0 3px rgba(134, 200, 255, 0.14);
 }
 
+.filter-stack {
+  display: grid;
+  gap: 12px;
+  padding: 16px 20px 0;
+}
+
+.chip-group {
+  display: grid;
+  gap: 8px;
+}
+
+.chip-group-label {
+  font-family: 'IBM Plex Mono', monospace;
+  text-transform: uppercase;
+  letter-spacing: 0.12em;
+  color: var(--muted);
+  font-size: 0.68rem;
+}
+
+.chip-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.filter-chip {
+  border: 1px solid var(--line-strong);
+  border-radius: 999px;
+  padding: 8px 10px;
+  background: rgba(8, 18, 30, 0.92);
+  color: var(--muted);
+  cursor: pointer;
+}
+
+.filter-chip.active,
+.filter-chip:hover {
+  color: var(--text);
+  border-color: rgba(134, 200, 255, 0.7);
+  background: rgba(18, 39, 62, 0.96);
+}
+
 .market-list {
   display: grid;
   gap: 12px;
