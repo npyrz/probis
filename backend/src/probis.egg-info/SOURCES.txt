@@ -1,4 +1,3 @@
-README.md
 pyproject.toml
 src/probis/__init__.py
 src/probis/api.py
@@ -20,4 +19,5 @@ src/probis.egg-info/top_level.txt
 src/probis/services/__init__.py
 src/probis/services/ollama_client.py
 src/probis/services/polymarket.py
+src/probis/services/polymarket_account.py
 src/probis/services/sim_feed.py

@@ -29,6 +29,22 @@ ORDER_CHANNEL = "orders"
 FILL_CHANNEL = "fills"
 
 
+def _account_trading_ready(state: MarketState) -> bool:
+    return bool(state.account.get("trading_ready"))
+
+
+def _push_system_log(state: MarketState, *, level: str, message: str, session_id: Optional[str] = None) -> None:
+    payload = {
+        "type": "log",
+        "ts": datetime.utcnow().isoformat(),
+        "session_id": session_id,
+        "level": level,
+        "message": message,
+    }
+    state.push_log(payload)
+    state.push_update(payload)
+
+
 async def processing_worker(*, bus: Union[EventBus, InMemoryBus], state: MarketState) -> None:
     """Hot path: price -> model update -> decision -> order (if any).
 
@@ -141,6 +157,20 @@ async def processing_worker(*, bus: Union[EventBus, InMemoryBus], state: MarketS
                 )
 
         if order is not None:
+            if not _account_trading_ready(state):
+                blocked_key = "trading_blocked_logged"
+                if not config.get(blocked_key):
+                    config[blocked_key] = True
+                    reason = state.account.get("error") or "Polymarket account is not trading_ready"
+                    _push_system_log(
+                        state,
+                        level="WARN",
+                        session_id=config.get("session_id"),
+                        message=f"Execution blocked until account is trading_ready: {reason}",
+                    )
+                continue
+
+            config.pop("trading_blocked_logged", None)
             await bus.publish(ORDER_CHANNEL, order.model_dump(mode="json"))
 
 
