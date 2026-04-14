@@ -4,6 +4,8 @@ Thin-slice backend to prove the core hot path:
 
 `price tick → processing/decision → order → execution` (LLM + DB are off the hot path).
 
+The price ticks now come from live Polymarket market discovery plus the public market websocket. Execution remains simulated.
+
 ## Quickstart
 
 ### 1) Install

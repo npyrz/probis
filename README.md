@@ -23,6 +23,8 @@ Then open:
 - http://localhost:8000/state
 - ws://localhost:8000/ws/state
 
+The backend now loads live active markets from Polymarket and streams public quote updates over the Polymarket market websocket.
+
 ## Quickstart (frontend terminal)
 
 ```bash
@@ -43,6 +45,13 @@ The operator flow is:
 4. Engage monitoring.
 5. Let the deterministic model buy/sell based on those settings.
 6. Abort the session at any time.
+
+## Live Data Notes
+
+- Market discovery uses the Polymarket Gamma API.
+- Live quotes use the public Polymarket market websocket.
+- The terminal currently tracks the top active markets by volume.
+- Execution is still simulated; only discovery and display are live.
 
 ### Optional: Redis + Ollama
 
