@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import asyncio
 import uuid
 from datetime import datetime
 from typing import Optional
@@ -8,50 +7,17 @@ from typing import Union
 
 from .bus import EventBus, InMemoryBus
 from .models import MarketDescriptor, MonitorSession, StartMonitorRequest
-from .services.sim_feed import sim_price_ticks
 from .state import MarketState
-
-
-PRICE_CHANNEL = "prices"
 
 
 class MonitorController:
     def __init__(self, *, state: MarketState, bus: Union[EventBus, InMemoryBus]):
         self.state = state
         self.bus = bus
-        self._tasks: dict[str, asyncio.Task[None]] = {}
-        self._catalog = [
-            MarketDescriptor(
-                market="election-2028",
-                title="US Election 2028 - Democrat Wins",
-                category="Politics",
-                reference_price=0.53,
-            ),
-            MarketDescriptor(
-                market="fed-cut-sep",
-                title="Fed Cuts Rates By September",
-                category="Macro",
-                reference_price=0.41,
-            ),
-            MarketDescriptor(
-                market="eth-5k-2026",
-                title="ETH Above 5,000 Before 2026 End",
-                category="Crypto",
-                reference_price=0.38,
-            ),
-            MarketDescriptor(
-                market="ai-act-2026",
-                title="US AI Safety Act Signed In 2026",
-                category="Policy",
-                reference_price=0.46,
-            ),
-        ]
-        self.state.market_catalog = [market.model_dump(mode="json") for market in self._catalog]
-        for market in self._catalog:
-            key = (market.market, market.outcome)
-            self.state.prices.setdefault(key, market.reference_price)
-            self.state.model_probs.setdefault(key, market.reference_price)
-            self.state.edges.setdefault(key, 0.0)
+        self._catalog: list[MarketDescriptor] = []
+        self._markets_by_name: dict[str, MarketDescriptor] = {}
+        self._asset_to_market: dict[str, str] = {}
+        self._catalog_version = 0
 
     def list_markets(self) -> list[dict]:
         markets: list[dict] = []
@@ -80,7 +46,7 @@ class MonitorController:
             "positions": {f"{m}:{o}": s for (m, o), s in self.state.positions.items()},
         }
 
-    async def _log(self, *, session_id: Optional[str], level: str, message: str) -> None:
+    async def emit_log(self, *, level: str, message: str, session_id: Optional[str] = None) -> None:
         payload = {
             "type": "log",
             "ts": datetime.utcnow().isoformat(),
@@ -91,16 +57,74 @@ class MonitorController:
         self.state.push_log(payload)
         self.state.push_update(payload)
 
+    def catalog_version(self) -> int:
+        return self._catalog_version
+
+    def stream_asset_ids(self) -> list[str]:
+        return [market.asset_id for market in self._catalog if market.asset_id]
+
+    def market_for_asset(self, asset_id: str) -> Optional[MarketDescriptor]:
+        market_name = self._asset_to_market.get(asset_id)
+        if market_name is None:
+            return None
+        return self._markets_by_name.get(market_name)
+
+    def replace_catalog(self, markets: list[MarketDescriptor]) -> None:
+        self._catalog = markets
+        self._markets_by_name = {market.market: market for market in markets}
+        self._asset_to_market = {
+            market.asset_id: market.market for market in markets if market.asset_id is not None
+        }
+        self._catalog_version += 1
+        self.state.market_catalog = [market.model_dump(mode="json") for market in markets]
+        for market in markets:
+            key = (market.market, market.outcome)
+            self.state.prices.setdefault(key, market.reference_price)
+            self.state.model_probs.setdefault(key, market.reference_price)
+            self.state.edges.setdefault(key, 0.0)
+        self.state.push_update({"type": "snapshot", **self.snapshot_terminal()})
+
+    def update_market_quote(
+        self,
+        *,
+        market: str,
+        best_bid: Optional[float],
+        best_ask: Optional[float],
+        last_trade_price: Optional[float],
+    ) -> None:
+        descriptor = self._markets_by_name.get(market)
+        if descriptor is None:
+            return
+        descriptor.best_bid = best_bid
+        descriptor.best_ask = best_ask
+        descriptor.last_trade_price = last_trade_price
+
+    def mark_market_resolved(self, market: str, winning_outcome: str) -> None:
+        session_ids = [
+            session_id
+            for session_id, session in self.state.sessions.items()
+            if session["market"] == market and session["status"] == "running"
+        ]
+        for session_id in session_ids:
+            session = self.state.sessions[session_id]
+            session["status"] = "completed"
+            session["stopped_at"] = datetime.utcnow().isoformat()
+            session["reason"] = f"resolved: {winning_outcome}"
+            session["last_action"] = f"Resolved {winning_outcome}"
+            key = (session["market"], session["outcome"])
+            self.state.monitor_configs.pop(key, None)
+            self.state.push_update({"type": "session", "action": "aborted", "session": session})
+
     def _market_title(self, market_name: str) -> str:
-        for market in self._catalog:
-            if market.market == market_name:
-                return market.title
-        return market_name
+        descriptor = self._markets_by_name.get(market_name)
+        return market_name if descriptor is None else descriptor.title
 
     async def start_session(self, request: StartMonitorRequest) -> dict:
         key = (request.market, request.outcome)
         if key in self.state.monitor_configs:
             raise RuntimeError("market is already being monitored")
+        if request.market not in self._markets_by_name:
+            raise RuntimeError("market is not available in the live Polymarket catalog")
 
         session_id = str(uuid.uuid4())
         session = MonitorSession(
@@ -117,12 +141,8 @@ class MonitorController:
             "session_id": session_id,
         }
 
-        self._tasks[session_id] = asyncio.create_task(
-            self._run_session_feed(session_id=session_id, market=request.market, outcome=request.outcome)
-        )
-
         self.state.push_update({"type": "session", "action": "started", "session": session_payload})
-        await self._log(session_id=session_id, level="INFO", message="Monitoring started")
+        await self.emit_log(session_id=session_id, level="INFO", message="Monitoring started")
         return session_payload
 
     async def abort_session(self, session_id: str, *, reason: str = "aborted by operator") -> dict:
@@ -133,10 +153,6 @@ class MonitorController:
         if session.get("status") != "running":
             return session
 
-        task = self._tasks.pop(session_id, None)
-        if task is not None:
-            task.cancel()
-
         key = (session["market"], session["outcome"])
         self.state.monitor_configs.pop(key, None)
 
@@ -146,17 +162,12 @@ class MonitorController:
         session["last_action"] = "Aborted"
 
         self.state.push_update({"type": "session", "action": "aborted", "session": session})
-        await self._log(session_id=session_id, level="WARN", message=reason)
+        await self.emit_log(session_id=session_id, level="WARN", message=reason)
         return session
 
     async def shutdown(self) -> None:
-        session_ids = list(self._tasks.keys())
+        session_ids = list(self.state.sessions.keys())
         for session_id in session_ids:
-            await self.abort_session(session_id, reason="system shutdown")
-
-    async def _run_session_feed(self, *, session_id: str, market: str, outcome: str) -> None:
-        try:
-            async for tick in sim_price_ticks(market=market, outcome=outcome):
-                await self.bus.publish(PRICE_CHANNEL, tick)
-        except asyncio.CancelledError:
-            return
+            session = self.state.sessions.get(session_id)
+            if session and session.get("status") == "running":
+                await self.abort_session(session_id, reason="system shutdown")

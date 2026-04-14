@@ -64,6 +64,14 @@ class MarketDescriptor(BaseModel):
     outcome: str = "YES"
     venue: Literal["polymarket", "sim"] = "sim"
     reference_price: float = 0.5
+    condition_id: Optional[str] = None
+    asset_id: Optional[str] = None
+    no_asset_id: Optional[str] = None
+    best_bid: Optional[float] = None
+    best_ask: Optional[float] = None
+    last_trade_price: Optional[float] = None
+    end_date: Optional[str] = None
+    image: Optional[str] = None
 
 
 class MonitorSettings(BaseModel):

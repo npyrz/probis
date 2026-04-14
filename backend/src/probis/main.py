@@ -12,6 +12,7 @@ from .bus import EventBus, InMemoryBus
 from .config import settings
 from .controller import MonitorController
 from .logging import configure_logging
+from .services.polymarket import PolymarketClient, PolymarketMarketStream, catalog_refresh_worker
 from .state import MarketState
 from .workers import execution_worker, processing_worker, llm_worker
 
@@ -37,11 +38,22 @@ async def _run() -> None:
     state = MarketState()
     bus = await _connect_bus()
     controller = MonitorController(state=state, bus=bus)
+    polymarket_client = PolymarketClient()
+
+    try:
+        markets = await polymarket_client.fetch_active_markets(limit=settings.polymarket_market_limit)
+        controller.replace_catalog(markets)
+        await controller.emit_log(level="INFO", message=f"Loaded {len(markets)} Polymarket markets")
+    except Exception:
+        log.exception("Failed to load initial Polymarket catalog")
+        await controller.emit_log(level="WARN", message="Failed to load initial Polymarket catalog")
 
     app = create_app(state=state, controller=controller)
 
     # Workers
     tasks = [
+        asyncio.create_task(catalog_refresh_worker(client=polymarket_client, controller=controller)),
+        asyncio.create_task(PolymarketMarketStream(controller=controller, bus=bus).run()),
         asyncio.create_task(processing_worker(bus=bus, state=state)),
         asyncio.create_task(execution_worker(bus=bus, state=state)),
         asyncio.create_task(llm_worker(bus=bus)),

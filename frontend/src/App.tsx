@@ -42,6 +42,13 @@ function formatTimestamp(value: string | null | undefined) {
   return new Date(value).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' })
 }
 
+function compactLabel(value: string | null | undefined) {
+  if (!value) {
+    return '--'
+  }
+  return value.length > 22 ? `${value.slice(0, 22)}…` : value
+}
+
 function mergeSession(sessions: MonitorSession[], next: MonitorSession) {
   const existing = sessions.filter((session) => session.session_id !== next.session_id)
   return [next, ...existing].sort((left, right) => right.started_at.localeCompare(left.started_at))
@@ -186,7 +193,7 @@ function App() {
         </div>
         <div className="hero-meta">
           <StatusPill label="Feed" value={connectionState} />
-          <StatusPill label="Mode" value="simulated polymarket" />
+          <StatusPill label="Mode" value="live polymarket" />
           <StatusPill label="Engine" value="deterministic" />
         </div>
       </section>
@@ -208,7 +215,7 @@ function App() {
                   type="button"
                 >
                   <div className="market-row-top">
-                    <span className="market-category">{market.category}</span>
+                    <span className="market-category">{compactLabel(market.category)}</span>
                     <span className={`market-flag ${market.monitored ? 'live' : ''}`}>
                       {market.monitored ? 'LIVE' : 'IDLE'}
                     </span>
@@ -216,6 +223,10 @@ function App() {
                   <strong>{market.title}</strong>
                   <div className="market-stats-row">
                     <span>PX {formatProbability(market.last_price)}</span>
+                    <span>BID {formatProbability(market.best_bid)}</span>
+                    <span>ASK {formatProbability(market.best_ask)}</span>
+                  </div>
+                  <div className="market-stats-row">
                     <span>MODEL {formatProbability(market.model_probability)}</span>
                     <span className={market.edge >= 0 ? 'tone-positive' : 'tone-negative'}>
                       EDGE {formatSignedProbability(market.edge)}
@@ -238,13 +249,17 @@ function App() {
                 <div>
                   <p className="focus-label">Selected Market</p>
                   <h3>{selectedMarket.title}</h3>
-                  <p className="focus-subtitle">{selectedMarket.category} / {selectedMarket.outcome}</p>
+                  <p className="focus-subtitle">{selectedMarket.category} / {selectedMarket.outcome} / {selectedMarket.venue}</p>
                 </div>
                 <div className="focus-metrics">
                   <MetricCard label="Market" value={formatProbability(selectedMarket.last_price)} />
+                  <MetricCard label="Bid" value={formatProbability(selectedMarket.best_bid)} />
+                  <MetricCard label="Ask" value={formatProbability(selectedMarket.best_ask)} />
                   <MetricCard label="Model" value={formatProbability(selectedMarket.model_probability)} />
                   <MetricCard label="Edge" value={formatSignedProbability(selectedMarket.edge)} tone={selectedMarket.edge >= 0 ? 'positive' : 'negative'} />
+                  <MetricCard label="Last" value={formatProbability(selectedMarket.last_trade_price)} />
                   <MetricCard label="Position" value={selectedMarket.position.toFixed(2)} />
+                  <MetricCard label="Ends" value={selectedMarket.end_date ? selectedMarket.end_date.slice(0, 10) : '--'} />
                 </div>
               </div>
 

@@ -5,6 +5,14 @@ export type Market = {
   outcome: string
   venue: 'polymarket' | 'sim'
   reference_price: number
+  condition_id?: string | null
+  asset_id?: string | null
+  no_asset_id?: string | null
+  best_bid?: number | null
+  best_ask?: number | null
+  last_trade_price?: number | null
+  end_date?: string | null
+  image?: string | null
   last_price: number
   model_probability: number
   edge: number
