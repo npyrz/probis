@@ -7,6 +7,19 @@ Probis is a low-latency, AI-assisted trading system for real-time prediction mar
 - frontend/ — React operator terminal for selecting markets and controlling monitor sessions
 - docker-compose.yml — local Redis/Postgres/Ollama
 
+## One Command Startup
+
+```bash
+./dev.sh
+```
+
+This starts both:
+
+- backend on http://127.0.0.1:8000
+- frontend on http://127.0.0.1:5173
+
+The script will install missing frontend dependencies automatically, create the backend virtualenv if needed, and stop both services when you press `Ctrl-C`.
+
 ## Quickstart (backend)
 
 ```bash
