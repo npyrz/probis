@@ -10,10 +10,10 @@ import uvicorn
 from .api import create_app
 from .bus import EventBus, InMemoryBus
 from .config import settings
+from .controller import MonitorController
 from .logging import configure_logging
-from .services.sim_feed import sim_price_ticks
 from .state import MarketState
-from .workers import execution_worker, processing_worker, llm_worker, PRICE_CHANNEL
+from .workers import execution_worker, processing_worker, llm_worker
 
 
 log = logging.getLogger(__name__)
@@ -31,22 +31,17 @@ async def _connect_bus() -> Union[EventBus, InMemoryBus]:
         return mem
 
 
-async def _ingestion_sim_worker(*, bus: Union[EventBus, InMemoryBus]) -> None:
-    async for tick in sim_price_ticks(market="election", outcome="YES"):
-        await bus.publish(PRICE_CHANNEL, tick)
-
-
 async def _run() -> None:
     configure_logging(settings.log_level)
 
     state = MarketState()
     bus = await _connect_bus()
+    controller = MonitorController(state=state, bus=bus)
 
-    app = create_app(state=state)
+    app = create_app(state=state, controller=controller)
 
     # Workers
     tasks = [
-        asyncio.create_task(_ingestion_sim_worker(bus=bus)),
         asyncio.create_task(processing_worker(bus=bus, state=state)),
         asyncio.create_task(execution_worker(bus=bus, state=state)),
         asyncio.create_task(llm_worker(bus=bus)),
@@ -61,6 +56,7 @@ async def _run() -> None:
     finally:
         for t in tasks:
             t.cancel()
+        await controller.shutdown()
         await bus.close()
 
 

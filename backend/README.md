@@ -37,3 +37,11 @@ python -m probis.main
 - HTTP: http://localhost:8000/state
 - WS: ws://localhost:8000/ws/state
 
+### 5) Terminal APIs
+
+- `GET /markets` — list monitorable markets
+- `GET /terminal` — terminal snapshot (markets, sessions, fills, logs)
+- `POST /monitor-sessions` — start monitoring a market
+- `POST /monitor-sessions/{session_id}/abort` — abort a running session
+- `WS /ws/terminal` — live terminal event stream
+

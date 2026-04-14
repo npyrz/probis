@@ -1,0 +1,468 @@
+@import url('https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&family=IBM+Plex+Sans:wght@400;500;600;700&display=swap');
+
+:root {
+  color-scheme: dark;
+  --bg: #07111a;
+  --bg-2: #0d1a25;
+  --panel: rgba(7, 18, 28, 0.86);
+  --panel-strong: rgba(9, 22, 34, 0.96);
+  --line: rgba(130, 168, 190, 0.14);
+  --line-strong: rgba(130, 168, 190, 0.28);
+  --text: #d7e2ea;
+  --muted: #8aa0ad;
+  --cyan: #66d6ff;
+  --amber: #ffb347;
+  --lime: #94f086;
+  --red: #ff6b6b;
+  --shadow: 0 24px 80px rgba(0, 0, 0, 0.45);
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body,
+#root {
+  min-height: 100%;
+}
+
+body {
+  margin: 0;
+  font-family: 'IBM Plex Sans', sans-serif;
+  color: var(--text);
+  background:
+    radial-gradient(circle at top left, rgba(31, 107, 153, 0.22), transparent 28%),
+    radial-gradient(circle at 85% 15%, rgba(255, 179, 71, 0.16), transparent 20%),
+    linear-gradient(180deg, #02070c 0%, var(--bg) 42%, #030910 100%);
+}
+
+body::before {
+  content: '';
+  position: fixed;
+  inset: 0;
+  pointer-events: none;
+  background-image:
+    linear-gradient(rgba(102, 214, 255, 0.03) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(102, 214, 255, 0.03) 1px, transparent 1px);
+  background-size: 44px 44px;
+  mask-image: linear-gradient(180deg, rgba(255, 255, 255, 0.38), transparent 82%);
+}
+
+button,
+input,
+textarea {
+  font: inherit;
+}
+
+.shell {
+  width: min(1480px, calc(100vw - 32px));
+  margin: 0 auto;
+  padding: 24px 0 40px;
+}
+
+.hero-bar {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 24px;
+  padding: 24px 28px;
+  border: 1px solid var(--line);
+  background: linear-gradient(180deg, rgba(11, 25, 38, 0.92), rgba(6, 14, 22, 0.95));
+  box-shadow: var(--shadow);
+  border-radius: 24px;
+  position: relative;
+  overflow: hidden;
+}
+
+.hero-bar::after {
+  content: '';
+  position: absolute;
+  inset: auto -12% -60% 42%;
+  height: 260px;
+  background: radial-gradient(circle, rgba(102, 214, 255, 0.24), transparent 62%);
+  filter: blur(10px);
+}
+
+.hero-kicker,
+.panel-header span,
+.market-category,
+.focus-label,
+.number-field span,
+.notes-field span,
+.status-pill span,
+.metric-card span {
+  font-family: 'IBM Plex Mono', monospace;
+  text-transform: uppercase;
+  letter-spacing: 0.12em;
+}
+
+.hero-kicker {
+  margin: 0 0 12px;
+  color: var(--amber);
+  font-size: 0.74rem;
+}
+
+.hero-bar h1 {
+  margin: 0;
+  font-size: clamp(2rem, 3vw, 3.6rem);
+  line-height: 0.96;
+  max-width: 10ch;
+}
+
+.hero-copy {
+  max-width: 62ch;
+  margin: 14px 0 0;
+  color: var(--muted);
+}
+
+.hero-meta {
+  display: grid;
+  gap: 12px;
+  min-width: 260px;
+}
+
+.status-pill {
+  padding: 14px 16px;
+  border-radius: 16px;
+  border: 1px solid var(--line);
+  background: rgba(5, 13, 20, 0.6);
+}
+
+.status-pill strong {
+  display: block;
+  margin-top: 8px;
+  color: var(--cyan);
+}
+
+.layout-grid {
+  display: grid;
+  grid-template-columns: 340px minmax(0, 1.35fr) minmax(300px, 0.85fr);
+  grid-template-areas:
+    'markets focus sessions'
+    'markets activity activity';
+  gap: 18px;
+  margin-top: 18px;
+}
+
+.panel {
+  border-radius: 24px;
+  border: 1px solid var(--line);
+  background: linear-gradient(180deg, var(--panel), var(--panel-strong));
+  box-shadow: var(--shadow);
+  backdrop-filter: blur(14px);
+  min-height: 0;
+}
+
+.panel-markets {
+  grid-area: markets;
+}
+
+.panel-focus {
+  grid-area: focus;
+  padding-bottom: 18px;
+}
+
+.panel-sessions {
+  grid-area: sessions;
+}
+
+.panel-activity {
+  grid-area: activity;
+}
+
+.panel-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 18px 20px;
+  border-bottom: 1px solid var(--line);
+}
+
+.panel-header h2 {
+  margin: 0;
+  font-size: 1rem;
+}
+
+.panel-header span {
+  color: var(--muted);
+  font-size: 0.72rem;
+}
+
+.market-list,
+.session-list,
+.tape-list {
+  padding: 14px;
+  display: grid;
+  gap: 12px;
+}
+
+.market-row,
+.session-card {
+  width: 100%;
+  text-align: left;
+  border: 1px solid var(--line);
+  border-radius: 18px;
+  background: rgba(8, 18, 28, 0.82);
+  color: inherit;
+}
+
+.market-row {
+  padding: 14px;
+  cursor: pointer;
+  transition: transform 120ms ease, border-color 120ms ease, box-shadow 120ms ease;
+}
+
+.market-row:hover,
+.market-row.selected {
+  transform: translateY(-1px);
+  border-color: rgba(102, 214, 255, 0.42);
+  box-shadow: 0 0 0 1px rgba(102, 214, 255, 0.18), 0 18px 28px rgba(4, 11, 18, 0.34);
+}
+
+.market-row-top,
+.session-card-top,
+.market-stats-row,
+.session-card-meta,
+.action-bar {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.market-row strong,
+.focus-card h3,
+.session-card strong {
+  display: block;
+  margin-top: 8px;
+}
+
+.market-stats-row,
+.session-card-meta,
+.focus-subtitle,
+.operator-status,
+.empty-state,
+.error-banner {
+  color: var(--muted);
+  font-size: 0.92rem;
+}
+
+.market-flag {
+  border-radius: 999px;
+  padding: 4px 8px;
+  border: 1px solid rgba(255, 179, 71, 0.25);
+  color: var(--amber);
+  font-family: 'IBM Plex Mono', monospace;
+  font-size: 0.7rem;
+}
+
+.market-flag.live {
+  border-color: rgba(148, 240, 134, 0.3);
+  color: var(--lime);
+  box-shadow: 0 0 18px rgba(148, 240, 134, 0.18);
+}
+
+.focus-card,
+.form-grid,
+.notes-field,
+.action-bar,
+.error-banner {
+  margin: 18px 20px 0;
+}
+
+.focus-card {
+  padding: 20px;
+  border-radius: 18px;
+  border: 1px solid var(--line);
+  background: linear-gradient(180deg, rgba(10, 23, 35, 0.92), rgba(5, 13, 20, 0.98));
+}
+
+.focus-metrics {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 12px;
+  margin-top: 16px;
+}
+
+.metric-card {
+  padding: 14px;
+  border-radius: 16px;
+  background: rgba(255, 255, 255, 0.02);
+  border: 1px solid var(--line);
+}
+
+.metric-card strong {
+  display: block;
+  margin-top: 10px;
+  font-size: 1.15rem;
+}
+
+.metric-card.positive strong,
+.tone-positive {
+  color: var(--lime);
+}
+
+.metric-card.negative strong,
+.tone-negative,
+.tape-line.negative {
+  color: var(--red);
+}
+
+.form-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 12px;
+}
+
+.number-field,
+.notes-field {
+  display: grid;
+  gap: 8px;
+}
+
+.number-field input,
+.notes-field textarea {
+  width: 100%;
+  border-radius: 14px;
+  border: 1px solid var(--line-strong);
+  background: rgba(6, 14, 22, 0.9);
+  color: var(--text);
+  padding: 12px 14px;
+  outline: none;
+}
+
+.number-field input:focus,
+.notes-field textarea:focus {
+  border-color: rgba(102, 214, 255, 0.5);
+  box-shadow: 0 0 0 3px rgba(102, 214, 255, 0.12);
+}
+
+.notes-field textarea {
+  resize: vertical;
+  min-height: 108px;
+}
+
+.action-bar {
+  align-items: center;
+  flex-wrap: wrap;
+}
+
+.action-primary,
+.action-secondary {
+  border: 0;
+  border-radius: 14px;
+  padding: 12px 16px;
+  cursor: pointer;
+  transition: transform 120ms ease, opacity 120ms ease, filter 120ms ease;
+}
+
+.action-primary {
+  background: linear-gradient(135deg, #7de2ff, #3ca8cf);
+  color: #04111b;
+  box-shadow: 0 12px 30px rgba(83, 200, 242, 0.24);
+}
+
+.action-secondary {
+  background: rgba(255, 107, 107, 0.12);
+  color: var(--red);
+  border: 1px solid rgba(255, 107, 107, 0.28);
+}
+
+.action-primary:hover,
+.action-secondary:hover {
+  transform: translateY(-1px);
+}
+
+.action-primary:disabled,
+.action-secondary:disabled {
+  cursor: not-allowed;
+  opacity: 0.42;
+  transform: none;
+}
+
+.operator-status {
+  margin: 0;
+  flex: 1;
+  min-width: 220px;
+}
+
+.error-banner {
+  padding: 12px 14px;
+  border-radius: 14px;
+  border: 1px solid rgba(255, 107, 107, 0.28);
+  color: var(--red);
+  background: rgba(255, 107, 107, 0.08);
+}
+
+.session-card {
+  padding: 14px;
+}
+
+.tape-list {
+  font-family: 'IBM Plex Mono', monospace;
+}
+
+.tape-line {
+  padding: 11px 12px;
+  border-radius: 14px;
+  background: rgba(5, 12, 19, 0.72);
+  border: 1px solid rgba(255, 255, 255, 0.03);
+  color: var(--text);
+  overflow-x: auto;
+}
+
+.tape-line.positive {
+  color: var(--lime);
+}
+
+.tape-line.neutral {
+  color: var(--cyan);
+}
+
+.empty-state {
+  padding: 8px 4px;
+}
+
+@media (max-width: 1180px) {
+  .layout-grid {
+    grid-template-columns: 1fr;
+    grid-template-areas:
+      'markets'
+      'focus'
+      'sessions'
+      'activity';
+  }
+
+  .hero-bar {
+    flex-direction: column;
+  }
+
+  .hero-meta {
+    width: 100%;
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+  }
+}
+
+@media (max-width: 760px) {
+  .shell {
+    width: min(100vw - 18px, 100%);
+    padding-top: 10px;
+  }
+
+  .hero-bar,
+  .panel {
+    border-radius: 18px;
+  }
+
+  .focus-metrics,
+  .form-grid,
+  .hero-meta {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .market-stats-row,
+  .session-card-meta,
+  .action-bar {
+    flex-direction: column;
+  }
+}

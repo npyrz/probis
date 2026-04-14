@@ -4,6 +4,7 @@ import asyncio
 import logging
 import uuid
 from datetime import datetime
+from typing import Optional
 from typing import Union
 
 from .bus import EventBus, InMemoryBus
@@ -53,10 +54,15 @@ async def processing_worker(*, bus: Union[EventBus, InMemoryBus], state: MarketS
             log.exception("Invalid price tick")
             continue
 
+        previous_market_prob = get_market_probability(state, tick.market, tick.outcome)
         update_market_price(state, tick.market, tick.outcome, tick.price)
+        key = (tick.market, tick.outcome)
 
-        # Base model = last price (placeholder). Signals nudge it.
+        # Cheap deterministic model: market price plus short-term momentum.
         base_prob = tick.price
+        if previous_market_prob is not None:
+            momentum = tick.price - previous_market_prob
+            base_prob = max(0.0, min(1.0, tick.price + (0.8 * momentum)))
         signal = latest_signal_by_event.get(tick.market)  # simplest mapping for now
         your_prob = apply_signal_to_model_prob(base_prob=base_prob, signal=signal)
         set_model_probability(state, tick.market, tick.outcome, your_prob)
@@ -65,19 +71,23 @@ async def processing_worker(*, bus: Union[EventBus, InMemoryBus], state: MarketS
         if market_prob is None:
             continue
 
+        config = state.monitor_configs.get(key)
+        threshold = settings.edge_threshold if config is None else float(config["edge_threshold"])
+
         decision: EdgeDecision = compute_edge_decision(
             market=tick.market,
             outcome=tick.outcome,
             your_probability=your_prob,
             market_probability=market_prob,
-            threshold=settings.edge_threshold,
+            threshold=threshold,
         )
 
-        state.edges[(tick.market, tick.outcome)] = decision.edge
+        state.edges[key] = decision.edge
 
         # Push minimal update for dashboard/websocket.
-        state.updates.put_nowait(
+        state.push_update(
             {
+                "type": "market",
                 "ts": datetime.utcnow().isoformat(),
                 "market": tick.market,
                 "outcome": tick.outcome,
@@ -85,21 +95,53 @@ async def processing_worker(*, bus: Union[EventBus, InMemoryBus], state: MarketS
                 "your_probability": your_prob,
                 "edge": decision.edge,
                 "should_trade": decision.should_trade,
+                "position": state.positions.get(key, 0.0),
+                "session_id": None if config is None else config.get("session_id"),
             }
         )
 
-        if not decision.should_trade:
+        if config is None:
             continue
 
-        # Simple deterministic order sizing rule for demo.
-        order = OrderRequest(
-            market=tick.market,
-            outcome=tick.outcome,
-            side="buy" if decision.edge > 0 else "sell",
-            size=1.0,
-            limit_price=tick.price,
-        )
-        await bus.publish(ORDER_CHANNEL, order.model_dump(mode="json"))
+        current_position = state.positions.get(key, 0.0)
+        avg_entry = state.entry_prices.get(key)
+        order_size = float(config["order_size"])
+        max_position = float(config["max_position"])
+        exit_threshold = float(config["exit_threshold"])
+        take_profit = float(config["take_profit"])
+        stop_loss = float(config["stop_loss"])
+
+        order: Optional[OrderRequest] = None
+        if decision.edge > threshold and current_position < max_position:
+            size = min(order_size, max_position - current_position)
+            if size > 0:
+                order = OrderRequest(
+                    market=tick.market,
+                    outcome=tick.outcome,
+                    side="buy",
+                    size=size,
+                    limit_price=tick.price,
+                    session_id=config.get("session_id"),
+                    reason="edge-entry",
+                )
+        elif current_position > 0:
+            profit_hit = avg_entry is not None and (tick.price - avg_entry) >= take_profit
+            stop_hit = avg_entry is not None and (avg_entry - tick.price) >= stop_loss
+            edge_exit = decision.edge <= -exit_threshold
+            if profit_hit or stop_hit or edge_exit:
+                reason = "take-profit" if profit_hit else "stop-loss" if stop_hit else "edge-exit"
+                order = OrderRequest(
+                    market=tick.market,
+                    outcome=tick.outcome,
+                    side="sell",
+                    size=min(order_size, current_position),
+                    limit_price=tick.price,
+                    session_id=config.get("session_id"),
+                    reason=reason,
+                )
+
+        if order is not None:
+            await bus.publish(ORDER_CHANNEL, order.model_dump(mode="json"))
 
 
 async def execution_worker(*, bus: Union[EventBus, InMemoryBus], state: MarketState) -> None:
@@ -124,13 +166,35 @@ async def execution_worker(*, bus: Union[EventBus, InMemoryBus], state: MarketSt
             price=order.limit_price,
             venue="sim",
             order_id=str(uuid.uuid4()),
+            session_id=order.session_id,
+            reason=order.reason,
         )
 
         key = (fill.market, fill.outcome)
+        current_position = state.positions.get(key, 0.0)
         signed = fill.size if fill.side == "buy" else -fill.size
-        state.positions[key] = state.positions.get(key, 0.0) + signed
+        new_position = current_position + signed
+        state.positions[key] = new_position
 
-        await bus.publish(FILL_CHANNEL, fill.model_dump(mode="json"))
+        if fill.side == "buy":
+            avg_entry = state.entry_prices.get(key, 0.0)
+            total_cost = (avg_entry * current_position) + (fill.price * fill.size)
+            state.entry_prices[key] = total_cost / max(new_position, 1e-9)
+        elif new_position <= 0:
+            state.entry_prices.pop(key, None)
+
+        fill_payload = fill.model_dump(mode="json")
+        state.push_fill(fill_payload)
+        state.push_update({"type": "fill", **fill_payload, "position": state.positions.get(key, 0.0)})
+
+        session_id = order.session_id
+        if session_id and session_id in state.sessions:
+            session = state.sessions[session_id]
+            session["last_action"] = f"{fill.side.upper()} {fill.size:.2f} @ {fill.price:.3f}"
+            session["last_price"] = fill.price
+            state.push_update({"type": "session", "action": "started", "session": session})
+
+        await bus.publish(FILL_CHANNEL, fill_payload)
 
 
 async def llm_worker(*, bus: Union[EventBus, InMemoryBus]) -> None:

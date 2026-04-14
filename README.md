@@ -4,6 +4,7 @@ Probis is a low-latency, AI-assisted trading system for real-time prediction mar
 ## Repo layout
 
 - backend/ — FastAPI + asyncio workers (hot path: price → decision → trade)
+- frontend/ — React operator terminal for selecting markets and controlling monitor sessions
 - docker-compose.yml — local Redis/Postgres/Ollama
 
 ## Quickstart (backend)
@@ -21,6 +22,27 @@ Then open:
 
 - http://localhost:8000/state
 - ws://localhost:8000/ws/state
+
+## Quickstart (frontend terminal)
+
+```bash
+cd frontend
+npm install
+npm run dev
+```
+
+Then open:
+
+- http://localhost:5173
+
+The operator flow is:
+
+1. Browse markets in the terminal.
+2. Select one market.
+3. Set author-controlled monitoring thresholds.
+4. Engage monitoring.
+5. Let the deterministic model buy/sell based on those settings.
+6. Abort the session at any time.
 
 ### Optional: Redis + Ollama
 
