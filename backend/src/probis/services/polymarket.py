@@ -305,8 +305,14 @@ class PolymarketMarketStream:
     async def _stream(self, *, market_slugs: list[str], version: int) -> None:
         from polymarket_us import PolymarketUS
 
+        if not settings.polymarket_key_id or not settings.polymarket_secret_key:
+            raise RuntimeError("Polymarket US websocket requires POLYMARKET_KEY_ID and POLYMARKET_SECRET_KEY")
+
         queue: asyncio.Queue = asyncio.Queue()
-        client = PolymarketUS()
+        client = PolymarketUS(
+            key_id=settings.polymarket_key_id,
+            secret_key=settings.polymarket_secret_key,
+        )
         markets_ws = client.ws.markets()
         markets_ws.on("trade", lambda d: queue.put_nowait(("trade", d)))
         markets_ws.on("market_data", lambda d: queue.put_nowait(("market_data", d)))
