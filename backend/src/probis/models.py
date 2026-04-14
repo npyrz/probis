@@ -61,17 +61,27 @@ class MarketDescriptor(BaseModel):
     market: str
     title: str
     category: str
+    subtitle: Optional[str] = None
+    description: Optional[str] = None
     market_type: Optional[str] = None
     outcome: str = "YES"
+    outcomes: list[str] = Field(default_factory=list)
+    outcome_prices: list[float] = Field(default_factory=list)
     venue: Literal["polymarket", "sim"] = "sim"
     reference_price: float = 0.5
     condition_id: Optional[str] = None
     asset_id: Optional[str] = None
     no_asset_id: Optional[str] = None
+    active: bool = True
+    closed: bool = False
     best_bid: Optional[float] = None
     best_ask: Optional[float] = None
     last_trade_price: Optional[float] = None
+    min_tick_size: Optional[float] = None
+    start_date: Optional[str] = None
     end_date: Optional[str] = None
+    created_at: Optional[str] = None
+    updated_at: Optional[str] = None
     image: Optional[str] = None
 
 

@@ -18,7 +18,7 @@ class Settings(BaseSettings):
 
     polymarket_key_id: Optional[str] = None
     polymarket_secret_key: Optional[str] = None
-    polymarket_market_limit: int = 24
+    polymarket_market_limit: int = 500
     polymarket_discovery_interval_seconds: int = 180
 
     ollama_base_url: str = "http://localhost:11434"

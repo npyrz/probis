@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 import re
 from typing import Any
@@ -15,7 +16,6 @@ from ..models import MarketDescriptor
 log = logging.getLogger(__name__)
 
 PRICE_CHANNEL = "prices"
-DEFAULT_MARKET_CATEGORIES = ("sports", "politics")
 SPORT_CODE_LABELS = {
     "nba": "NBA",
     "nfl": "NFL",
@@ -130,29 +130,6 @@ def _infer_market_type(slug: str, sport_labels: dict[str, str]) -> Optional[str]
     return None
 
 
-def _merge_category_results(category_results: list[list[dict[str, Any]]], *, limit: int) -> list[dict[str, Any]]:
-    merged: list[dict[str, Any]] = []
-    seen: set[str] = set()
-    index = 0
-    while len(merged) < limit:
-        added = False
-        for results in category_results:
-            if index >= len(results):
-                continue
-            item = results[index]
-            slug = str(item.get("slug") or item.get("marketSlug") or "")
-            if slug and slug not in seen:
-                seen.add(slug)
-                merged.append(item)
-                added = True
-                if len(merged) >= limit:
-                    break
-        if not added:
-            break
-        index += 1
-    return merged
-
-
 def _diversify_sports_markets(markets: list[dict[str, Any]], *, sport_labels: dict[str, str], limit: int) -> list[dict[str, Any]]:
     grouped: dict[str, list[dict[str, Any]]] = {}
     for item in markets:
@@ -180,30 +157,41 @@ def _diversify_sports_markets(markets: list[dict[str, Any]], *, sport_labels: di
     return diversified
 
 
+def _parse_outcome_strings(value: Any) -> list[str]:
+    if isinstance(value, list):
+        return [str(item) for item in value if item not in (None, "")]
+    if isinstance(value, str):
+        try:
+            parsed = json.loads(value)
+        except json.JSONDecodeError:
+            return [value]
+        if isinstance(parsed, list):
+            return [str(item) for item in parsed if item not in (None, "")]
+    return []
+
+
+def _parse_outcome_prices(value: Any) -> list[float]:
+    parsed_values = value if isinstance(value, list) else _parse_outcome_strings(value)
+    prices: list[float] = []
+    for item in parsed_values:
+        price = _safe_float(item)
+        if price is not None:
+            prices.append(price)
+    return prices
+
+
 class PolymarketClient:
     async def fetch_active_markets(self, *, limit: int) -> list[MarketDescriptor]:
         from polymarket_us import PolymarketUS
 
         client = PolymarketUS()
         try:
-            politics_limit = max(limit, 12)
-            sports_limit = max(limit * 20, 500)
-            category_responses = await asyncio.gather(
+            market_response, sports_resp, series_resp = await asyncio.gather(
                 asyncio.to_thread(
                     client.markets.list,
                     {
-                        "limit": sports_limit,
+                        "limit": max(limit, 100),
                         "closed": False,
-                        "categories": ["sports"],
-                        "includeHidden": False,
-                    },
-                ),
-                asyncio.to_thread(
-                    client.markets.list,
-                    {
-                        "limit": politics_limit,
-                        "closed": False,
-                        "categories": ["politics"],
                         "includeHidden": False,
                     },
                 ),
@@ -213,31 +201,34 @@ class PolymarketClient:
         finally:
             client.close()
 
-        *market_responses, sports_resp, series_resp = category_responses
-
-        raw_category_results: dict[str, list[dict[str, Any]]] = {}
-        for category, response in zip(DEFAULT_MARKET_CATEGORIES, market_responses):
-            if isinstance(response, list):
-                raw_category_results[category] = [item for item in response if isinstance(item, dict)]
-            elif isinstance(response, dict):
-                items = response.get("markets") or response.get("data") or []
-                raw_category_results[category] = [item for item in items if isinstance(item, dict)]
-            else:
-                raw_category_results[category] = []
+        if isinstance(market_response, list):
+            raw_markets = [item for item in market_response if isinstance(item, dict)]
+        elif isinstance(market_response, dict):
+            items = market_response.get("markets") or market_response.get("data") or []
+            raw_markets = [item for item in items if isinstance(item, dict)]
+        else:
+            raw_markets = []
 
         sport_labels = _build_sport_labels(sports_resp, series_resp)
-        diversified_sports = _diversify_sports_markets(
-            raw_category_results.get("sports", []),
-            sport_labels=sport_labels,
-            limit=sports_limit,
-        )
-        raw_markets = _merge_category_results(
-            [diversified_sports, raw_category_results.get("politics", [])],
-            limit=limit,
-        )
+
+        sports_markets = [item for item in raw_markets if str(item.get("category") or "").lower() == "sports"]
+        non_sports_markets = [item for item in raw_markets if str(item.get("category") or "").lower() != "sports"]
+        diversified_sports = _diversify_sports_markets(sports_markets, sport_labels=sport_labels, limit=limit)
+        selected_raw_markets = diversified_sports + non_sports_markets
+
+        deduped_markets: list[dict[str, Any]] = []
+        seen_slugs: set[str] = set()
+        for item in selected_raw_markets:
+            slug = str(item.get("slug") or item.get("marketSlug") or "")
+            if not slug or slug in seen_slugs:
+                continue
+            seen_slugs.add(slug)
+            deduped_markets.append(item)
+            if len(deduped_markets) >= limit:
+                break
 
         markets: list[MarketDescriptor] = []
-        for item in raw_markets:
+        for item in deduped_markets:
             if isinstance(item, dict):
                 descriptor = self._market_descriptor_from_payload(item, sport_labels=sport_labels)
                 if descriptor is not None:
@@ -251,6 +242,8 @@ class PolymarketClient:
 
         title = item.get("title") or item.get("question") or str(slug)
         category = item.get("category") or item.get("eventTitle") or "Polymarket US"
+        outcomes = _parse_outcome_strings(item.get("outcomes"))
+        outcome_prices = _parse_outcome_prices(item.get("outcomePrices"))
 
         best_bid = _safe_float(item.get("bestBid") or item.get("best_bid"))
         best_ask = _safe_float(item.get("bestAsk") or item.get("best_ask"))
@@ -261,14 +254,24 @@ class PolymarketClient:
             market=str(slug),
             title=str(title),
             category=str(category),
+            subtitle=item.get("subtitle"),
+            description=item.get("description"),
             market_type=_infer_market_type(str(slug), sport_labels),
             outcome="Yes",
+            outcomes=outcomes,
+            outcome_prices=outcome_prices,
             venue="polymarket",
             reference_price=reference_price,
+            active=bool(item.get("active", True)),
+            closed=bool(item.get("closed", False)),
             best_bid=best_bid,
             best_ask=best_ask,
             last_trade_price=last_trade_price,
+            min_tick_size=_safe_float(item.get("orderPriceMinTickSize") or item.get("order_price_min_tick_size")),
+            start_date=item.get("startDate") or item.get("gameStartTime"),
             end_date=item.get("endDate") or item.get("closeDate"),
+            created_at=item.get("createdAt"),
+            updated_at=item.get("updatedAt"),
             image=item.get("imageUrl") or item.get("image"),
         )
 
