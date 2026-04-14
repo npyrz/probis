@@ -114,6 +114,73 @@ Current optional input:
 - Trade execution and fills are still simulated locally.
 - Account connectivity and signed Polymarket order flow are not yet enabled.
 
+## Roadmap / Upcoming Features
+
+### Account & Trading
+
+#### Polymarket Account Integration
+
+- Securely connect a Polymarket account.
+- Support authenticated trading flows.
+- Surface account state, balances, and positions inside the terminal.
+
+#### Automated Trade Execution
+
+- Place and manage trades programmatically.
+- Track open orders and positions in real time.
+- Replace simulated execution with real signed Polymarket order flow.
+
+### Data & Signals
+
+#### Live News & Chatter Feed
+
+- Aggregate real-time news and social chatter.
+- Surface relevant signals for active markets.
+- Tie external events to currently monitored strategies.
+
+#### Statistical / Probability Model
+
+- Convert raw market and signal data into calibrated probabilities.
+- Detect mispriced markets through edge estimation.
+- Improve decision quality with more robust statistical modeling.
+
+### AI Integration
+
+#### LLM Signal Extraction
+
+- Integrate a local LLM such as Gemma.
+- Use it for sentiment analysis, event interpretation, and structured signal generation.
+- Feed LLM outputs into probabilistic models rather than direct execution logic.
+
+### Trading Controls
+
+#### Custom Trading Settings
+
+- Define minimum and maximum price thresholds for trade entry.
+- Set capital allocation limits.
+- Control trade count, trade frequency, and position sizing.
+- Add user-configurable money limits and per-strategy guardrails.
+
+#### Strategy Authorization System
+
+- Let users select which trade types and strategies are allowed to run.
+- Run each approved strategy independently under its own constraints.
+- Keep each strategy active until it exits, sells, or the user ends it manually.
+
+### Strategy Engine
+
+#### Persistent Trade Lifecycle
+
+- Support a full lifecycle of `entry -> monitoring -> exit`.
+- Add persistent tracking for strategy state across sessions.
+- Make strategy-level overrides and stop controls first-class features.
+
+#### Manual Intervention Support
+
+- Stop any active strategy at any time.
+- Allow operator intervention without breaking system state.
+- Keep the operator terminal as the primary control surface for risk management.
+
 ## Design Principles
 
 - Event-driven over polling.
@@ -135,3 +202,7 @@ Current optional input:
 - Redis is optional for local startup; the backend falls back to an in-process bus if Redis is unavailable.
 - The terminal is intended to be the single operator surface for monitoring, intervention, and later real account control.
 - This repository is structured so real account execution can be added without changing the frontend workflow.
+
+## Vision
+
+Build a low-latency, AI-assisted trading system that combines real-time market data, quantitative decision-making, and intelligent signal extraction to identify and act on inefficiencies in prediction markets.
