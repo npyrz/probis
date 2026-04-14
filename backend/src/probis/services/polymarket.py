@@ -320,8 +320,7 @@ class PolymarketMarketStream:
         markets_ws.on("close", lambda _: queue.put_nowait(("close", {})))
 
         await markets_ws.connect()
-        for i, slug in enumerate(market_slugs):
-            await markets_ws.subscribe(f"trade-{i}", "SUBSCRIPTION_TYPE_TRADE", [slug])
+        await markets_ws.subscribe("market-trades", "SUBSCRIPTION_TYPE_TRADE", market_slugs)
 
         try:
             while True:
