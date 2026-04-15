@@ -578,6 +578,11 @@ h2 {
   border: 1px solid rgba(255, 255, 255, 0.06);
 }
 
+.active-positions-card {
+  display: grid;
+  gap: 1rem;
+}
+
 .trade-actions,
 .modal-actions {
   display: flex;
@@ -668,6 +673,19 @@ h2 {
   display: flex;
   flex-wrap: wrap;
   gap: 0.6rem;
+}
+
+.active-positions-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+  gap: 1rem;
+}
+
+.active-position-item {
+  padding: 1rem;
+  border-radius: 18px;
+  background: linear-gradient(180deg, rgba(117, 176, 201, 0.12), rgba(255, 255, 255, 0.03));
+  border: 1px solid rgba(117, 176, 201, 0.18);
 }
 
 .trade-error-banner {

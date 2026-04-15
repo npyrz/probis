@@ -9,8 +9,11 @@ import {
   fetchStatus,
   fetchTradeIntents,
   invalidateEventAggregationCache,
+  pollTrackedTradeIntents,
   resolveEvent,
   resolveEventAggregation,
+  sellTradeIntent as sellTradeIntentRequest,
+  stopTradeIntent as stopTradeIntentRequest,
   updateTradeIntent as updateTradeIntentRequest
 } from './lib/api.js';
 
@@ -72,6 +75,22 @@ function formatDateTime(value) {
     hour: 'numeric',
     minute: '2-digit'
   }).format(parsed);
+}
+
+function formatIntentStatus(intent) {
+  if (intent.status === 'tracking') {
+    return 'Tracking';
+  }
+
+  if (intent.status === 'paused') {
+    return 'Paused';
+  }
+
+  if (intent.status === 'closed') {
+    return 'Closed';
+  }
+
+  return 'Confirmed';
 }
 
 function formatPercent(value) {
@@ -395,6 +414,7 @@ export default function App() {
   const [isAnalyzing, setIsAnalyzing] = useState(false);
   const [isSavingTradeIntent, setIsSavingTradeIntent] = useState(false);
   const [isMutatingHistory, setIsMutatingHistory] = useState(false);
+  const [isPollingTracking, setIsPollingTracking] = useState(false);
   const [isPending, startTransition] = useTransition();
   const visibleMarkets = selectedEvent?.markets.filter(marketHasLivePrices) ?? [];
   const eventHeadline = selectedEvent ? getEventHeadline(selectedEvent, visibleMarkets) : null;
@@ -404,6 +424,31 @@ export default function App() {
   const selectedModelMarket = selectedMarket ? getModelMarket(statisticalModel, selectedMarket.conditionId) : null;
   const recommendedMarket = getRecommendedMarket(selectedEvent, decisionEngine);
   const tradeSuggestion = buildTradeSuggestion(decisionEngine, tradeAmount, riskInputs);
+  const activeTradeIntents = tradeHistory.filter((intent) => intent.status === 'tracking');
+
+  function syncTradeDraftFromHistory(intents) {
+    if (!tradeDraft?.id) {
+      return;
+    }
+
+    const matchingIntent = intents.find((intent) => intent.id === tradeDraft.id) ?? null;
+
+    if (matchingIntent) {
+      setTradeDraft(matchingIntent);
+      saveStoredTradeDraft(matchingIntent);
+      return;
+    }
+
+    clearStoredTradeDraft();
+    setTradeDraft(null);
+  }
+
+  async function refreshTradeHistory() {
+    const intents = await fetchTradeIntents(6);
+    setTradeHistory(intents);
+    syncTradeDraftFromHistory(intents);
+    return intents;
+  }
 
   async function applyStoredTradeDraft(storedDraft, successMessage) {
     const [event, analytics] = await Promise.all([
@@ -553,6 +598,27 @@ export default function App() {
       isCancelled = true;
     };
   }, []);
+
+  useEffect(() => {
+    if (activeTradeIntents.length === 0) {
+      return undefined;
+    }
+
+    const intervalId = window.setInterval(() => {
+      void (async () => {
+        try {
+          await pollTrackedTradeIntents();
+          await refreshTradeHistory();
+        } catch {
+          // Ignore background polling failures and keep the last known state in the UI.
+        }
+      })();
+    }, 30000);
+
+    return () => {
+      window.clearInterval(intervalId);
+    };
+  }, [activeTradeIntents.map((intent) => intent.id).join('|')]);
 
   async function handleResolveEvent(submittedInput) {
     setError('');
@@ -706,6 +772,67 @@ export default function App() {
       }
     } catch (deleteError) {
       setError(deleteError instanceof Error ? deleteError.message : 'Unable to delete trade intent');
+    } finally {
+      setIsMutatingHistory(false);
+    }
+  }
+
+  async function handlePollActivePositions() {
+    setError('');
+    setNotice('');
+    setIsPollingTracking(true);
+
+    try {
+      await pollTrackedTradeIntents();
+      const intents = await refreshTradeHistory();
+      const stillTracking = intents.filter((intent) => intent.status === 'tracking').length;
+      setNotice(stillTracking > 0 ? 'Updated active positions from live market probabilities.' : 'Polling completed and no active tracked positions remain.');
+    } catch (pollError) {
+      setError(pollError instanceof Error ? pollError.message : 'Unable to poll active positions');
+    } finally {
+      setIsPollingTracking(false);
+    }
+  }
+
+  async function handleSellTrackedIntent(intent) {
+    setError('');
+    setNotice('');
+    setIsMutatingHistory(true);
+
+    try {
+      const nextIntent = await sellTradeIntentRequest(intent.id);
+      setTradeHistory((previous) => replaceIntentInList(previous, nextIntent));
+
+      if (tradeDraft?.id === nextIntent.id) {
+        setTradeDraft(nextIntent);
+        saveStoredTradeDraft(nextIntent);
+      }
+
+      setNotice('Sell Now request prepared and position moved out of active tracking.');
+    } catch (sellError) {
+      setError(sellError instanceof Error ? sellError.message : 'Unable to sell tracked intent');
+    } finally {
+      setIsMutatingHistory(false);
+    }
+  }
+
+  async function handleStopTrackedIntent(intent) {
+    setError('');
+    setNotice('');
+    setIsMutatingHistory(true);
+
+    try {
+      const nextIntent = await stopTradeIntentRequest(intent.id);
+      setTradeHistory((previous) => replaceIntentInList(previous, nextIntent));
+
+      if (tradeDraft?.id === nextIntent.id) {
+        setTradeDraft(nextIntent);
+        saveStoredTradeDraft(nextIntent);
+      }
+
+      setNotice('Tracking paused for this position.');
+    } catch (stopError) {
+      setError(stopError instanceof Error ? stopError.message : 'Unable to stop trade monitoring');
     } finally {
       setIsMutatingHistory(false);
     }
@@ -1317,7 +1444,7 @@ export default function App() {
                         </button>
                         {tradeDraft?.confirmedAt ? (
                           <p className="trade-status-copy">
-                            {tradeDraft.status === 'tracking' ? 'Tracking' : 'Confirmed'} {formatDate(tradeDraft.confirmedAt)}
+                            {formatIntentStatus(tradeDraft)} {formatDate(tradeDraft.confirmedAt)}
                           </p>
                         ) : (
                           <p className="trade-status-copy">Draft autosaves and survives refresh.</p>
@@ -1352,7 +1479,7 @@ export default function App() {
                                 {formatCurrency(intent.tradeAmount)} · stop {formatPercent(intent.tradeSuggestion?.stopLossProbability)} · take {formatPercent(intent.tradeSuggestion?.takeProfitProbability)}
                               </span>
                               <small>
-                                {intent.status === 'tracking' ? 'Tracking' : 'Confirmed'} · {formatDateTime(intent.confirmedAt)}
+                                {formatIntentStatus(intent)} · {formatDateTime(intent.confirmedAt)}
                               </small>
                               {intent.executionRequest?.readyForExecution ? (
                                 <small>
@@ -1405,6 +1532,108 @@ export default function App() {
             </section>
           ) : null}
         </article>
+      </section>
+
+      <section className="panel-card active-positions-card">
+        <div className="panel-heading panel-heading-inline">
+          <div>
+            <p className="eyebrow">Step 10 Monitoring</p>
+            <h2>Active tracked positions</h2>
+          </div>
+          <div className="action-row">
+            <span className="market-chip">{activeTradeIntents.length} tracking</span>
+            <button
+              type="button"
+              className="secondary-button secondary-button-muted"
+              onClick={() => void handlePollActivePositions()}
+              disabled={activeTradeIntents.length === 0 || isPollingTracking}
+            >
+              {isPollingTracking ? 'Polling...' : 'Poll Now'}
+            </button>
+          </div>
+        </div>
+
+        {activeTradeIntents.length === 0 ? (
+          <p className="empty-state">No active tracked positions yet.</p>
+        ) : (
+          <div className="active-positions-grid">
+            {activeTradeIntents.map((intent) => {
+              const currentProbability = intent.monitoring?.currentProbability ?? intent.recommendation?.currentProbability ?? null;
+              const entryProbability = intent.monitoring?.entryProbability ?? intent.executionRequest?.entryProbability ?? null;
+              const drift = typeof currentProbability === 'number' && typeof entryProbability === 'number'
+                ? currentProbability - entryProbability
+                : null;
+
+              return (
+                <article key={intent.id} className="active-position-item">
+                  <div className="panel-heading panel-heading-inline">
+                    <div>
+                      <p className="eyebrow">{intent.eventTitle ?? intent.eventSlug}</p>
+                      <h2>{intent.outcomeLabel} in {intent.marketQuestion}</h2>
+                    </div>
+                    <span className="market-chip">{intent.monitoring?.state ?? 'active'}</span>
+                  </div>
+
+                  <div className="trade-preview-grid">
+                    <article>
+                      <span>Current probability</span>
+                      <strong>{formatPercent(currentProbability)}</strong>
+                    </article>
+                    <article>
+                      <span>Entry probability</span>
+                      <strong>{formatPercent(entryProbability)}</strong>
+                    </article>
+                    <article>
+                      <span>Drift from entry</span>
+                      <strong>{formatSignedPercent(drift)}</strong>
+                    </article>
+                    <article>
+                      <span>Stop-loss</span>
+                      <strong>{formatPercent(intent.monitoring?.stopLossProbability)}</strong>
+                    </article>
+                    <article>
+                      <span>Take-profit</span>
+                      <strong>{formatPercent(intent.monitoring?.takeProfitProbability)}</strong>
+                    </article>
+                    <article>
+                      <span>Last evaluation</span>
+                      <strong>{formatDateTime(intent.monitoring?.lastEvaluationAt)}</strong>
+                    </article>
+                  </div>
+
+                  <p className="trade-status-copy">{intent.monitoring?.notes ?? 'Monitoring live price movement.'}</p>
+
+                  <div className="trade-history-actions">
+                    <button
+                      type="button"
+                      className="secondary-button"
+                      onClick={() => void handleSellTrackedIntent(intent)}
+                      disabled={isMutatingHistory}
+                    >
+                      Sell Now
+                    </button>
+                    <button
+                      type="button"
+                      className="ghost-button"
+                      onClick={() => void handleStopTrackedIntent(intent)}
+                      disabled={isMutatingHistory}
+                    >
+                      Stop Bot
+                    </button>
+                    <button
+                      type="button"
+                      className="ghost-button"
+                      onClick={() => void handleRestoreTradeIntent(intent)}
+                      disabled={isMutatingHistory}
+                    >
+                      Open Intent
+                    </button>
+                  </div>
+                </article>
+              );
+            })}
+          </div>
+        )}
       </section>
 
       {isTradeModalOpen && tradeSuggestion && decisionEngine?.recommendation ? (

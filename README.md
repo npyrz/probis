@@ -57,6 +57,8 @@ curl http://localhost:4000/health
 - Lets the user preview stake, expected value, break-even, stop-loss, take-profit, and risk/reward.
 - Persists trade intents to a local JSON store.
 - Converts a saved intent into a tracking scaffold and execution-request shape.
+- Polls tracked positions against current market probability and evaluates stop-loss and take-profit triggers.
+- Exposes operator controls for Sell Now and Stop Bot on tracked positions.
 
 ## Workspace Layout
 
@@ -133,7 +135,7 @@ The API is a single Express service in `apps/api`. It exposes four route groups:
 - `GET|POST /api/ai/*`
 	Handles Ollama availability, prompt smoke tests, and full event analysis plus decision output.
 - `GET|POST|PATCH|DELETE /api/trades/*`
-	Handles local trade-intent storage and transition to a monitoring-ready state.
+	Handles local trade-intent storage, execution-request shaping, live monitoring updates, and tracked-position actions.
 
 ### 2. Data Providers
 
@@ -157,6 +159,7 @@ The React app in `apps/web` is an analyst and trader console, not a passive dash
 5. Adjust sizing and risk controls.
 6. Save or edit the trade intent.
 7. Transition the intent into tracking.
+8. Poll or manage active tracked positions from the operator console.
 
 ## End-to-End Flow
 

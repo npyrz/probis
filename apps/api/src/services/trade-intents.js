@@ -2,6 +2,8 @@ import { mkdir, readFile, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { randomUUID } from 'node:crypto';
 
+import { fetchEventByInput } from './polymarket/gamma.js';
+
 const DATA_DIRECTORY = path.resolve(process.cwd(), 'data');
 const TRADE_INTENTS_FILE = path.join(DATA_DIRECTORY, 'trade-intents.json');
 
@@ -80,7 +82,26 @@ function buildMonitoringState(intent) {
     takeProfitProbability: intent.tradeSuggestion?.takeProfitProbability ?? null,
     stopTriggeredAt: null,
     takeProfitTriggeredAt: null,
-    notes: 'Monitoring scaffold only. Live polling and exit automation are not wired yet.'
+    exitReason: null,
+    notes: 'Tracking live probability against configured stop-loss and take-profit levels.'
+  };
+}
+
+function buildExitRequestShape(intent, exitReason) {
+  return {
+    requestId: randomUUID(),
+    requestType: 'market-sell-intent',
+    venue: 'polymarket-us',
+    side: 'sell',
+    orderType: 'market-intent',
+    createdAt: new Date().toISOString(),
+    readyForExecution: false,
+    eventSlug: intent.eventSlug,
+    conditionId: intent.conditionId ?? null,
+    marketQuestion: intent.marketQuestion,
+    outcomeLabel: intent.outcomeLabel,
+    sharesEstimate: intent.executionRequest?.sharesEstimate ?? null,
+    exitReason
   };
 }
 
@@ -119,6 +140,70 @@ function findTradeIntentOrThrow(intents, id) {
   }
 
   return existing;
+}
+
+function findTrackedMarketOutcome(event, intent) {
+  const market = event.markets.find((candidate) => candidate.conditionId === intent.conditionId)
+    ?? event.markets.find((candidate) => candidate.question === intent.marketQuestion)
+    ?? null;
+  const outcome = market?.outcomes.find((candidate) => candidate.label === intent.outcomeLabel) ?? null;
+
+  return {
+    market,
+    outcome
+  };
+}
+
+function finalizeTrackedIntent(intent, exitReason, monitoringState) {
+  return {
+    ...intent,
+    status: 'closed',
+    monitoring: monitoringState,
+    exitRequest: buildExitRequestShape(intent, exitReason),
+    updatedAt: new Date().toISOString()
+  };
+}
+
+function evaluateMonitoringState(intent, currentProbability) {
+  const baseMonitoring = {
+    ...intent.monitoring,
+    lastEvaluationAt: new Date().toISOString(),
+    currentProbability,
+    stopLossProbability: intent.tradeSuggestion?.stopLossProbability ?? intent.monitoring?.stopLossProbability ?? null,
+    takeProfitProbability: intent.tradeSuggestion?.takeProfitProbability ?? intent.monitoring?.takeProfitProbability ?? null
+  };
+  const stopLossProbability = baseMonitoring.stopLossProbability;
+  const takeProfitProbability = baseMonitoring.takeProfitProbability;
+
+  if (typeof currentProbability === 'number' && typeof stopLossProbability === 'number' && currentProbability <= stopLossProbability) {
+    return finalizeTrackedIntent(intent, 'stop-loss-hit', {
+      ...baseMonitoring,
+      state: 'stop-loss-hit',
+      stopTriggeredAt: new Date().toISOString(),
+      exitReason: 'stop-loss-hit',
+      notes: 'Stop-loss threshold reached during monitoring.'
+    });
+  }
+
+  if (typeof currentProbability === 'number' && typeof takeProfitProbability === 'number' && currentProbability >= takeProfitProbability) {
+    return finalizeTrackedIntent(intent, 'take-profit-hit', {
+      ...baseMonitoring,
+      state: 'take-profit-hit',
+      takeProfitTriggeredAt: new Date().toISOString(),
+      exitReason: 'take-profit-hit',
+      notes: 'Take-profit threshold reached during monitoring.'
+    });
+  }
+
+  return {
+    ...intent,
+    monitoring: {
+      ...baseMonitoring,
+      state: 'active',
+      notes: 'Monitoring live probability against configured stop-loss and take-profit levels.'
+    },
+    updatedAt: new Date().toISOString()
+  };
 }
 
 export function buildTradeIntentPayload(payload) {
@@ -230,6 +315,14 @@ export async function updateTradeIntent(id, payload) {
     updatedAt: new Date().toISOString()
   };
 
+  updatedIntent.executionRequest = {
+    ...updatedIntent.executionRequest,
+    requestId: existing.executionRequest?.requestId ?? updatedIntent.executionRequest.requestId,
+    createdAt: existing.executionRequest?.createdAt ?? updatedIntent.executionRequest.createdAt,
+    readyForExecution: existing.executionRequest?.readyForExecution ?? updatedIntent.executionRequest.readyForExecution,
+    preparedAt: existing.executionRequest?.preparedAt ?? null
+  };
+
   await writeTradeIntents(replaceTradeIntent(intents, updatedIntent));
   return updatedIntent;
 }
@@ -255,6 +348,99 @@ export async function executeTradeIntent(id) {
       preparedAt: new Date().toISOString()
     },
     monitoring: buildMonitoringState(existing),
+    updatedAt: new Date().toISOString()
+  };
+
+  await writeTradeIntents(replaceTradeIntent(intents, nextIntent));
+  return nextIntent;
+}
+
+export async function pollTradeIntent(env, id) {
+  const intents = await readTradeIntents();
+  const existing = findTradeIntentOrThrow(intents, id);
+
+  if (existing.status !== 'tracking') {
+    return existing;
+  }
+
+  const event = await fetchEventByInput(env, existing.input ?? existing.eventSlug);
+  const { outcome } = findTrackedMarketOutcome(event, existing);
+  const currentProbability = outcome?.probability ?? null;
+  const nextIntent = evaluateMonitoringState(existing, currentProbability);
+
+  await writeTradeIntents(replaceTradeIntent(intents, nextIntent));
+  return nextIntent;
+}
+
+export async function pollTrackingTradeIntents(env) {
+  const intents = await readTradeIntents();
+  const nextIntents = [];
+
+  for (const intent of intents) {
+    if (intent.status !== 'tracking') {
+      nextIntents.push(intent);
+      continue;
+    }
+
+    try {
+      const event = await fetchEventByInput(env, intent.input ?? intent.eventSlug);
+      const { outcome } = findTrackedMarketOutcome(event, intent);
+      nextIntents.push(evaluateMonitoringState(intent, outcome?.probability ?? null));
+    } catch {
+      nextIntents.push({
+        ...intent,
+        monitoring: {
+          ...intent.monitoring,
+          lastEvaluationAt: new Date().toISOString(),
+          notes: 'Monitoring refresh failed on the last poll attempt.'
+        },
+        updatedAt: new Date().toISOString()
+      });
+    }
+  }
+
+  await writeTradeIntents(nextIntents);
+  return nextIntents.filter((intent) => intent.status === 'tracking');
+}
+
+export async function sellTradeIntent(id) {
+  const intents = await readTradeIntents();
+  const existing = findTradeIntentOrThrow(intents, id);
+
+  if (existing.status !== 'tracking') {
+    throw new Error('Sell Now is only available for tracked positions.');
+  }
+
+  const nextIntent = finalizeTrackedIntent(existing, 'manual-sell', {
+    ...existing.monitoring,
+    state: 'sold-manual',
+    lastEvaluationAt: new Date().toISOString(),
+    exitReason: 'manual-sell',
+    notes: 'Manual sell requested from the dashboard.'
+  });
+
+  await writeTradeIntents(replaceTradeIntent(intents, nextIntent));
+  return nextIntent;
+}
+
+export async function stopTradeIntent(id) {
+  const intents = await readTradeIntents();
+  const existing = findTradeIntentOrThrow(intents, id);
+
+  if (existing.status !== 'tracking') {
+    throw new Error('Stop Bot is only available for tracked positions.');
+  }
+
+  const nextIntent = {
+    ...existing,
+    status: 'paused',
+    monitoring: {
+      ...existing.monitoring,
+      state: 'stopped',
+      lastEvaluationAt: new Date().toISOString(),
+      exitReason: 'bot-stopped',
+      notes: 'Automation paused manually from the dashboard.'
+    },
     updatedAt: new Date().toISOString()
   };
 

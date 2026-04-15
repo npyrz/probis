@@ -120,3 +120,35 @@ export async function executeTradeIntent(id) {
 
   return data.intent;
 }
+
+export async function pollTrackedTradeIntents() {
+  const data = await requestJson('/api/trades/intents/poll', {
+    method: 'POST'
+  });
+
+  return data.intents;
+}
+
+export async function pollTradeIntent(id) {
+  const data = await requestJson(`/api/trades/intents/${encodeURIComponent(id)}/poll`, {
+    method: 'POST'
+  });
+
+  return data.intent;
+}
+
+export async function sellTradeIntent(id) {
+  const data = await requestJson(`/api/trades/intents/${encodeURIComponent(id)}/sell`, {
+    method: 'POST'
+  });
+
+  return data.intent;
+}
+
+export async function stopTradeIntent(id) {
+  const data = await requestJson(`/api/trades/intents/${encodeURIComponent(id)}/stop`, {
+    method: 'POST'
+  });
+
+  return data.intent;
+}
