@@ -1,5 +1,18 @@
 import axios from 'axios';
 
+const TOKEN_ALIASES = {
+  usho: ['house'],
+  ushouse: ['house'],
+  ussen: ['senate'],
+  ussenate: ['senate'],
+  uspres: ['president', 'presidential'],
+  dem: ['democratic', 'democrats'],
+  rep: ['republican', 'republicans'],
+  gop: ['republican', 'republicans']
+};
+
+const STOP_WORDS = new Set(['the', 'and', 'for', 'will', 'with', 'after', 'before', 'party']);
+
 function parseJsonArray(value) {
   if (Array.isArray(value)) {
     return value;
@@ -80,6 +93,79 @@ function createGammaClient(env) {
   });
 }
 
+function normalizeSearchText(value) {
+  return value.toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim();
+}
+
+function tokenize(value) {
+  return normalizeSearchText(value)
+    .split(/\s+/)
+    .filter((token) => token.length > 1 && !STOP_WORDS.has(token));
+}
+
+function expandTokens(tokens) {
+  const expanded = new Set(tokens);
+
+  for (const token of tokens) {
+    const aliases = TOKEN_ALIASES[token];
+    if (aliases) {
+      for (const alias of aliases) {
+        expanded.add(alias);
+      }
+    }
+  }
+
+  return [...expanded];
+}
+
+function scoreEventCandidate(slug, event) {
+  const baseTokens = tokenize(slug);
+  const tokens = expandTokens(baseTokens);
+  const candidateText = normalizeSearchText(`${event.slug} ${event.title}`);
+  let score = 0;
+
+  for (const token of tokens) {
+    if (candidateText.includes(token)) {
+      score += token.length >= 5 ? 3 : 2;
+    }
+  }
+
+  if (tokens.includes('house') && candidateText.includes('house')) {
+    score += 4;
+  }
+
+  if (tokens.includes('senate') && candidateText.includes('senate')) {
+    score += 4;
+  }
+
+  if (tokens.includes('midterms') && candidateText.includes('midterms')) {
+    score += 3;
+  }
+
+  if (tokens.includes('2026') && candidateText.includes('2026')) {
+    score += 2;
+  }
+
+  return score;
+}
+
+async function findFallbackEvent(env, slug) {
+  const candidates = await fetchActiveEvents(env, { limit: 100, offset: 0 });
+  const ranked = candidates
+    .map((event) => ({
+      event,
+      score: scoreEventCandidate(slug, event)
+    }))
+    .filter((candidate) => candidate.score > 0)
+    .sort((left, right) => right.score - left.score);
+
+  if (ranked.length === 0 || ranked[0].score < 6) {
+    return null;
+  }
+
+  return ranked[0].event;
+}
+
 export function extractEventSlug(input) {
   if (typeof input !== 'string' || input.trim().length === 0) {
     throw new Error('A Polymarket event URL or slug is required.');
@@ -122,12 +208,33 @@ export async function fetchActiveEvents(env, { limit = 10, offset = 0 } = {}) {
 export async function fetchEventByInput(env, input) {
   const gammaClient = createGammaClient(env);
   const slug = extractEventSlug(input);
-  const response = await gammaClient.get(`/events/slug/${encodeURIComponent(slug)}`);
-  const event = Array.isArray(response.data) ? response.data[0] : response.data;
 
-  if (!event) {
-    throw new Error(`No Polymarket event was found for slug "${slug}".`);
+  try {
+    const response = await gammaClient.get(`/events/slug/${encodeURIComponent(slug)}`);
+    const event = Array.isArray(response.data) ? response.data[0] : response.data;
+
+    if (!event) {
+      throw new Error(`No Polymarket event was found for slug "${slug}".`);
+    }
+
+    return normalizeEvent(event);
+  } catch (error) {
+    const status = axios.isAxiosError(error) ? error.response?.status : undefined;
+
+    if (status && status !== 404) {
+      throw error;
+    }
+
+    const fallbackEvent = await findFallbackEvent(env, slug);
+
+    if (!fallbackEvent) {
+      throw new Error(`No Polymarket event was found for slug "${slug}".`);
+    }
+
+    return {
+      ...fallbackEvent,
+      requestedSlug: slug,
+      resolvedFromFallback: true
+    };
   }
-
-  return normalizeEvent(event);
 }
