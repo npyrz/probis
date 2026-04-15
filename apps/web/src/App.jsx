@@ -589,6 +589,7 @@ export default function App() {
   const [isMutatingHistory, setIsMutatingHistory] = useState(false);
   const [isPollingTracking, setIsPollingTracking] = useState(false);
   const [tradeCenterFilter, setTradeCenterFilter] = useState('all');
+  const [hasLoadedInitialData, setHasLoadedInitialData] = useState(false);
   const [isPending, startTransition] = useTransition();
   const tradableMarkets = selectedEvent?.markets ?? [];
   const visibleMarkets = tradableMarkets.filter(marketHasLivePrices);
@@ -662,7 +663,7 @@ export default function App() {
     return intents;
   }
 
-  async function applyStoredTradeDraft(storedDraft, successMessage) {
+  async function applyStoredTradeDraft(storedDraft, successMessage = null) {
     const [event, analytics] = await Promise.all([
       resolveEvent(storedDraft.input),
       resolveEventAggregation(storedDraft.input)
@@ -696,10 +697,21 @@ export default function App() {
     const matchingMarket = event.markets.find((market) => market.conditionId === storedDraft.conditionId);
     const fallbackMarket = event.markets.filter(marketHasLivePrices)[0] ?? null;
     setSelectedMarketId(matchingMarket?.conditionId ?? fallbackMarket?.conditionId ?? null);
-    setNotice(successMessage);
+    if (typeof successMessage === 'string' && successMessage.length > 0) {
+      setNotice(successMessage);
+    }
   }
 
   useEffect(() => {
+    if (!hasLoadedInitialData) {
+      return;
+    }
+
+    if (activeTradeIntents.length > 0) {
+      clearStoredTradeDraft();
+      return;
+    }
+
     const storedDraft = loadStoredTradeDraft();
 
     if (!storedDraft?.input || !isRestorableDraft(storedDraft)) {
@@ -717,7 +729,7 @@ export default function App() {
           return;
         }
 
-        await applyStoredTradeDraft(storedDraft, 'Restored saved trade draft.');
+        await applyStoredTradeDraft(storedDraft);
       } catch {
         clearStoredTradeDraft();
       }
@@ -728,7 +740,7 @@ export default function App() {
     return () => {
       isCancelled = true;
     };
-  }, []);
+  }, [hasLoadedInitialData, activeTradeIntents.length]);
 
   useEffect(() => {
     const nextDraft = buildTradeDraft(
@@ -805,6 +817,10 @@ export default function App() {
       } catch (loadError) {
         if (!isCancelled) {
           setError(loadError instanceof Error ? loadError.message : 'Unable to load initial data');
+        }
+      } finally {
+        if (!isCancelled) {
+          setHasLoadedInitialData(true);
         }
       }
     }
@@ -1125,10 +1141,8 @@ export default function App() {
       setLastTradeUpdate(new Date().toISOString());
       clearStoredTradeDraft();
       setTradeDraft(null);
-
-      if (selectedEvent?.slug && nextIntent.eventSlug === selectedEvent.slug) {
-        clearSelectedEventContext();
-      }
+      clearSelectedEventContext();
+      setTradeCenterFilter('tracking');
 
       setNotice('Buy order submitted to Polymarket US. Intent is now actively trading.');
     } catch (executeError) {
