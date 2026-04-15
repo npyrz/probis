@@ -93,6 +93,17 @@ function buildMonitoringState(intent) {
   };
 }
 
+function getExecutedEntryProbability(intent, buyOrder) {
+  const shares = Number.parseFloat(buyOrder?.sharesFilled ?? intent?.executionRequest?.sharesEstimate ?? NaN);
+  const spent = Number.parseFloat(buyOrder?.notionalSpent ?? intent?.tradeAmount ?? NaN);
+
+  if (!Number.isFinite(shares) || shares <= 0 || !Number.isFinite(spent) || spent <= 0) {
+    return intent.executionRequest?.entryProbability ?? intent.recommendation?.currentProbability ?? null;
+  }
+
+  return spent / shares;
+}
+
 function buildExitRequestShape(intent, exitReason) {
   return {
     requestId: randomUUID(),
@@ -475,6 +486,11 @@ export async function executeTradeIntent(env, id) {
     updatedAt: new Date().toISOString()
   };
 
+  nextIntent.monitoring = {
+    ...nextIntent.monitoring,
+    entryProbability: getExecutedEntryProbability(executableIntent, buyOrder)
+  };
+
   await writeTradeIntents(replaceTradeIntent(intents, nextIntent));
   return nextIntent;
 }
@@ -586,6 +602,33 @@ export async function stopTradeIntent(id) {
       exitReason: 'bot-stopped',
       notes: 'Automation paused manually from the dashboard.'
     },
+    updatedAt: new Date().toISOString()
+  };
+
+  await writeTradeIntents(replaceTradeIntent(intents, nextIntent));
+  return nextIntent;
+}
+
+export async function closeTradeIntent(id) {
+  const intents = await readTradeIntents();
+  const existing = findTradeIntentOrThrow(intents, id);
+
+  if (existing.status === 'closed') {
+    return existing;
+  }
+
+  const nextIntent = {
+    ...existing,
+    status: 'closed',
+    monitoring: existing.monitoring
+      ? {
+          ...existing.monitoring,
+          state: 'closed-manual',
+          lastEvaluationAt: new Date().toISOString(),
+          exitReason: 'intent-closed-manual',
+          notes: 'Intent closed manually from Trade Center.'
+        }
+      : existing.monitoring,
     updatedAt: new Date().toISOString()
   };
 

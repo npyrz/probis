@@ -3,6 +3,7 @@ import { useEffect, useState, useTransition } from 'react';
 import {
   analyzeEvent,
   createTradeIntent,
+  closeTradeIntent as closeTradeIntentRequest,
   deleteTradeIntent as deleteTradeIntentRequest,
   executeTradeIntent as executeTradeIntentRequest,
   fetchActiveEvents,
@@ -488,6 +489,17 @@ function estimateTrackedPnl(intent, currentProbability, entryProbability) {
   };
 }
 
+function getTrackedEntryProbability(intent) {
+  const sharesFilled = Number.parseFloat(intent?.position?.sharesFilled ?? NaN);
+  const notionalSpent = Number.parseFloat(intent?.position?.notionalSpent ?? NaN);
+
+  if (Number.isFinite(sharesFilled) && sharesFilled > 0 && Number.isFinite(notionalSpent) && notionalSpent > 0) {
+    return notionalSpent / sharesFilled;
+  }
+
+  return intent?.monitoring?.entryProbability ?? intent?.executionRequest?.entryProbability ?? null;
+}
+
 function replaceIntentInList(intents, nextIntent) {
   return intents.map((intent) => (intent.id === nextIntent.id ? nextIntent : intent));
 }
@@ -848,7 +860,7 @@ export default function App() {
           // Ignore background polling failures and keep the last known state in the UI.
         }
       })();
-    }, 10000);
+    }, 5000);
 
     return () => {
       window.clearInterval(intervalId);
@@ -1111,6 +1123,39 @@ export default function App() {
         setNotice('That trade intent no longer exists. Refreshed history.');
       } else {
         setError(stopError instanceof Error ? stopError.message : 'Unable to stop trade monitoring');
+      }
+    } finally {
+      setIsMutatingHistory(false);
+    }
+  }
+
+  async function handleCloseTradeIntent(intent) {
+    setError('');
+    setNotice('');
+    setIsMutatingHistory(true);
+
+    try {
+      const nextIntent = await closeTradeIntentRequest(intent.id);
+      setTradeHistory((previous) => replaceIntentInList(previous, nextIntent));
+      setLastTradeUpdate(new Date().toISOString());
+
+      if (tradeDraft?.id === nextIntent.id) {
+        setTradeDraft(nextIntent);
+        saveStoredTradeDraft(nextIntent);
+      }
+
+      setNotice('Intent closed and moved out of active monitoring.');
+    } catch (closeError) {
+      if (isTradeIntentNotFoundError(closeError)) {
+        await refreshTradeHistory();
+
+        if (tradeDraft?.id === intent.id) {
+          handleClearTradeDraft();
+        }
+
+        setNotice('That trade intent no longer exists. Refreshed history.');
+      } else {
+        setError(closeError instanceof Error ? closeError.message : 'Unable to close trade intent');
       }
     } finally {
       setIsMutatingHistory(false);
@@ -1634,7 +1679,7 @@ export default function App() {
                 const precheckMessage = getExecutePrecheckMessage(intent);
                 const isTracking = intent.status === 'tracking';
                 const currentProbability = intent.monitoring?.currentProbability ?? intent.recommendation?.currentProbability ?? null;
-                const entryProbability = intent.monitoring?.entryProbability ?? intent.executionRequest?.entryProbability ?? null;
+                const entryProbability = getTrackedEntryProbability(intent);
                 const monitoringState = intent.monitoring?.state ?? 'active';
                 const drift = typeof currentProbability === 'number' && typeof entryProbability === 'number'
                   ? currentProbability - entryProbability
@@ -1763,6 +1808,14 @@ export default function App() {
                           <button
                             type="button"
                             className="ghost-button"
+                            onClick={() => void handleCloseTradeIntent(intent)}
+                            disabled={isMutatingHistory}
+                          >
+                            Close Intent
+                          </button>
+                          <button
+                            type="button"
+                            className="ghost-button"
                             onClick={() => void handleRestoreTradeIntent(intent)}
                             disabled={isMutatingHistory}
                           >
@@ -1791,6 +1844,16 @@ export default function App() {
                           >
                             Delete
                           </button>
+                          {intent.status !== 'closed' ? (
+                            <button
+                              type="button"
+                              className="ghost-button"
+                              onClick={() => void handleCloseTradeIntent(intent)}
+                              disabled={isMutatingHistory}
+                            >
+                              Close Intent
+                            </button>
+                          ) : null}
                         </>
                       )}
                     </div>

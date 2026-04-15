@@ -152,3 +152,11 @@ export async function stopTradeIntent(id) {
 
   return data.intent;
 }
+
+export async function closeTradeIntent(id) {
+  const data = await requestJson(`/api/trades/intents/${encodeURIComponent(id)}/close`, {
+    method: 'POST'
+  });
+
+  return data.intent;
+}
