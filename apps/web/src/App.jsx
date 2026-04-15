@@ -77,6 +77,21 @@ function formatDateTime(value) {
   }).format(parsed);
 }
 
+function formatClockTime(value) {
+  const parsed = value instanceof Date ? value : new Date(value);
+
+  if (Number.isNaN(parsed.getTime())) {
+    return 'n/a';
+  }
+
+  return new Intl.DateTimeFormat('en-US', {
+    hour: '2-digit',
+    minute: '2-digit',
+    second: '2-digit',
+    hour12: false
+  }).format(parsed);
+}
+
 function formatIntentStatus(intent) {
   if (intent.status === 'tracking') {
     return 'Tracking';
@@ -409,6 +424,10 @@ export default function App() {
   const [analysis, setAnalysis] = useState('');
   const [error, setError] = useState('');
   const [notice, setNotice] = useState('');
+  const [liveClock, setLiveClock] = useState(() => new Date());
+  const [lastMarketUpdate, setLastMarketUpdate] = useState(null);
+  const [lastAiUpdate, setLastAiUpdate] = useState(null);
+  const [lastTradeUpdate, setLastTradeUpdate] = useState(null);
   const [isRefreshing, setIsRefreshing] = useState(false);
   const [isInvalidating, setIsInvalidating] = useState(false);
   const [isAnalyzing, setIsAnalyzing] = useState(false);
@@ -425,6 +444,18 @@ export default function App() {
   const recommendedMarket = getRecommendedMarket(selectedEvent, decisionEngine);
   const tradeSuggestion = buildTradeSuggestion(decisionEngine, tradeAmount, riskInputs);
   const activeTradeIntents = tradeHistory.filter((intent) => intent.status === 'tracking');
+  const selectedLeader = selectedMarket ? getMarketLeader(selectedMarket) : null;
+  const currentRecommendation = decisionEngine?.recommendation ?? null;
+
+  useEffect(() => {
+    const intervalId = window.setInterval(() => {
+      setLiveClock(new Date());
+    }, 1000);
+
+    return () => {
+      window.clearInterval(intervalId);
+    };
+  }, []);
 
   function syncTradeDraftFromHistory(intents) {
     if (!tradeDraft?.id) {
@@ -584,6 +615,8 @@ export default function App() {
         setStatus(nextStatus);
         setActiveEvents(nextEvents);
         setTradeHistory(nextTradeHistory);
+        setLastMarketUpdate(new Date().toISOString());
+        setLastTradeUpdate(new Date().toISOString());
         setNotice('');
       } catch (loadError) {
         if (!isCancelled) {
@@ -609,6 +642,8 @@ export default function App() {
         try {
           await pollTrackedTradeIntents();
           await refreshTradeHistory();
+          setLastMarketUpdate(new Date().toISOString());
+          setLastTradeUpdate(new Date().toISOString());
         } catch {
           // Ignore background polling failures and keep the last known state in the UI.
         }
@@ -640,6 +675,7 @@ export default function App() {
       const liveMarkets = event.markets.filter(marketHasLivePrices);
       setSelectedMarketId(liveMarkets[0]?.conditionId ?? null);
       setEventInput(submittedInput);
+      setLastMarketUpdate(new Date().toISOString());
     } catch (resolveError) {
       setSelectedEvent(null);
       setAggregation(null);
@@ -681,6 +717,7 @@ export default function App() {
       const result = await analyzeEvent(selectedEvent.slug, options);
       setAnalysis(result.analysis);
       setDecisionEngine(result.decisionEngine ?? null);
+      setLastAiUpdate(new Date().toISOString());
       setNotice(options.refresh ? 'Refreshed analytics and reran the decision engine.' : 'AI analysis updated.');
     } catch (analysisError) {
       setError(analysisError instanceof Error ? analysisError.message : 'Unable to run AI analysis');
@@ -717,11 +754,13 @@ export default function App() {
         const result = await analyzeEvent(event.slug, { refresh: true });
         setAnalysis(result.analysis);
         setDecisionEngine(result.decisionEngine ?? null);
+        setLastAiUpdate(new Date().toISOString());
       } else {
         setAnalysis('');
         setDecisionEngine(null);
       }
 
+      setLastMarketUpdate(new Date().toISOString());
       setNotice('Market data refreshed from source.');
     } catch (refreshError) {
       setError(refreshError instanceof Error ? refreshError.message : 'Unable to refresh analytics');
@@ -737,6 +776,7 @@ export default function App() {
 
     try {
       await invalidateEventAggregationCache(scope === 'all' ? null : eventInput.trim() || null);
+      setLastMarketUpdate(new Date().toISOString());
       setNotice(scope === 'all' ? 'Cleared the full analytics cache.' : 'Cleared the current event analytics cache.');
     } catch (invalidateError) {
       setError(invalidateError instanceof Error ? invalidateError.message : 'Unable to invalidate analytics cache');
@@ -764,6 +804,7 @@ export default function App() {
     try {
       await deleteTradeIntentRequest(intentId);
       setTradeHistory((previous) => previous.filter((intent) => intent.id !== intentId));
+      setLastTradeUpdate(new Date().toISOString());
 
       if (tradeDraft?.id === intentId) {
         handleClearTradeDraft();
@@ -785,6 +826,8 @@ export default function App() {
     try {
       await pollTrackedTradeIntents();
       const intents = await refreshTradeHistory();
+      setLastMarketUpdate(new Date().toISOString());
+      setLastTradeUpdate(new Date().toISOString());
       const stillTracking = intents.filter((intent) => intent.status === 'tracking').length;
       setNotice(stillTracking > 0 ? 'Updated active positions from live market probabilities.' : 'Polling completed and no active tracked positions remain.');
     } catch (pollError) {
@@ -802,6 +845,7 @@ export default function App() {
     try {
       const nextIntent = await sellTradeIntentRequest(intent.id);
       setTradeHistory((previous) => replaceIntentInList(previous, nextIntent));
+      setLastTradeUpdate(new Date().toISOString());
 
       if (tradeDraft?.id === nextIntent.id) {
         setTradeDraft(nextIntent);
@@ -824,6 +868,7 @@ export default function App() {
     try {
       const nextIntent = await stopTradeIntentRequest(intent.id);
       setTradeHistory((previous) => replaceIntentInList(previous, nextIntent));
+      setLastTradeUpdate(new Date().toISOString());
 
       if (tradeDraft?.id === nextIntent.id) {
         setTradeDraft(nextIntent);
@@ -846,6 +891,7 @@ export default function App() {
     try {
       const nextIntent = await executeTradeIntentRequest(intent.id);
       setTradeHistory((previous) => replaceIntentInList(previous, nextIntent));
+      setLastTradeUpdate(new Date().toISOString());
 
       if (tradeDraft?.id === nextIntent.id) {
         setTradeDraft(nextIntent);
@@ -900,6 +946,7 @@ export default function App() {
         setTradeDraft(savedIntent);
         setTradeHistory((previous) => [savedIntent, ...previous.filter((intent) => intent.id !== savedIntent.id)].slice(0, 6));
         saveStoredTradeDraft(savedIntent);
+        setLastTradeUpdate(new Date().toISOString());
         setNotice(tradeDraft?.id ? 'Saved trade intent changes.' : 'Trade draft confirmed and stored in backend intent history.');
         setIsTradeModalOpen(false);
       } catch (saveError) {
@@ -919,84 +966,83 @@ export default function App() {
   }
 
   return (
-    <main className="app-shell">
-      <section className="hero-card">
-        <div className="hero-copy">
-          <p className="eyebrow">Steps 4 and 5 live</p>
-          <h1>Resolve an event and inspect its live market board.</h1>
-          <p className="lede">
-            The app now resolves a Polymarket event, surfaces event-level context, and displays live quoted
-            outcomes in a market board that stays readable for both binary and multi-outcome structures.
-          </p>
+    <main className="app-shell terminal-shell">
+      <header className="terminal-topbar">
+        <div className="terminal-brand-block">
+          <p className="terminal-kicker">Step 12 Dashboard</p>
+          <h1>PROBIS OPS</h1>
+          <p className="terminal-subtitle">Local-first prediction market console with live trade planning, monitoring, and operator controls.</p>
         </div>
+        <div className="terminal-meta-grid">
+          <article>
+            <span>Clock</span>
+            <strong>{formatClockTime(liveClock)}</strong>
+          </article>
+          <article>
+            <span>Tracking</span>
+            <strong>{activeTradeIntents.length}</strong>
+          </article>
+          <article>
+            <span>Last Market</span>
+            <strong>{formatDateTime(lastMarketUpdate)}</strong>
+          </article>
+          <article>
+            <span>Last AI</span>
+            <strong>{formatDateTime(lastAiUpdate)}</strong>
+          </article>
+        </div>
+      </header>
 
-        <div className="status-grid">
-          <article>
-            <span>Polymarket Read API</span>
-            <strong>{status?.polymarket?.publicReadOk ? 'Reachable' : 'Checking...'}</strong>
-            <p>
-              {status?.polymarket?.auth?.privateKeyValid
-                ? 'Private key parses for CLOB auth checks.'
-                : 'Gamma reads work even when CLOB auth is not ready.'}
-            </p>
-          </article>
-          <article>
-            <span>Ollama</span>
-            <strong>{status?.ai?.reachable ? status.ai.resolvedModel ?? 'Reachable' : 'Unavailable'}</strong>
-            <p>Requested model: {status?.ai?.requestedModel ?? 'n/a'}</p>
-          </article>
-          <article>
-            <span>Event Input</span>
-            <strong>{selectedEvent ? selectedEvent.slug : 'Waiting for lookup'}</strong>
-            <p>Paste a full Polymarket event URL or just the slug.</p>
-          </article>
+      <section className="terminal-ticker">
+        <div className="ticker-item">
+          <span>POLY</span>
+          <strong>{status?.polymarket?.publicReadOk ? 'ONLINE' : 'CHECKING'}</strong>
+        </div>
+        <div className="ticker-item">
+          <span>OLLAMA</span>
+          <strong>{status?.ai?.reachable ? status.ai.resolvedModel ?? 'READY' : 'OFFLINE'}</strong>
+        </div>
+        <div className="ticker-item">
+          <span>EVENT</span>
+          <strong>{selectedEvent?.slug ?? 'NONE'}</strong>
+        </div>
+        <div className="ticker-item">
+          <span>REC</span>
+          <strong>{currentRecommendation ? `${decisionEngine.action.toUpperCase()} ${currentRecommendation.outcomeLabel}` : 'WAITING'}</strong>
+        </div>
+        <div className="ticker-item">
+          <span>REALTIME</span>
+          <strong>{activeTradeIntents.length > 0 ? 'LIVE POLLING' : 'IDLE'}</strong>
         </div>
       </section>
 
-      <section className="control-card">
-        <form className="event-form" onSubmit={handleSubmit}>
-          <label htmlFor="event-input">Event URL or slug</label>
-          <div className="input-row">
-            <input
-              id="event-input"
-              name="event-input"
-              type="text"
-              placeholder="https://polymarket.com/event/..."
-              value={eventInput}
-              onChange={(inputEvent) => setEventInput(inputEvent.target.value)}
-            />
-            <button type="submit" disabled={isPending}>
-              {isPending ? 'Loading...' : 'Resolve Event'}
-            </button>
-          </div>
-        </form>
+      {error ? <p className="error-banner terminal-banner">{error}</p> : null}
+      {notice ? <p className="notice-banner terminal-banner">{notice}</p> : null}
 
-        {error ? <p className="error-banner">{error}</p> : null}
-      </section>
-
-      <section className="content-grid">
-        <article className="panel-card">
-          <div className="panel-heading">
-            <p className="eyebrow">Step 2</p>
-            <h2>High-volume active events</h2>
-          </div>
-          <div className="event-list">
-            {activeEvents.map((event) => (
-              <button key={event.slug} className="event-list-item" onClick={() => handleUseEvent(event.slug)}>
-                <strong>{event.title}</strong>
-                <span>{event.markets.length} markets</span>
-              </button>
-            ))}
-          </div>
-        </article>
-
-        <article className="panel-card panel-card-wide">
-          <div className="panel-heading panel-heading-inline">
-            <div>
-              <p className="eyebrow">Steps 4 through 7</p>
-              <h2>{selectedEvent ? selectedEvent.title : 'Resolve an event to inspect its markets'}</h2>
+      <section className="dashboard-grid dashboard-grid-no-explorer">
+        <aside className="dashboard-sidebar">
+          <section className="control-card terminal-card compact-card">
+            <div className="panel-heading">
+              <p className="eyebrow">Operator Console</p>
+              <h2>Resolve Event</h2>
             </div>
-            <div className="action-row">
+            <form className="event-form" onSubmit={handleSubmit}>
+              <label htmlFor="event-input">Event URL or slug</label>
+              <div className="input-row">
+                <input
+                  id="event-input"
+                  name="event-input"
+                  type="text"
+                  placeholder="https://polymarket.com/event/..."
+                  value={eventInput}
+                  onChange={(inputEvent) => setEventInput(inputEvent.target.value)}
+                />
+                <button type="submit" disabled={isPending}>
+                  {isPending ? 'Loading...' : 'Resolve'}
+                </button>
+              </div>
+            </form>
+            <div className="action-row terminal-action-row">
               <button
                 type="button"
                 className="secondary-button"
@@ -1021,523 +1067,264 @@ export default function App() {
               >
                 {isInvalidating ? 'Clearing...' : 'Clear Event Cache'}
               </button>
-              <button
-                type="button"
-                className="ghost-button"
-                onClick={() => void handleInvalidateCache('all')}
-                disabled={isRefreshing || isInvalidating}
-              >
-                Clear All Cache
-              </button>
             </div>
-          </div>
+          </section>
 
-          {notice ? <p className="notice-banner">{notice}</p> : null}
+          <article className="panel-card terminal-card compact-card">
+            <div className="panel-heading">
+              <p className="eyebrow">Realtime Updates</p>
+              <h2>System Grid</h2>
+            </div>
+            <div className="status-grid compact-status-grid">
+              <article>
+                <span>Polymarket</span>
+                <strong>{status?.polymarket?.publicReadOk ? 'Reachable' : 'Checking...'}</strong>
+                <p>{status?.polymarket?.auth?.privateKeyValid ? 'Auth ready' : 'Read only'}</p>
+              </article>
+              <article>
+                <span>Ollama</span>
+                <strong>{status?.ai?.reachable ? 'Ready' : 'Unavailable'}</strong>
+                <p>{status?.ai?.requestedModel ?? 'n/a'}</p>
+              </article>
+              <article>
+                <span>Trades</span>
+                <strong>{tradeHistory.length}</strong>
+                <p>{activeTradeIntents.length} active tracking</p>
+              </article>
+              <article>
+                <span>Last Trade</span>
+                <strong>{formatDateTime(lastTradeUpdate)}</strong>
+                <p>Intent history sync</p>
+              </article>
+            </div>
+          </article>
 
           {selectedEvent ? (
-            <>
-              <section className="event-summary-card">
-                <div className="event-summary-copy">
-                  <p className="event-meta">
-                    slug: {selectedEvent.slug}
-                    {selectedEvent.resolvedFromFallback ? ` · matched from ${selectedEvent.requestedSlug}` : ''}
-                  </p>
-                  <p className="event-description">
-                    {selectedEvent.description || 'No event description is available for this market.'}
-                  </p>
-                </div>
-
-                <div className="event-summary-stats">
-                  <article>
-                    <span>Live Markets</span>
-                    <strong>{visibleMarkets.length}</strong>
-                  </article>
-                  <article>
-                    <span>Volume</span>
-                    <strong>{formatCompactNumber(selectedEvent.volume)}</strong>
-                  </article>
-                  <article>
-                    <span>Liquidity</span>
-                    <strong>{formatCompactNumber(selectedEvent.liquidity)}</strong>
-                  </article>
-                  <article>
-                    <span>End Date</span>
-                    <strong>{formatDate(selectedEvent.endDate)}</strong>
-                  </article>
-                </div>
-
-                {aggregation ? (
-                  <div className="derived-metrics-grid">
-                    <article>
-                      <span>Most Active Market</span>
-                      <strong>{aggregation.derivedMetrics.highestVolumeMarket?.question ?? 'n/a'}</strong>
-                    </article>
-                    <article>
-                      <span>Most Competitive</span>
-                      <strong>{aggregation.derivedMetrics.mostCompetitiveMarket?.question ?? 'n/a'}</strong>
-                    </article>
-                    <article>
-                      <span>Top Outcome</span>
-                      <strong>
-                        {aggregation.derivedMetrics.topOutcome
-                          ? `${aggregation.derivedMetrics.topOutcome.label} · ${formatPercent(aggregation.derivedMetrics.topOutcome.probability)}`
-                          : 'n/a'}
-                      </strong>
-                    </article>
-                    <article>
-                      <span>Avg Liquidity / Live Market</span>
-                      <strong>{formatCompactNumber(aggregation.derivedMetrics.averageLiquidityPerLiveMarket)}</strong>
-                    </article>
-                  </div>
-                ) : null}
-
-                {statisticalModel?.summary?.bestOpportunity ? (
-                  <div className="model-highlight">
-                    <span>Step 6.1 Statistical Edge</span>
-                    <strong>{statisticalModel.summary.bestOpportunity.question}</strong>
-                    <p>
-                      {statisticalModel.summary.bestOpportunity.label} est. true probability{' '}
-                      {formatPercent(statisticalModel.summary.bestOpportunity.estimatedProbability)} vs market{' '}
-                      {formatPercent(statisticalModel.summary.bestOpportunity.currentProbability)}.
-                    </p>
-                    <p>
-                      Edge {formatSignedPercent(statisticalModel.summary.bestOpportunity.edge)} · confidence{' '}
-                      {formatPercent(statisticalModel.summary.bestOpportunity.confidence)}
-                    </p>
-                  </div>
-                ) : null}
-
-                {decisionEngine?.recommendation ? (
-                  <div className="decision-highlight">
-                    <span>Steps 6.3 and 7</span>
-                    <strong>
-                      {decisionEngine.action.toUpperCase()} {decisionEngine.recommendation.outcomeLabel} in{' '}
-                      {decisionEngine.recommendation.marketQuestion}
-                    </strong>
-                    <p>
-                      Combined confidence {formatPercent(decisionEngine.recommendation.combinedConfidence)} · edge{' '}
-                      {formatSignedPercent(decisionEngine.recommendation.edge)} · EV{' '}
-                      {formatSignedPercent(decisionEngine.recommendation.expectedValuePerDollar)} per $1
-                    </p>
-                    <p>{decisionEngine.recommendation.thesis}</p>
-                  </div>
-                ) : null}
-
-                {eventHeadline ? (
-                  <div className="event-highlight">
-                    <span>Highest-conviction live market</span>
-                    <strong>{eventHeadline.market.question}</strong>
-                    <p>
-                      {eventHeadline.leader.label} leads at {formatPercent(eventHeadline.leader.probability)}.
-                    </p>
-                  </div>
-                ) : null}
-              </section>
-
-              <div className="market-grid">
-                <div className="market-toolbar">
-                  <label>
-                    Sort by
-                    <select value={sortBy} onChange={(event) => setSortBy(event.target.value)}>
-                      <option value="modelEdge">Model edge</option>
-                      <option value="confidence">Confidence</option>
-                      <option value="liquidity">Liquidity</option>
-                      <option value="momentum">Momentum</option>
-                    </select>
-                  </label>
-                  <label>
-                    Filter
-                    <select value={filterBy} onChange={(event) => setFilterBy(event.target.value)}>
-                      <option value="all">All live markets</option>
-                      <option value="positive-edge">Positive edge only</option>
-                      <option value="high-confidence">High confidence</option>
-                      <option value="positive-momentum">Positive momentum</option>
-                    </select>
-                  </label>
-                </div>
-                {rankedMarkets.length === 0 ? (
-                  <p className="empty-state market-empty-state">No markets match the current filter.</p>
-                ) : null}
-                {rankedMarkets.map(({ market, metrics }) => (
-                  <section
-                    key={market.conditionId ?? market.question}
-                    className={`market-card ${selectedMarket?.conditionId === market.conditionId ? 'market-card-active' : ''}`}
-                    role="button"
-                    tabIndex={0}
-                    onClick={() => setSelectedMarketId(market.conditionId)}
-                    onKeyDown={(event) => {
-                      if (event.key === 'Enter' || event.key === ' ') {
-                        event.preventDefault();
-                        setSelectedMarketId(market.conditionId);
-                      }
-                    }}
-                  >
-                    <div className="market-card-header">
-                      <h3>{market.question}</h3>
-                      <div className="market-chip-row">
-                        <span className="market-chip">{market.outcomes.length} outcomes</span>
-                        <span className="market-chip">Vol {formatCompactNumber(market.volume)}</span>
-                        <span className="market-chip">Liq {formatCompactNumber(market.liquidity)}</span>
-                        <span className="market-chip">Edge {formatSignedPercent(metrics.modelEdge)}</span>
-                        <span className="market-chip">Conf {formatPercent(metrics.confidence)}</span>
-                      </div>
-                    </div>
-                    <div className="outcome-list">
-                      {sortOutcomes(market.outcomes).map((outcome) => {
-                        const historicalMarket = findHistoricalMarket(aggregation, market.conditionId);
-                        const historicalOutcome = historicalMarket?.outcomes?.find(
-                          (candidate) => candidate.label === outcome.label
-                        );
-
-                        return (
-                          <div key={`${market.conditionId}-${outcome.label}`} className="outcome-row">
-                            <div className="outcome-copy">
-                              <span>{outcome.label}</span>
-                              <small>
-                                7d move {formatSignedPercent(historicalOutcome?.historySummary?.percentChange)}
-                              </small>
-                              <OutcomeSparkline history={historicalOutcome?.history ?? []} />
-                            </div>
-                            <div className="outcome-value">
-                              <strong>{formatPercent(outcome.probability)}</strong>
-                              <div className="outcome-bar-track" aria-hidden="true">
-                                <div
-                                  className="outcome-bar-fill"
-                                  style={{ width: `${Math.max(0, Math.min(100, (outcome.probability ?? 0) * 100))}%` }}
-                                />
-                              </div>
-                              {statisticalModel ? (
-                                <small className="model-estimate">
-                                  model{' '}
-                                  {formatPercent(
-                                    statisticalModel.markets
-                                      ?.find((candidate) => candidate.conditionId === market.conditionId)
-                                      ?.outcomes?.find((candidate) => candidate.label === outcome.label)
-                                      ?.estimatedProbability
-                                  )}
-                                </small>
-                              ) : null}
-                            </div>
-                          </div>
-                        );
-                      })}
-                    </div>
-                  </section>
-                ))}
+            <article className="panel-card terminal-card compact-card">
+              <div className="panel-heading">
+                <p className="eyebrow">Selected Event</p>
+                <h2>{selectedEvent.title}</h2>
               </div>
+              <p className="event-meta">
+                slug: {selectedEvent.slug}
+                {selectedEvent.resolvedFromFallback ? ` · matched from ${selectedEvent.requestedSlug}` : ''}
+              </p>
+              <p className="terminal-copy">{selectedEvent.description || 'No event description is available for this market.'}</p>
+              <div className="event-summary-stats compact-status-grid">
+                <article>
+                  <span>Live Markets</span>
+                  <strong>{visibleMarkets.length}</strong>
+                </article>
+                <article>
+                  <span>Volume</span>
+                  <strong>{formatCompactNumber(selectedEvent.volume)}</strong>
+                </article>
+                <article>
+                  <span>Liquidity</span>
+                  <strong>{formatCompactNumber(selectedEvent.liquidity)}</strong>
+                </article>
+                <article>
+                  <span>End Date</span>
+                  <strong>{formatDate(selectedEvent.endDate)}</strong>
+                </article>
+              </div>
+              {eventHeadline ? (
+                <div className="event-highlight compact-highlight">
+                  <span>Highest-conviction</span>
+                  <strong>{eventHeadline.market.question}</strong>
+                  <p>
+                    {eventHeadline.leader.label} leads at {formatPercent(eventHeadline.leader.probability)}.
+                  </p>
+                </div>
+              ) : null}
+            </article>
+          ) : null}
+        </aside>
 
-              {selectedMarket ? (
-                <section className="market-detail-card">
-                  <div className="panel-heading panel-heading-inline">
-                    <div>
-                      <p className="eyebrow">Market Drilldown</p>
-                      <h2>{selectedMarket.question}</h2>
-                    </div>
-                    <div className="market-chip-row">
-                      <span className="market-chip">Liq {formatCompactNumber(selectedMarket.liquidity)}</span>
-                      <span className="market-chip">Vol {formatCompactNumber(selectedMarket.volume)}</span>
-                      <span className="market-chip">Conf {formatPercent(selectedModelMarket?.confidence)}</span>
-                    </div>
-                  </div>
+        <aside className="dashboard-rail dashboard-rail-wide">
+          <section className="panel-card terminal-card compact-card ai-panel">
+            <div className="panel-heading panel-heading-inline">
+              <div>
+                <p className="eyebrow">AI Recommendations</p>
+                <h2>Decision Engine</h2>
+              </div>
+              <span className="market-chip">{currentRecommendation ? decisionEngine.action.toUpperCase() : 'IDLE'}</span>
+            </div>
 
-                  <div className="detail-grid">
-                    {sortOutcomes(selectedMarket.outcomes).map((outcome) => {
-                      const historicalOutcome = selectedHistoricalMarket?.outcomes?.find(
-                        (candidate) => candidate.label === outcome.label
-                      );
-                      const modelOutcome = selectedModelMarket?.outcomes?.find(
-                        (candidate) => candidate.label === outcome.label
-                      );
+            {currentRecommendation ? (
+              <>
+                <div className="decision-highlight ai-primary-card">
+                  <span>Current recommendation</span>
+                  <strong>{currentRecommendation.outcomeLabel} in {currentRecommendation.marketQuestion}</strong>
+                  <p>
+                    Confidence {formatPercent(currentRecommendation.combinedConfidence)} · EV {formatSignedPercent(currentRecommendation.expectedValuePerDollar)} · Edge {formatSignedPercent(currentRecommendation.edge)}
+                  </p>
+                  <p>{currentRecommendation.thesis}</p>
+                </div>
 
-                      return (
-                        <article key={`${selectedMarket.conditionId}-${outcome.label}`} className="detail-outcome-card">
-                          <div className="detail-outcome-header">
-                            <strong>{outcome.label}</strong>
-                            <span>{formatPercent(outcome.probability)}</span>
-                          </div>
-                          <OutcomeSparkline history={historicalOutcome?.history ?? []} className="sparkline sparkline-large" />
-                          <div className="detail-metrics">
-                            <span>Model probability</span>
-                            <strong>{formatPercent(modelOutcome?.estimatedProbability)}</strong>
-                            <span>Edge</span>
-                            <strong>{formatSignedPercent(modelOutcome?.edge)}</strong>
-                            <span>7d move</span>
-                            <strong>{formatSignedPercent(historicalOutcome?.historySummary?.percentChange)}</strong>
-                            <span>Point count</span>
-                            <strong>{historicalOutcome?.historySummary?.pointCount ?? 'n/a'}</strong>
-                          </div>
-                        </article>
-                      );
-                    })}
-                  </div>
-
-                  {decisionEngine?.recommendation?.marketQuestion === selectedMarket.question ? (
-                    <div className="detail-callout">
-                      <span>Decision engine rationale</span>
-                      <strong>{decisionEngine.recommendation.outcomeLabel}</strong>
-                      <div className="decision-rationale-grid">
-                        <article>
-                          <span>Combined confidence</span>
-                          <strong>{formatPercent(decisionEngine.recommendation.combinedConfidence)}</strong>
-                        </article>
-                        <article>
-                          <span>Model confidence</span>
-                          <strong>{formatPercent(decisionEngine.recommendation.modelConfidence)}</strong>
-                        </article>
-                        <article>
-                          <span>LLM confidence</span>
-                          <strong>{formatPercent(decisionEngine.recommendation.llmConfidence)}</strong>
-                        </article>
-                        <article>
-                          <span>Agreement</span>
-                          <strong>{decisionEngine.recommendation.agreementWithModel ? 'Aligned' : 'Divergent'}</strong>
-                        </article>
-                      </div>
-                      <p>{decisionEngine.recommendation.thesis}</p>
-                      <p>Risk: {decisionEngine.recommendation.keyRisk}</p>
-                      {decisionEngine.recommendation.reasons.length > 0 ? (
-                        <ul className="reason-list">
-                          {decisionEngine.recommendation.reasons.map((reason) => (
-                            <li key={reason}>{reason}</li>
-                          ))}
-                        </ul>
-                      ) : null}
-                    </div>
-                  ) : null}
-
-                  {recommendedMarket && decisionEngine?.recommendation ? (
-                    <section className="trade-suggestion-card">
-                      <div className="panel-heading panel-heading-inline">
-                        <div>
-                          <p className="eyebrow">Step 7 Trade Suggestion</p>
-                          <h2>
-                            {decisionEngine.action.toUpperCase()} {decisionEngine.recommendation.outcomeLabel} in{' '}
-                            {decisionEngine.recommendation.marketQuestion}
-                          </h2>
-                        </div>
-                        {recommendedMarket.conditionId !== selectedMarket?.conditionId ? (
-                          <button
-                            type="button"
-                            className="ghost-button"
-                            onClick={() => setSelectedMarketId(recommendedMarket.conditionId)}
-                          >
-                            Jump to Recommended Market
-                          </button>
-                        ) : null}
-                      </div>
-
-                      <div className="trade-input-row">
-                        <label>
-                          Enter amount to invest
-                          <input
-                            type="number"
-                            min="1"
-                            step="1"
-                            value={tradeAmount}
-                            onChange={(event) => setTradeAmount(event.target.value)}
-                          />
-                        </label>
-                        <label>
-                          Stop-loss probability
-                          <input
-                            type="number"
-                            min="0.01"
-                            max="0.99"
-                            step="0.01"
-                            value={riskInputs.stopLossProbability}
-                            onChange={(event) => setRiskInputs((current) => ({
-                              ...current,
-                              stopLossProbability: event.target.value
-                            }))}
-                          />
-                        </label>
-                        <label>
-                          Take-profit probability
-                          <input
-                            type="number"
-                            min="0.01"
-                            max="0.99"
-                            step="0.01"
-                            value={riskInputs.takeProfitProbability}
-                            onChange={(event) => setRiskInputs((current) => ({
-                              ...current,
-                              takeProfitProbability: event.target.value
-                            }))}
-                          />
-                        </label>
-                        <div className="market-chip-row">
-                          <span className="market-chip">Entry {formatPercent(decisionEngine.recommendation.currentProbability)}</span>
-                          <span className="market-chip">Model {formatPercent(decisionEngine.recommendation.modelProbability)}</span>
-                          <span className="market-chip">EV {formatSignedPercent(decisionEngine.recommendation.expectedValuePerDollar)}</span>
-                          <span className="market-chip">Stake {formatPercent(decisionEngine.recommendation.suggestedStakeFraction)}</span>
-                          <span className="market-chip">Stop {formatPercent(decisionEngine.recommendation.stopLossProbability)}</span>
-                          <span className="market-chip">Take {formatPercent(decisionEngine.recommendation.takeProfitProbability)}</span>
-                        </div>
-                      </div>
-
-                      {tradeSuggestion ? (
-                        <div className="trade-preview-grid">
-                          <article>
-                            <span>Expected profit</span>
-                            <strong>{formatCurrency(tradeSuggestion.expectedProfit)}</strong>
-                          </article>
-                          <article>
-                            <span>Profit if correct</span>
-                            <strong>{formatCurrency(tradeSuggestion.profitIfCorrect)}</strong>
-                          </article>
-                          <article>
-                            <span>Gross payout</span>
-                            <strong>{formatCurrency(tradeSuggestion.grossPayout)}</strong>
-                          </article>
-                          <article>
-                            <span>Estimated shares</span>
-                            <strong>{typeof tradeSuggestion.shares === 'number' ? tradeSuggestion.shares.toFixed(2) : 'n/a'}</strong>
-                          </article>
-                          <article>
-                            <span>Break-even probability</span>
-                            <strong>{formatPercent(tradeSuggestion.breakEvenProbability)}</strong>
-                          </article>
-                          <article>
-                            <span>Sizing hint</span>
-                            <strong>{tradeSuggestion.bankrollHint}</strong>
-                          </article>
-                          <article>
-                            <span>Default stop-loss</span>
-                            <strong>{formatPercent(tradeSuggestion.stopLossProbability)}</strong>
-                          </article>
-                          <article>
-                            <span>Default take-profit</span>
-                            <strong>{formatPercent(tradeSuggestion.takeProfitProbability)}</strong>
-                          </article>
-                          <article>
-                            <span>Loss at stop</span>
-                            <strong>{formatCurrency(tradeSuggestion.stopLossLoss)}</strong>
-                          </article>
-                          <article>
-                            <span>Gain at take-profit</span>
-                            <strong>{formatCurrency(tradeSuggestion.takeProfitGain)}</strong>
-                          </article>
-                          <article>
-                            <span>Risk / reward</span>
-                            <strong>{tradeSuggestion.riskRewardRatio ? `${tradeSuggestion.riskRewardRatio.toFixed(2)}x` : 'n/a'}</strong>
-                          </article>
-                        </div>
-                      ) : (
-                        <p className="empty-state">Enter a positive dollar amount to preview the trade suggestion.</p>
-                      )}
-
-                      {tradeSuggestion && !tradeSuggestion.isRiskValid ? (
-                        <p className="error-banner trade-error-banner">{tradeSuggestion.riskValidationMessage}</p>
-                      ) : null}
-
-                      <div className="trade-actions">
-                        <button
-                          type="button"
-                          className="secondary-button"
-                          onClick={handleOpenTradeModal}
-                          disabled={!tradeSuggestion || !tradeSuggestion.isRiskValid}
-                        >
-                          {tradeDraft?.id ? 'Review Changes' : 'Review Recommendation'}
-                        </button>
-                        <button type="button" className="ghost-button" onClick={handleClearTradeDraft}>
-                          Clear Draft
-                        </button>
-                        {tradeDraft?.confirmedAt ? (
-                          <p className="trade-status-copy">
-                            {formatIntentStatus(tradeDraft)} {formatDate(tradeDraft.confirmedAt)}
-                          </p>
-                        ) : (
-                          <p className="trade-status-copy">Draft autosaves and survives refresh.</p>
-                        )}
-                      </div>
-                    </section>
-                  ) : null}
-
-                  <section className="trade-history-card">
+                {recommendedMarket ? (
+                  <section className="trade-suggestion-card compact-card">
                     <div className="panel-heading panel-heading-inline">
                       <div>
-                        <p className="eyebrow">Saved Drafts</p>
-                        <h2>Recent trade intents</h2>
+                        <p className="eyebrow">Trade Suggestion</p>
+                        <h2>{decisionEngine.action.toUpperCase()} {currentRecommendation.outcomeLabel}</h2>
                       </div>
-                      <span className="market-chip">{tradeHistory.length} saved</span>
+                      {recommendedMarket.conditionId !== selectedMarket?.conditionId ? (
+                        <button
+                          type="button"
+                          className="ghost-button"
+                          onClick={() => setSelectedMarketId(recommendedMarket.conditionId)}
+                        >
+                          Jump
+                        </button>
+                      ) : null}
                     </div>
 
-                    {tradeHistory.length === 0 ? (
-                      <p className="empty-state">No confirmed trade intents yet.</p>
-                    ) : (
-                      <div className="trade-history-list">
-                        {tradeHistory.map((intent) => (
-                          <article key={intent.id} className="trade-history-item">
-                            <button
-                              type="button"
-                              className="trade-history-main"
-                              onClick={() => void handleRestoreTradeIntent(intent)}
-                            >
-                              <strong>{intent.eventTitle ?? intent.eventSlug}</strong>
-                              <span>{intent.outcomeLabel} in {intent.marketQuestion}</span>
-                              <span>
-                                {formatCurrency(intent.tradeAmount)} · stop {formatPercent(intent.tradeSuggestion?.stopLossProbability)} · take {formatPercent(intent.tradeSuggestion?.takeProfitProbability)}
-                              </span>
-                              <small>
-                                {formatIntentStatus(intent)} · {formatDateTime(intent.confirmedAt)}
-                              </small>
-                              {intent.executionRequest?.readyForExecution ? (
-                                <small>
-                                  Request ready · {intent.executionRequest.orderType} · {intent.executionRequest.side}
-                                </small>
-                              ) : null}
-                              {intent.monitoring?.state ? (
-                                <small>
-                                  Monitor {intent.monitoring.state} · stop {formatPercent(intent.monitoring.stopLossProbability)} · take {formatPercent(intent.monitoring.takeProfitProbability)}
-                                </small>
-                              ) : null}
-                            </button>
-                            <div className="trade-history-actions">
-                              <button type="button" className="ghost-button" onClick={() => void handleRestoreTradeIntent(intent)}>
-                                Edit
-                              </button>
-                              <button
-                                type="button"
-                                className="secondary-button secondary-button-muted"
-                                onClick={() => void handleExecuteTradeIntent(intent)}
-                                disabled={isMutatingHistory || intent.status === 'tracking'}
-                              >
-                                {intent.status === 'tracking' ? 'Tracking' : 'Start Tracking'}
-                              </button>
-                              <button
-                                type="button"
-                                className="ghost-button"
-                                onClick={() => void handleDeleteTradeIntent(intent.id)}
-                                disabled={isMutatingHistory}
-                              >
-                                Delete
-                              </button>
-                            </div>
-                          </article>
-                        ))}
-                      </div>
-                    )}
-                  </section>
-                </section>
-              ) : null}
-            </>
-          ) : (
-            <p className="empty-state">No event loaded yet.</p>
-          )}
+                    <div className="trade-input-row compact-input-grid">
+                      <label>
+                        Stake
+                        <input
+                          type="number"
+                          min="1"
+                          step="1"
+                          value={tradeAmount}
+                          onChange={(event) => setTradeAmount(event.target.value)}
+                        />
+                      </label>
+                      <label>
+                        Stop
+                        <input
+                          type="number"
+                          min="0.01"
+                          max="0.99"
+                          step="0.01"
+                          value={riskInputs.stopLossProbability}
+                          onChange={(event) => setRiskInputs((current) => ({
+                            ...current,
+                            stopLossProbability: event.target.value
+                          }))}
+                        />
+                      </label>
+                      <label>
+                        Take
+                        <input
+                          type="number"
+                          min="0.01"
+                          max="0.99"
+                          step="0.01"
+                          value={riskInputs.takeProfitProbability}
+                          onChange={(event) => setRiskInputs((current) => ({
+                            ...current,
+                            takeProfitProbability: event.target.value
+                          }))}
+                        />
+                      </label>
+                    </div>
 
-          {analysis ? (
-            <section className="analysis-card">
-              <p className="eyebrow">AI Smoke Test</p>
-              <pre>{analysis}</pre>
-            </section>
-          ) : null}
-        </article>
+                    {tradeSuggestion ? (
+                      <div className="trade-preview-grid compact-preview-grid">
+                        <article>
+                          <span>Expected</span>
+                          <strong>{formatCurrency(tradeSuggestion.expectedProfit)}</strong>
+                        </article>
+                        <article>
+                          <span>Shares</span>
+                          <strong>{typeof tradeSuggestion.shares === 'number' ? tradeSuggestion.shares.toFixed(2) : 'n/a'}</strong>
+                        </article>
+                        <article>
+                          <span>Risk/Reward</span>
+                          <strong>{tradeSuggestion.riskRewardRatio ? `${tradeSuggestion.riskRewardRatio.toFixed(2)}x` : 'n/a'}</strong>
+                        </article>
+                        <article>
+                          <span>Loss @ Stop</span>
+                          <strong>{formatCurrency(tradeSuggestion.stopLossLoss)}</strong>
+                        </article>
+                        <article>
+                          <span>Gain @ Take</span>
+                          <strong>{formatCurrency(tradeSuggestion.takeProfitGain)}</strong>
+                        </article>
+                        <article>
+                          <span>Status</span>
+                          <strong>{tradeDraft?.confirmedAt ? formatIntentStatus(tradeDraft) : 'Draft'}</strong>
+                        </article>
+                      </div>
+                    ) : (
+                      <p className="empty-state">Enter a positive amount to preview the trade.</p>
+                    )}
+
+                    {tradeSuggestion && !tradeSuggestion.isRiskValid ? (
+                      <p className="error-banner trade-error-banner">{tradeSuggestion.riskValidationMessage}</p>
+                    ) : null}
+
+                    <div className="trade-actions">
+                      <button
+                        type="button"
+                        className="secondary-button"
+                        onClick={handleOpenTradeModal}
+                        disabled={!tradeSuggestion || !tradeSuggestion.isRiskValid}
+                      >
+                        {tradeDraft?.id ? 'Review Changes' : 'Review Recommendation'}
+                      </button>
+                      <button type="button" className="ghost-button" onClick={handleClearTradeDraft}>
+                        Clear Draft
+                      </button>
+                    </div>
+                  </section>
+                ) : null}
+
+                <section className="panel-card terminal-card compact-card">
+                  <div className="panel-heading">
+                    <p className="eyebrow">AI Recommendations</p>
+                    <h2>Reasoning</h2>
+                  </div>
+                  <div className="decision-rationale-grid compact-preview-grid">
+                    <article>
+                      <span>Combined</span>
+                      <strong>{formatPercent(currentRecommendation.combinedConfidence)}</strong>
+                    </article>
+                    <article>
+                      <span>Model</span>
+                      <strong>{formatPercent(currentRecommendation.modelConfidence)}</strong>
+                    </article>
+                    <article>
+                      <span>LLM</span>
+                      <strong>{formatPercent(currentRecommendation.llmConfidence)}</strong>
+                    </article>
+                    <article>
+                      <span>Agreement</span>
+                      <strong>{currentRecommendation.agreementWithModel ? 'Aligned' : 'Divergent'}</strong>
+                    </article>
+                  </div>
+                  <p className="terminal-copy">{currentRecommendation.keyRisk}</p>
+                  {currentRecommendation.reasons?.length ? (
+                    <ul className="reason-list compact-reason-list">
+                      {currentRecommendation.reasons.map((reason) => (
+                        <li key={reason}>{reason}</li>
+                      ))}
+                    </ul>
+                  ) : null}
+                </section>
+              </>
+            ) : (
+              <p className="empty-state">Run the decision engine to populate AI recommendations.</p>
+            )}
+
+            {analysis ? (
+              <section className="analysis-card terminal-analysis-card">
+                <p className="eyebrow">Realtime Updates</p>
+                <h2>AI Operator Notes</h2>
+                <pre>{analysis}</pre>
+              </section>
+            ) : null}
+          </section>
+        </aside>
       </section>
 
-      <section className="panel-card active-positions-card">
+      <section className="dashboard-footer-grid">
+        <section className="panel-card terminal-card active-positions-card">
         <div className="panel-heading panel-heading-inline">
           <div>
-            <p className="eyebrow">Step 10 Monitoring</p>
+            <p className="eyebrow">Active Trades</p>
             <h2>Active tracked positions</h2>
           </div>
           <div className="action-row">
@@ -1556,7 +1343,7 @@ export default function App() {
         {activeTradeIntents.length === 0 ? (
           <p className="empty-state">No active tracked positions yet.</p>
         ) : (
-          <div className="active-positions-grid">
+          <div className="active-positions-grid compact-active-grid">
             {activeTradeIntents.map((intent) => {
               const currentProbability = intent.monitoring?.currentProbability ?? intent.recommendation?.currentProbability ?? null;
               const entryProbability = intent.monitoring?.entryProbability ?? intent.executionRequest?.entryProbability ?? null;
@@ -1634,6 +1421,73 @@ export default function App() {
             })}
           </div>
         )}
+        </section>
+
+        <section className="panel-card terminal-card trade-history-card footer-history-card">
+          <div className="panel-heading panel-heading-inline">
+            <div>
+              <p className="eyebrow">Active Trades</p>
+              <h2>Recent trade intents</h2>
+            </div>
+            <span className="market-chip">{tradeHistory.length} saved</span>
+          </div>
+
+          {tradeHistory.length === 0 ? (
+            <p className="empty-state">No confirmed trade intents yet.</p>
+          ) : (
+            <div className="trade-history-list terminal-list">
+              {tradeHistory.map((intent) => (
+                <article key={intent.id} className="trade-history-item">
+                  <button
+                    type="button"
+                    className="trade-history-main"
+                    onClick={() => void handleRestoreTradeIntent(intent)}
+                  >
+                    <strong>{intent.eventTitle ?? intent.eventSlug}</strong>
+                    <span>{intent.outcomeLabel} in {intent.marketQuestion}</span>
+                    <span>
+                      {formatCurrency(intent.tradeAmount)} · stop {formatPercent(intent.tradeSuggestion?.stopLossProbability)} · take {formatPercent(intent.tradeSuggestion?.takeProfitProbability)}
+                    </span>
+                    <small>
+                      {formatIntentStatus(intent)} · {formatDateTime(intent.confirmedAt)}
+                    </small>
+                    {intent.executionRequest?.readyForExecution ? (
+                      <small>
+                        Request ready · {intent.executionRequest.orderType} · {intent.executionRequest.side}
+                      </small>
+                    ) : null}
+                    {intent.monitoring?.state ? (
+                      <small>
+                        Monitor {intent.monitoring.state} · stop {formatPercent(intent.monitoring.stopLossProbability)} · take {formatPercent(intent.monitoring.takeProfitProbability)}
+                      </small>
+                    ) : null}
+                  </button>
+                  <div className="trade-history-actions">
+                    <button type="button" className="ghost-button" onClick={() => void handleRestoreTradeIntent(intent)}>
+                      Edit
+                    </button>
+                    <button
+                      type="button"
+                      className="secondary-button secondary-button-muted"
+                      onClick={() => void handleExecuteTradeIntent(intent)}
+                      disabled={isMutatingHistory || intent.status === 'tracking'}
+                    >
+                      {intent.status === 'tracking' ? 'Tracking' : 'Start Tracking'}
+                    </button>
+                    <button
+                      type="button"
+                      className="ghost-button"
+                      onClick={() => void handleDeleteTradeIntent(intent.id)}
+                      disabled={isMutatingHistory}
+                    >
+                      Delete
+                    </button>
+                  </div>
+                </article>
+              ))}
+            </div>
+          )}
+        </section>
       </section>
 
       {isTradeModalOpen && tradeSuggestion && decisionEngine?.recommendation ? (
