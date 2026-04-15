@@ -4,6 +4,47 @@ Probis is a local-first Polymarket analysis and trade-planning system. The curre
 
 The hot path in this repo is not autonomous execution. It is event resolution, market normalization, historical aggregation, statistical scoring, recommendation synthesis, and manual trade preparation.
 
+## Quick Start
+
+For a first run, you only need Node.js, Ollama, and the default local API URL.
+
+1. Install dependencies.
+
+```bash
+npm install
+```
+
+2. Copy `.env.example` to `.env` and keep the defaults unless you need custom endpoints.
+
+```bash
+cp .env.example .env
+```
+
+3. Start Ollama and make sure at least one model is available.
+
+```bash
+ollama serve
+ollama list
+```
+
+4. Start the API and web app.
+
+```bash
+npm run dev
+```
+
+5. Verify the backend.
+
+```bash
+curl http://localhost:4000/health
+```
+
+6. Open the web app, resolve a Polymarket event, and run the decision engine.
+
+- Web UI: `http://localhost:5173`
+- API: `http://localhost:4000`
+- If you want full Polymarket auth checks, add `POLYMARKET_API_KEY` and `POLYMARKET_PRIVATE_KEY` to `.env`.
+
 ## What The Current Codebase Does
 
 - Resolves a Polymarket event from either a full URL or a slug.
@@ -495,6 +536,351 @@ curl http://localhost:4000/health
 - `PATCH /api/trades/intents/:id`
 - `DELETE /api/trades/intents/:id`
 - `POST /api/trades/intents/:id/execute`
+
+## API Examples
+
+These examples are trimmed to the fields most useful for integration and debugging. Actual payloads include additional fields.
+
+### 1. Health check
+
+Request:
+
+```bash
+curl http://localhost:4000/health
+```
+
+Response:
+
+```json
+{
+	"ok": true,
+	"service": "probis-api",
+	"timestamp": "2026-04-15T18:42:10.000Z",
+	"polymarket": {
+		"configured": false,
+		"host": "https://clob.polymarket.com",
+		"chainId": 137,
+		"publicReadOk": true,
+		"auth": {
+			"privateKeyValid": false,
+			"signerAddress": null,
+			"derivedApiCredsReady": false,
+			"derivedApiKeyMatchesEnv": null,
+			"error": null
+		}
+	},
+	"ollama": {
+		"reachable": true,
+		"requestedModel": "gemma3:latest",
+		"resolvedModel": "gemma3:latest",
+		"availableModels": ["gemma3:latest"]
+	}
+}
+```
+
+### 2. Resolve an event
+
+Request:
+
+```bash
+curl "http://localhost:4000/api/polymarket/events/resolve?input=https://polymarket.com/event/will-the-fed-cut-rates-in-june"
+```
+
+Response:
+
+```json
+{
+	"ok": true,
+	"event": {
+		"id": "12345",
+		"slug": "will-the-fed-cut-rates-in-june",
+		"title": "Will the Fed cut rates in June?",
+		"description": "...",
+		"active": true,
+		"closed": false,
+		"endDate": "2026-06-18T00:00:00Z",
+		"startDate": "2026-01-10T00:00:00Z",
+		"liquidity": 184522.12,
+		"volume": 912004.55,
+		"markets": [
+			{
+				"id": "mkt_1",
+				"question": "Will the Fed cut rates in June?",
+				"conditionId": "0xabc123",
+				"liquidity": 184522.12,
+				"volume": 912004.55,
+				"outcomes": [
+					{
+						"label": "Yes",
+						"price": 0.42,
+						"probability": 0.42,
+						"tokenId": "1001"
+					},
+					{
+						"label": "No",
+						"price": 0.58,
+						"probability": 0.58,
+						"tokenId": "1002"
+					}
+				]
+			}
+		]
+	}
+}
+```
+
+### 3. Resolve event analytics
+
+Request:
+
+```bash
+curl "http://localhost:4000/api/polymarket/events/aggregation?input=will-the-fed-cut-rates-in-june"
+```
+
+Response:
+
+```json
+{
+	"ok": true,
+	"event": {
+		"id": "12345",
+		"slug": "will-the-fed-cut-rates-in-june",
+		"title": "Will the Fed cut rates in June?",
+		"resolvedFromFallback": false,
+		"requestedSlug": null
+	},
+	"aggregation": {
+		"generatedAt": "2026-04-15T18:45:00.000Z",
+		"historyWindow": {
+			"intervalLabel": "7d",
+			"fidelityMinutes": 1440
+		},
+		"liquiditySnapshot": {
+			"eventLiquidity": 184522.12,
+			"eventVolume": 912004.55,
+			"liveMarketCount": 1,
+			"pricedOutcomeCount": 2
+		},
+		"derivedMetrics": {
+			"topOutcome": {
+				"question": "Will the Fed cut rates in June?",
+				"label": "No",
+				"probability": 0.58
+			},
+			"highestVolumeMarket": {
+				"question": "Will the Fed cut rates in June?",
+				"value": 912004.55
+			},
+			"mostCompetitiveMarket": {
+				"question": "Will the Fed cut rates in June?",
+				"probabilityGap": 0.16,
+				"leadingOutcome": "No"
+			}
+		},
+		"historicalPrices": {
+			"markets": [
+				{
+					"question": "Will the Fed cut rates in June?",
+					"outcomes": [
+						{
+							"label": "Yes",
+							"currentProbability": 0.42,
+							"historySummary": {
+								"pointCount": 7,
+								"firstPrice": 0.37,
+								"latestPrice": 0.42,
+								"percentChange": 0.1351
+							}
+						}
+					]
+				}
+			]
+		}
+	},
+	"statisticalModel": {
+		"generatedAt": "2026-04-15T18:45:00.000Z",
+		"methodology": {
+			"name": "first-pass-statistical-model"
+		},
+		"summary": {
+			"eventSlug": "will-the-fed-cut-rates-in-june",
+			"liveMarketCount": 1,
+			"bestOpportunity": {
+				"question": "Will the Fed cut rates in June?",
+				"label": "Yes",
+				"currentProbability": 0.42,
+				"estimatedProbability": 0.47,
+				"edge": 0.05,
+				"confidence": 0.64,
+				"score": 0.032
+			}
+		}
+	}
+}
+```
+
+### 4. Run the AI analysis and decision engine
+
+Request:
+
+```bash
+curl -X POST http://localhost:4000/api/ai/analyze-event \
+	-H "Content-Type: application/json" \
+	-d '{"input":"will-the-fed-cut-rates-in-june"}'
+```
+
+Response:
+
+```json
+{
+	"ok": true,
+	"event": {
+		"slug": "will-the-fed-cut-rates-in-june",
+		"title": "Will the Fed cut rates in June?"
+	},
+	"aggregation": {
+		"derivedMetrics": {
+			"topOutcome": {
+				"label": "No",
+				"probability": 0.58
+			}
+		}
+	},
+	"statisticalModel": {
+		"summary": {
+			"bestOpportunity": {
+				"question": "Will the Fed cut rates in June?",
+				"label": "Yes",
+				"edge": 0.05,
+				"confidence": 0.64
+			}
+		}
+	},
+	"analysis": "- Event state: ...\n- Strongest market/opportunity: ...\n- Why the model differs: ...\n- Key risk: ...",
+	"decisionEngine": {
+		"generatedAt": "2026-04-15T18:47:00.000Z",
+		"action": "buy",
+		"recommendation": {
+			"marketQuestion": "Will the Fed cut rates in June?",
+			"outcomeLabel": "Yes",
+			"currentProbability": 0.42,
+			"modelProbability": 0.47,
+			"edge": 0.05,
+			"expectedValuePerDollar": 0.119,
+			"combinedConfidence": 0.67,
+			"modelConfidence": 0.64,
+			"llmConfidence": 0.7,
+			"agreementWithModel": true,
+			"suggestedStakeFraction": 0.134,
+			"stopLossProbability": 0.39,
+			"takeProfitProbability": 0.48,
+			"riskRewardRatio": 2.0,
+			"thesis": "The recent upward move in Yes has not fully caught up with the model estimate.",
+			"keyRisk": "Macro headlines could reverse sentiment quickly.",
+			"reasons": [
+				"Positive 7d momentum",
+				"Model fair value above market price",
+				"Adequate liquidity for a manual entry"
+			]
+		}
+	},
+	"model": "gemma3:latest",
+	"requestedModel": "gemma3:latest"
+}
+```
+
+### 5. Save a trade intent
+
+Request:
+
+```bash
+curl -X POST http://localhost:4000/api/trades/intents \
+	-H "Content-Type: application/json" \
+	-d '{
+		"eventSlug": "will-the-fed-cut-rates-in-june",
+		"eventTitle": "Will the Fed cut rates in June?",
+		"conditionId": "0xabc123",
+		"marketQuestion": "Will the Fed cut rates in June?",
+		"outcomeLabel": "Yes",
+		"action": "buy",
+		"tradeAmount": 100,
+		"recommendation": {
+			"currentProbability": 0.42,
+			"modelProbability": 0.47,
+			"edge": 0.05
+		},
+		"tradeSuggestion": {
+			"amount": 100,
+			"stopLossProbability": 0.39,
+			"takeProfitProbability": 0.48
+		}
+	}'
+```
+
+Response:
+
+```json
+{
+	"ok": true,
+	"intent": {
+		"id": "9f4cf9c3-faf9-4f8f-84fa-0fa5244f0fd4",
+		"status": "confirmed",
+		"createdAt": "2026-04-15T18:49:00.000Z",
+		"confirmedAt": "2026-04-15T18:49:00.000Z",
+		"eventSlug": "will-the-fed-cut-rates-in-june",
+		"marketQuestion": "Will the Fed cut rates in June?",
+		"outcomeLabel": "Yes",
+		"tradeAmount": 100,
+		"tradeSuggestion": {
+			"amount": 100,
+			"stopLossProbability": 0.39,
+			"takeProfitProbability": 0.48
+		},
+		"executionRequest": {
+			"requestType": "market-buy-intent",
+			"venue": "polymarket-us",
+			"side": "buy",
+			"orderType": "market-intent",
+			"readyForExecution": false,
+			"entryProbability": 0.42,
+			"sharesEstimate": 238.09523809523807
+		}
+	}
+}
+```
+
+### 6. Start tracking a saved trade intent
+
+Request:
+
+```bash
+curl -X POST http://localhost:4000/api/trades/intents/9f4cf9c3-faf9-4f8f-84fa-0fa5244f0fd4/execute
+```
+
+Response:
+
+```json
+{
+	"ok": true,
+	"intent": {
+		"id": "9f4cf9c3-faf9-4f8f-84fa-0fa5244f0fd4",
+		"status": "tracking",
+		"executionRequest": {
+			"readyForExecution": true,
+			"preparedAt": "2026-04-15T18:50:00.000Z"
+		},
+		"monitoring": {
+			"state": "active",
+			"activatedAt": "2026-04-15T18:50:00.000Z",
+			"currentProbability": 0.42,
+			"entryProbability": 0.42,
+			"stopLossProbability": 0.39,
+			"takeProfitProbability": 0.48,
+			"notes": "Monitoring scaffold only. Live polling and exit automation are not wired yet."
+		}
+	}
+}
+```
 
 ## Current Boundaries
 
