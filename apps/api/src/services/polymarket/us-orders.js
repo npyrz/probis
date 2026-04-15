@@ -1,6 +1,9 @@
 import axios from 'axios';
 import nacl from 'tweetnacl';
 
+const US_MARKETS_CACHE_TTL_MS = 60_000;
+const usMarketsCache = new Map();
+
 function getErrorMessage(error) {
   if (axios.isAxiosError(error)) {
     return error.response?.data?.message ?? error.response?.data?.error ?? error.message;
@@ -124,6 +127,125 @@ function getPortfolioPositions(payload) {
   }
 
   return [];
+}
+
+function getUsMarketsFromPayload(payload) {
+  if (Array.isArray(payload)) {
+    return payload;
+  }
+
+  if (Array.isArray(payload?.markets)) {
+    return payload.markets;
+  }
+
+  if (Array.isArray(payload?.data?.markets)) {
+    return payload.data.markets;
+  }
+
+  return [];
+}
+
+function getUsMarketsPageCursor(payload) {
+  if (typeof payload?.nextCursor === 'string') {
+    return payload.nextCursor;
+  }
+
+  if (typeof payload?.data?.nextCursor === 'string') {
+    return payload.data.nextCursor;
+  }
+
+  return '';
+}
+
+function getUsMarketsPageEof(payload) {
+  if (typeof payload?.eof === 'boolean') {
+    return payload.eof;
+  }
+
+  if (typeof payload?.data?.eof === 'boolean') {
+    return payload.data.eof;
+  }
+
+  return true;
+}
+
+async function listUsMarkets(env, { limit = 200, maxPages = 20 } = {}) {
+  const path = '/v1/markets';
+  const cacheKey = `${env.polymarketUsBaseUrl}:${limit}:${maxPages}`;
+  const cached = usMarketsCache.get(cacheKey);
+
+  if (cached && cached.expiresAt > Date.now()) {
+    return cached.markets;
+  }
+
+  if (!env.polymarketUsKeyId || !env.polymarketUsSecretKey) {
+    return [];
+  }
+
+  const client = createPolymarketUsClient(env);
+  const collected = [];
+  let cursor = '';
+
+  for (let page = 0; page < maxPages; page += 1) {
+    const requestPath = cursor
+      ? `${path}?limit=${limit}&cursor=${encodeURIComponent(cursor)}`
+      : `${path}?limit=${limit}`;
+    const response = await client.get(requestPath, {
+      headers: getSignedHeaders(env, 'GET', path)
+    });
+    const payload = response.data;
+    const markets = getUsMarketsFromPayload(payload);
+
+    for (const market of markets) {
+      if (market && typeof market === 'object') {
+        collected.push(market);
+      }
+    }
+
+    if (getUsMarketsPageEof(payload)) {
+      break;
+    }
+
+    const nextCursor = getUsMarketsPageCursor(payload);
+
+    if (!nextCursor) {
+      break;
+    }
+
+    cursor = nextCursor;
+  }
+
+  usMarketsCache.set(cacheKey, {
+    markets: collected,
+    expiresAt: Date.now() + US_MARKETS_CACHE_TTL_MS
+  });
+
+  return collected;
+}
+
+export async function getUsMarketSlugsForEvent(env, eventSlug) {
+  const normalizedEventSlug = String(eventSlug ?? '').trim().toLowerCase();
+
+  if (!normalizedEventSlug) {
+    return new Set();
+  }
+
+  const markets = await listUsMarkets(env);
+  const slugs = new Set();
+
+  for (const market of markets) {
+    const slug = typeof market?.slug === 'string' ? market.slug.toLowerCase() : '';
+
+    if (!slug) {
+      continue;
+    }
+
+    if (slug === normalizedEventSlug || slug.startsWith(`${normalizedEventSlug}-`)) {
+      slugs.add(slug);
+    }
+  }
+
+  return slugs;
 }
 
 function getPositionMarketSlug(position) {

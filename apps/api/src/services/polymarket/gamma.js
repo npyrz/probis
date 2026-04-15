@@ -1,4 +1,5 @@
 import axios from 'axios';
+import { getUsMarketSlugsForEvent } from './us-orders.js';
 
 const TOKEN_ALIASES = {
   usho: ['house'],
@@ -81,6 +82,31 @@ function normalizeEvent(event) {
     liquidity: toNumberOrNull(event.liquidity),
     volume: toNumberOrNull(event.volume),
     markets: Array.isArray(event.markets) ? event.markets.map(normalizeMarket) : []
+  };
+}
+
+async function filterEventMarketsToUs(env, event) {
+  const slugs = await getUsMarketSlugsForEvent(env, event.slug);
+
+  if (slugs.size === 0) {
+    return {
+      ...event,
+      markets: [],
+      usFiltered: true,
+      usAvailableMarketCount: 0
+    };
+  }
+
+  const markets = event.markets.filter((market) => {
+    const slug = String(market.slug ?? '').toLowerCase();
+    return slug.length > 0 && slugs.has(slug);
+  });
+
+  return {
+    ...event,
+    markets,
+    usFiltered: true,
+    usAvailableMarketCount: markets.length
   };
 }
 
@@ -218,7 +244,7 @@ export async function fetchEventByInput(env, input) {
       throw new Error(`No Polymarket event was found for slug "${slug}".`);
     }
 
-    return normalizeEvent(event);
+    return filterEventMarketsToUs(env, normalizeEvent(event));
   } catch (error) {
     const status = axios.isAxiosError(error) ? error.response?.status : undefined;
 
@@ -232,10 +258,10 @@ export async function fetchEventByInput(env, input) {
       throw new Error(`No Polymarket event was found for slug "${slug}".`);
     }
 
-    return {
+    return filterEventMarketsToUs(env, {
       ...fallbackEvent,
       requestedSlug: slug,
       resolvedFromFallback: true
-    };
+    });
   }
 }
