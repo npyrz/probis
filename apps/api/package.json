@@ -10,8 +10,10 @@
     "build": "node -e \"console.log('API build step not required yet')\""
   },
   "dependencies": {
+    "@ethersproject/wallet": "^5.8.0",
     "@polymarket/clob-client": "^5.8.1",
     "axios": "^1.9.0",
+    "cors": "^2.8.5",
     "dotenv": "^16.4.7",
     "express": "^5.1.0",
     "ws": "^8.18.1"

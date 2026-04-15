@@ -9,6 +9,7 @@ export function getEnv() {
     port: Number.parseInt(process.env.PORT ?? '4000', 10),
     polymarketApiKey: process.env.POLYMARKET_API_KEY ?? '',
     polymarketPrivateKey: process.env.POLYMARKET_PRIVATE_KEY ?? '',
+    gammaBaseUrl: process.env.GAMMA_BASE_URL ?? 'https://gamma-api.polymarket.com',
     ollamaBaseUrl: process.env.OLLAMA_BASE_URL ?? 'http://localhost:11434',
     ollamaModel: process.env.OLLAMA_MODEL ?? 'gemma3:latest'
   };
