@@ -1,0 +1,22 @@
+{
+  "name": "probis",
+  "version": "0.1.0",
+  "private": true,
+  "description": "AI-assisted prediction market trading system for Polymarket US.",
+  "workspaces": [
+    "apps/*"
+  ],
+  "engines": {
+    "node": ">=20.0.0"
+  },
+  "scripts": {
+    "dev": "concurrently -n api,web -c blue,green \"npm run dev --workspace @probis/api\" \"npm run dev --workspace @probis/web\"",
+    "dev:api": "npm run dev --workspace @probis/api",
+    "dev:web": "npm run dev --workspace @probis/web",
+    "build": "npm run build --workspaces",
+    "start": "npm run start --workspace @probis/api"
+  },
+  "devDependencies": {
+    "concurrently": "^9.2.1"
+  }
+}

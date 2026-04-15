@@ -1,0 +1,138 @@
+:root {
+  font-family: "Space Grotesk", "Avenir Next", sans-serif;
+  color: #f4efe5;
+  background:
+    radial-gradient(circle at top left, rgba(201, 112, 58, 0.32), transparent 32%),
+    radial-gradient(circle at bottom right, rgba(62, 135, 173, 0.35), transparent 36%),
+    linear-gradient(135deg, #161311 0%, #241b16 52%, #0f1720 100%);
+  line-height: 1.5;
+  font-weight: 400;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  min-width: 320px;
+  min-height: 100vh;
+}
+
+button,
+input,
+textarea,
+select {
+  font: inherit;
+}
+
+#root {
+  min-height: 100vh;
+}
+
+.app-shell {
+  width: min(1120px, calc(100% - 2rem));
+  margin: 0 auto;
+  padding: 4rem 0 5rem;
+  display: grid;
+  gap: 1.5rem;
+}
+
+.hero-card,
+.roadmap-card {
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  background: rgba(15, 19, 23, 0.65);
+  backdrop-filter: blur(18px);
+  border-radius: 28px;
+  padding: 2rem;
+  box-shadow: 0 30px 80px rgba(0, 0, 0, 0.32);
+}
+
+.eyebrow {
+  margin: 0 0 0.75rem;
+  text-transform: uppercase;
+  letter-spacing: 0.14em;
+  font-size: 0.78rem;
+  color: #f2bb88;
+}
+
+h1,
+h2,
+p {
+  margin-top: 0;
+}
+
+h1 {
+  font-size: clamp(2.4rem, 6vw, 4.6rem);
+  line-height: 0.95;
+  max-width: 11ch;
+  margin-bottom: 1rem;
+}
+
+h2 {
+  font-size: clamp(1.6rem, 3vw, 2.3rem);
+  margin-bottom: 0.5rem;
+}
+
+.lede {
+  max-width: 60ch;
+  color: rgba(244, 239, 229, 0.78);
+  font-size: 1.05rem;
+}
+
+.status-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(210px, 1fr));
+  gap: 1rem;
+  margin-top: 2rem;
+}
+
+.status-grid article {
+  padding: 1.1rem;
+  border-radius: 20px;
+  background: linear-gradient(180deg, rgba(255, 255, 255, 0.1), rgba(255, 255, 255, 0.04));
+  border: 1px solid rgba(255, 255, 255, 0.08);
+}
+
+.status-grid span {
+  display: block;
+  color: rgba(244, 239, 229, 0.62);
+  margin-bottom: 0.45rem;
+}
+
+.status-grid strong {
+  display: block;
+  font-size: 1.15rem;
+  margin-bottom: 0.5rem;
+}
+
+.status-grid p,
+.roadmap-card ol {
+  color: rgba(244, 239, 229, 0.78);
+}
+
+.roadmap-card {
+  display: grid;
+  gap: 1.2rem;
+}
+
+.roadmap-card ol {
+  margin: 0;
+  padding-left: 1.4rem;
+  display: grid;
+  gap: 0.8rem;
+}
+
+@media (max-width: 640px) {
+  .app-shell {
+    width: min(100% - 1rem, 1120px);
+    padding-top: 1rem;
+    padding-bottom: 2rem;
+  }
+
+  .hero-card,
+  .roadmap-card {
+    padding: 1.25rem;
+    border-radius: 20px;
+  }
+}
