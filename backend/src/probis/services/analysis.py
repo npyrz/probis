@@ -74,6 +74,12 @@ class MarketAnalysisService:
         self._news_service = news_service or NewsService()
         self._ollama = OllamaClient(base_url=settings.ollama_base_url, model=settings.ollama_model)
 
+    async def search_markets(self, *, query: str, limit: int | None = None) -> list[MarketDescriptor]:
+        return await self._polymarket_client.search_markets(
+            query=query,
+            limit=limit or settings.polymarket_search_limit,
+        )
+
     async def analyze_slug(self, *, slug: str, notes: Optional[str] = None) -> MarketAnalysisResponse:
         market_payload, descriptor, book_payload, bbo_payload = await self._polymarket_client.fetch_market_snapshot(slug=slug)
 

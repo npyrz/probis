@@ -4,6 +4,7 @@ import asyncio
 import logging
 from collections.abc import AsyncIterator
 
+import httpx
 from fastapi import FastAPI, HTTPException, WebSocket
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import ORJSONResponse
@@ -56,6 +57,19 @@ def create_app(*, state: MarketState, controller: MonitorController, analysis_se
     @app.post("/polymarket/account/refresh")
     async def refresh_polymarket_account() -> dict:
         return {"account": await controller.refresh_polymarket_account()}
+
+    @app.get("/polymarket/search")
+    async def search_polymarket_markets(query: str, limit: int = 10) -> dict:
+        if analysis_service is None:
+            raise HTTPException(status_code=503, detail="analysis service unavailable")
+        search_query = query.strip()
+        if not search_query:
+            return {"markets": []}
+        try:
+            markets = await analysis_service.search_markets(query=search_query, limit=limit)
+        except httpx.HTTPError as exc:
+            raise HTTPException(status_code=502, detail="polymarket search unavailable") from exc
+        return {"markets": [market.model_dump(mode="json") for market in markets]}
 
     @app.post("/analyze-market")
     async def analyze_market(request: AnalyzeMarketRequest) -> dict:

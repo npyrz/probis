@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react'
-import { analyzeMarket, fetchTerminalSnapshot, refreshPolymarketAccount, startMonitoring } from './lib/api'
+import { analyzeMarket, fetchTerminalSnapshot, refreshPolymarketAccount, searchMarkets, startMonitoring } from './lib/api'
 import type { Market, MarketAnalysisResponse, MonitorSettings, PolymarketAccount } from './lib/types'
 
 const emptyAccount: PolymarketAccount = {
@@ -50,65 +50,18 @@ function getLoginLabel(account: PolymarketAccount) {
   return account.configured ? 'logged in via .env' : 'not logged in'
 }
 
-function normalizeSearch(value: string) {
-  return value.trim().toLowerCase().replace(/\s+/g, ' ')
-}
-
-function getMatchingMarkets(query: string, markets: Market[]) {
-  const normalizedQuery = normalizeSearch(query)
-  if (!normalizedQuery) {
-    return markets.slice(0, 8)
-  }
-
-  const scored = markets
-    .map((market) => {
-      const normalizedTitle = normalizeSearch(market.title)
-      const normalizedSlug = normalizeSearch(market.market)
-      let score = 0
-
-      if (normalizedTitle === normalizedQuery) {
-        score = 5
-      } else if (normalizedSlug === normalizedQuery) {
-        score = 4
-      } else if (normalizedTitle.startsWith(normalizedQuery)) {
-        score = 3
-      } else if (normalizedTitle.includes(normalizedQuery)) {
-        score = 2
-      } else if (normalizedSlug.includes(normalizedQuery)) {
-        score = 1
-      }
-
-      return { market, score }
-    })
-    .filter((item) => item.score > 0)
-    .sort((left, right) => right.score - left.score || left.market.title.localeCompare(right.market.title))
-
-  return scored.slice(0, 10).map((item) => item.market)
-}
-
-function resolveMarketSelection(query: string, markets: Market[], selectedMarketSlug: string | null) {
-  if (selectedMarketSlug) {
-    const selectedMarket = markets.find((market) => market.market === selectedMarketSlug)
-    if (selectedMarket) {
-      return selectedMarket
-    }
-  }
-
-  const [bestMatch] = getMatchingMarkets(query, markets)
-  return bestMatch ?? null
-}
-
 function App() {
   const [account, setAccount] = useState<PolymarketAccount>(emptyAccount)
-  const [markets, setMarkets] = useState<Market[]>([])
+  const [searchResults, setSearchResults] = useState<Market[]>([])
   const [searchQuery, setSearchQuery] = useState('')
-  const [selectedMarketSlug, setSelectedMarketSlug] = useState<string | null>(null)
+  const [selectedMarket, setSelectedMarket] = useState<Market | null>(null)
   const [notes, setNotes] = useState('')
   const [report, setReport] = useState<MarketAnalysisResponse | null>(null)
   const [settings, setSettings] = useState<MonitorSettings | null>(null)
-  const [statusText, setStatusText] = useState('Search the live Polymarket US catalog by title to begin analysis.')
+  const [statusText, setStatusText] = useState('Search Polymarket by title using the official search endpoint to begin analysis.')
   const [analysisBusy, setAnalysisBusy] = useState(false)
   const [accountBusy, setAccountBusy] = useState(false)
+  const [searchBusy, setSearchBusy] = useState(false)
   const [tradeBusy, setTradeBusy] = useState(false)
   const [errorMessage, setErrorMessage] = useState('')
   const [tradeMessage, setTradeMessage] = useState('')
@@ -122,7 +75,6 @@ function App() {
           return
         }
         setAccount(snapshot.account)
-        setMarkets(snapshot.markets)
       } catch {
         if (!active) {
           return
@@ -135,8 +87,43 @@ function App() {
     }
   }, [])
 
+  useEffect(() => {
+    const trimmedQuery = searchQuery.trim()
+    if (!trimmedQuery) {
+      setSearchResults([])
+      setSearchBusy(false)
+      return
+    }
+
+    let active = true
+    setSearchBusy(true)
+    const timeoutId = window.setTimeout(async () => {
+      try {
+        const response = await searchMarkets(trimmedQuery)
+        if (!active) {
+          return
+        }
+        setSearchResults(response.markets)
+      } catch (error) {
+        if (!active) {
+          return
+        }
+        setSearchResults([])
+        setErrorMessage(error instanceof Error ? error.message : 'Failed to search markets')
+      } finally {
+        if (active) {
+          setSearchBusy(false)
+        }
+      }
+    }, 250)
+
+    return () => {
+      active = false
+      window.clearTimeout(timeoutId)
+    }
+  }, [searchQuery])
+
   async function handleAnalyze() {
-    const selectedMarket = resolveMarketSelection(searchQuery, markets, selectedMarketSlug)
     if (!selectedMarket) {
       setErrorMessage('Select a Polymarket market from the search results.')
       return
@@ -150,7 +137,7 @@ function App() {
       const response = await analyzeMarket({ slug: selectedMarket.market, notes: notes.trim() || undefined })
       setReport(response.report)
       setSettings(response.report.recommended_settings)
-      setSelectedMarketSlug(response.report.market.market)
+      setSelectedMarket(response.report.market)
       setSearchQuery(response.report.market.title)
       setStatusText(`Analysis complete for ${response.report.market.title}.`)
     } catch (error) {
@@ -201,14 +188,14 @@ function App() {
 
   function handleSearchChange(value: string) {
     setSearchQuery(value)
-    setSelectedMarketSlug(null)
+    setSelectedMarket(null)
     setTradeMessage('')
     setErrorMessage('')
   }
 
   function handleSelectMarket(market: Market) {
     setSearchQuery(market.title)
-    setSelectedMarketSlug(market.market)
+    setSelectedMarket(market)
     setErrorMessage('')
     setTradeMessage('')
     setStatusText(`Selected ${market.title}. Run analysis when ready.`)
@@ -219,8 +206,6 @@ function App() {
   }
 
   const loginLabel = getLoginLabel(account)
-  const matchingMarkets = getMatchingMarkets(searchQuery, markets)
-  const selectedMarket = resolveMarketSelection(searchQuery, markets, selectedMarketSlug)
 
   return (
     <main className="app-shell">
@@ -228,7 +213,7 @@ function App() {
         <div className="hero-copy">
           <p className="eyebrow">Probis / title terminal</p>
           <h1>Search a Polymarket title. Get a trade memo. Then automate it.</h1>
-          <p className="subhead">This terminal searches the live Polymarket US catalog by title, pulls the selected market, adds optional live news, deterministic pricing and risk logic, AI synthesis, and then lets you edit the execution rules before handing control to the model.</p>
+          <p className="subhead">This terminal searches Polymarket using the official search endpoint, including pasted Polymarket event URLs, pulls the selected market, adds optional live news, deterministic pricing and risk logic, AI synthesis, and then lets you edit the execution rules before handing control to the model.</p>
         </div>
 
         <div className="status-grid">
@@ -253,19 +238,23 @@ function App() {
 
           <label className="field-block">
             <span>Trade title</span>
-            <input value={searchQuery} onChange={(event) => handleSearchChange(event.target.value)} placeholder="John Castaneda vs. Mark Vologdin" type="text" />
+            <input value={searchQuery} onChange={(event) => handleSearchChange(event.target.value)} placeholder="John Castaneda vs. Mark Vologdin or https://polymarket.us/events/..." type="text" />
           </label>
 
           <div className="search-panel">
             <div className="search-panel-header">
-              <span>{searchQuery.trim() ? `${matchingMarkets.length} matches` : 'Popular live markets'}</span>
+              <span>{searchQuery.trim() ? `${searchResults.length} matches` : 'Enter a title or event URL'}</span>
               <strong>{selectedMarket ? 'Selected' : 'Pick one'}</strong>
             </div>
             <div className="search-results">
-              {matchingMarkets.length === 0 ? (
-                <p className="muted-copy">No market titles matched that search in the current live Polymarket US catalog.</p>
+              {!searchQuery.trim() ? (
+                <p className="muted-copy">Type a trade title or paste a Polymarket event URL to query the official search API.</p>
+              ) : searchBusy ? (
+                <p className="muted-copy">Searching Polymarket...</p>
+              ) : searchResults.length === 0 ? (
+                <p className="muted-copy">No active market titles matched that search from the Polymarket search API.</p>
               ) : (
-                matchingMarkets.map((market) => {
+                searchResults.map((market) => {
                   const isSelected = market.market === selectedMarket?.market
                   return (
                     <button className={`search-result ${isSelected ? 'selected' : ''}`} key={market.market} onClick={() => handleSelectMarket(market)} type="button">

@@ -20,6 +20,8 @@ class Settings(BaseSettings):
     polymarket_secret_key: Optional[str] = None
     polymarket_market_limit: int = 500
     polymarket_discovery_interval_seconds: int = 180
+    polymarket_search_base_url: str = "https://gateway.polymarket.us"
+    polymarket_search_limit: int = 10
 
     news_api_key: Optional[str] = None
     news_api_base_url: str = "https://newsapi.org/v2"

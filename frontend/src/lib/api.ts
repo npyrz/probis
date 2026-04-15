@@ -21,6 +21,16 @@ export async function refreshPolymarketAccount() {
   return response.json() as Promise<{ account: TerminalSnapshot['account'] }>
 }
 
+export async function searchMarkets(query: string, limit = 10) {
+  const params = new URLSearchParams({ query, limit: String(limit) })
+  const response = await fetch(`${API_BASE_URL}/polymarket/search?${params.toString()}`)
+  if (!response.ok) {
+    const errorText = await response.text()
+    throw new Error(errorText || 'failed to search polymarket markets')
+  }
+  return response.json() as Promise<{ markets: TerminalSnapshot['markets'] }>
+}
+
 export async function analyzeMarket(payload: { slug: string; notes?: string }) {
   const response = await fetch(`${API_BASE_URL}/analyze-market`, {
     method: 'POST',

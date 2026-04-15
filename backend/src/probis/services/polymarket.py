@@ -4,9 +4,12 @@ import asyncio
 import json
 import logging
 import re
+from urllib.parse import urlparse
 from typing import Any
 from typing import Optional
 from typing import Union
+
+import httpx
 
 from ..bus import EventBus, InMemoryBus
 from ..config import settings
@@ -204,7 +207,64 @@ def _parse_outcome_prices(value: Any) -> list[float]:
     return prices
 
 
+def _search_query_candidates(value: str) -> list[str]:
+    candidates: list[str] = []
+    normalized = value.strip()
+    if normalized:
+        candidates.append(normalized)
+
+    try:
+        parsed = urlparse(normalized)
+    except ValueError:
+        return candidates
+
+    if not parsed.scheme or not parsed.netloc:
+        return candidates
+
+    path_segments = [segment for segment in parsed.path.split("/") if segment]
+    if not path_segments:
+        return candidates
+
+    event_segment = path_segments[-1].strip()
+    if not event_segment:
+        return candidates
+
+    candidates.append(event_segment)
+    candidates.append(event_segment.replace("-", " ").replace("_", " "))
+
+    seen: set[str] = set()
+    deduped: list[str] = []
+    for candidate in candidates:
+        key = candidate.strip().lower()
+        if not key or key in seen:
+            continue
+        seen.add(key)
+        deduped.append(candidate.strip())
+    return deduped
+
+
 class PolymarketClient:
+    async def search_markets(self, *, query: str, limit: int) -> list[MarketDescriptor]:
+        search_candidates = _search_query_candidates(query)
+        if not search_candidates:
+            return []
+
+        async with httpx.AsyncClient(base_url=settings.polymarket_search_base_url, timeout=10.0) as client:
+            for candidate in search_candidates:
+                response = await client.get(
+                    "/v1/search",
+                    params={
+                        "query": candidate,
+                        "limit": max(1, limit),
+                    },
+                )
+                response.raise_for_status()
+                payload = response.json() if response.content else {}
+                markets = self._search_results_to_markets(payload, limit=limit)
+                if markets:
+                    return markets
+        return []
+
     async def fetch_active_markets(self, *, limit: int) -> list[MarketDescriptor]:
         from polymarket_us import PolymarketUS
 
@@ -305,6 +365,40 @@ class PolymarketClient:
         descriptor.reference_price = _mid_price(descriptor.best_bid, descriptor.best_ask, descriptor.last_trade_price) or descriptor.reference_price
 
         return market_response, descriptor, book_response if isinstance(book_response, dict) else {}, bbo_response if isinstance(bbo_response, dict) else {}
+
+    def _search_results_to_markets(self, payload: Any, *, limit: int) -> list[MarketDescriptor]:
+        if not isinstance(payload, dict):
+            return []
+
+        events = payload.get("events") or []
+        if not isinstance(events, list):
+            return []
+
+        markets: list[MarketDescriptor] = []
+        seen_slugs: set[str] = set()
+        sport_labels: dict[str, str] = {}
+        for event in events:
+            if not isinstance(event, dict):
+                continue
+            event_markets = event.get("markets") or []
+            if not isinstance(event_markets, list):
+                continue
+            for item in event_markets:
+                if not isinstance(item, dict):
+                    continue
+                slug = str(item.get("slug") or item.get("marketSlug") or "").strip()
+                if not slug or slug in seen_slugs:
+                    continue
+                descriptor = self._market_descriptor_from_payload(item, sport_labels=sport_labels)
+                if descriptor is None:
+                    continue
+                if not descriptor.active or descriptor.closed:
+                    continue
+                seen_slugs.add(slug)
+                markets.append(descriptor)
+                if len(markets) >= limit:
+                    return markets
+        return markets
 
     def _market_descriptor_from_payload(self, item: dict[str, Any], *, sport_labels: dict[str, str]) -> Optional[MarketDescriptor]:
         slug = item.get("slug") or item.get("marketSlug")
