@@ -368,6 +368,14 @@ function parseProbabilityInput(value, fallback) {
   return Number.isFinite(parsed) ? parsed : fallback;
 }
 
+function isValidProbabilityRange(stopLossProbability, takeProfitProbability) {
+  return Number.isFinite(stopLossProbability)
+    && Number.isFinite(takeProfitProbability)
+    && stopLossProbability > 0
+    && takeProfitProbability < 1
+    && stopLossProbability < takeProfitProbability;
+}
+
 function buildTradeSuggestion(decisionEngine, amount, riskInputs = {}) {
   const recommendation = decisionEngine?.recommendation;
   const numericAmount = Number.parseFloat(amount);
@@ -600,6 +608,8 @@ export default function App() {
   const [isMutatingHistory, setIsMutatingHistory] = useState(false);
   const [isPollingTracking, setIsPollingTracking] = useState(false);
   const [tradeCenterFilter, setTradeCenterFilter] = useState('all');
+  const [editingActiveTradeId, setEditingActiveTradeId] = useState(null);
+  const [activeTradeRiskInputs, setActiveTradeRiskInputs] = useState({});
   const [hasLoadedInitialData, setHasLoadedInitialData] = useState(false);
   const [isPending, startTransition] = useTransition();
   const tradableMarkets = selectedEvent?.markets ?? [];
@@ -1087,6 +1097,78 @@ export default function App() {
         setNotice('That trade intent no longer exists. Refreshed history.');
       } else {
         setError(stopError instanceof Error ? stopError.message : 'Unable to stop trade monitoring');
+      }
+    } finally {
+      setIsMutatingHistory(false);
+    }
+  }
+
+  function handleStartEditingActiveTrade(intent) {
+    setError('');
+    setNotice('');
+    setEditingActiveTradeId(intent.id);
+    setActiveTradeRiskInputs((previous) => ({
+      ...previous,
+      [intent.id]: {
+        stopLossProbability:
+          typeof intent.tradeSuggestion?.stopLossProbability === 'number'
+            ? String(intent.tradeSuggestion.stopLossProbability)
+            : '',
+        takeProfitProbability:
+          typeof intent.tradeSuggestion?.takeProfitProbability === 'number'
+            ? String(intent.tradeSuggestion.takeProfitProbability)
+            : ''
+      }
+    }));
+  }
+
+  function handleCancelEditingActiveTrade() {
+    setEditingActiveTradeId(null);
+  }
+
+  function handleActiveTradeRiskInputChange(intentId, field, value) {
+    setActiveTradeRiskInputs((previous) => ({
+      ...previous,
+      [intentId]: {
+        ...previous[intentId],
+        [field]: value
+      }
+    }));
+  }
+
+  async function handleSaveActiveTradeRisk(intent) {
+    const draft = activeTradeRiskInputs[intent.id] ?? {};
+    const stopLossProbability = Number.parseFloat(draft.stopLossProbability);
+    const takeProfitProbability = Number.parseFloat(draft.takeProfitProbability);
+
+    if (!isValidProbabilityRange(stopLossProbability, takeProfitProbability)) {
+      setError('Stop-loss must be below take-profit, greater than 0, and take-profit must be below 1.');
+      return;
+    }
+
+    setError('');
+    setNotice('');
+    setIsMutatingHistory(true);
+
+    try {
+      const nextIntent = await updateTradeIntentRequest(intent.id, {
+        tradeSuggestion: {
+          stopLossProbability,
+          takeProfitProbability
+        }
+      });
+
+      setTradeHistory((previous) => replaceIntentInList(previous, nextIntent));
+      setLastTradeUpdate(new Date().toISOString());
+      setEditingActiveTradeId(null);
+      setNotice('Updated active trade stop-loss and take-profit targets.');
+    } catch (updateError) {
+      if (isTradeIntentNotFoundError(updateError)) {
+        await refreshTradeHistory();
+        setEditingActiveTradeId(null);
+        setNotice('That trade intent no longer exists. Refreshed history.');
+      } else {
+        setError(updateError instanceof Error ? updateError.message : 'Unable to update active trade targets');
       }
     } finally {
       setIsMutatingHistory(false);
@@ -1609,6 +1691,8 @@ export default function App() {
               {filteredTradeHistory.map((intent) => {
                 const precheckMessage = getExecutePrecheckMessage(intent);
                 const isTracking = intent.status === 'tracking';
+                const isEditingActiveTrade = editingActiveTradeId === intent.id;
+                const activeTradeDraft = activeTradeRiskInputs[intent.id] ?? {};
                 const currentProbability = intent.monitoring?.currentProbability ?? intent.recommendation?.currentProbability ?? null;
                 const entryProbability = getTrackedEntryProbability(intent);
                 const monitoringState = intent.monitoring?.state ?? 'active';
@@ -1702,7 +1786,7 @@ export default function App() {
                           </article>
                           <article>
                             <span>Exit order</span>
-                            <strong>{formatOrderId(intent.exitRequest?.venueOrderId)}</strong>
+                            <strong>{formatOrderId(intent.exitRequest?.venueOrderId ?? intent.position?.exitOrderId)}</strong>
                           </article>
                         </>
                       )}
@@ -1720,14 +1804,45 @@ export default function App() {
 
                     <div className="trade-history-actions">
                       {isTracking ? (
-                        <button
-                          type="button"
-                          className="ghost-button"
-                          onClick={() => void handleStopTrackedIntent(intent)}
-                          disabled={isMutatingHistory}
-                        >
-                          Stop Trade
-                        </button>
+                        <>
+                          {isEditingActiveTrade ? (
+                            <>
+                              <button
+                                type="button"
+                                className="secondary-button"
+                                onClick={() => void handleSaveActiveTradeRisk(intent)}
+                                disabled={isMutatingHistory}
+                              >
+                                Save Targets
+                              </button>
+                              <button
+                                type="button"
+                                className="ghost-button"
+                                onClick={handleCancelEditingActiveTrade}
+                                disabled={isMutatingHistory}
+                              >
+                                Cancel
+                              </button>
+                            </>
+                          ) : (
+                            <button
+                              type="button"
+                              className="secondary-button"
+                              onClick={() => handleStartEditingActiveTrade(intent)}
+                              disabled={isMutatingHistory}
+                            >
+                              Edit Active Trade
+                            </button>
+                          )}
+                          <button
+                            type="button"
+                            className="ghost-button"
+                            onClick={() => void handleStopTrackedIntent(intent)}
+                            disabled={isMutatingHistory}
+                          >
+                            Stop Trade
+                          </button>
+                        </>
                       ) : (
                         <>
                           <button type="button" className="ghost-button" onClick={() => void handleRestoreTradeIntent(intent)}>
@@ -1753,6 +1868,35 @@ export default function App() {
                         </>
                       )}
                     </div>
+
+                    {isTracking && isEditingActiveTrade ? (
+                      <div className="trade-input-row compact-input-grid">
+                        <label>
+                          <span>Stop-loss</span>
+                          <input
+                            type="number"
+                            min="0.01"
+                            max="0.99"
+                            step="0.01"
+                            value={activeTradeDraft.stopLossProbability}
+                            onChange={(event) => handleActiveTradeRiskInputChange(intent.id, 'stopLossProbability', event.target.value)}
+                            disabled={isMutatingHistory}
+                          />
+                        </label>
+                        <label>
+                          <span>Take-profit</span>
+                          <input
+                            type="number"
+                            min="0.01"
+                            max="0.99"
+                            step="0.01"
+                            value={activeTradeDraft.takeProfitProbability}
+                            onChange={(event) => handleActiveTradeRiskInputChange(intent.id, 'takeProfitProbability', event.target.value)}
+                            disabled={isMutatingHistory}
+                          />
+                        </label>
+                      </div>
+                    ) : null}
                   </article>
                 );
               })}

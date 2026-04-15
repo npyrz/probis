@@ -4,7 +4,15 @@ import { randomUUID } from 'node:crypto';
 import { fileURLToPath } from 'node:url';
 
 import { fetchEventByInput } from './polymarket/gamma.js';
-import { placeBuyOrderForIntent, placeSellOrderForIntent } from './polymarket/us-orders.js';
+import {
+  getOrderState,
+  getPolymarketUsOrderById,
+  getSharesFromOrder,
+  getSpentFromOrder,
+  placeBuyOrderForIntent,
+  placeSellOrderForIntent,
+  resolveLivePositionShares
+} from './polymarket/us-orders.js';
 
 const currentDirectory = path.dirname(fileURLToPath(import.meta.url));
 const repoRoot = path.resolve(currentDirectory, '../../../../');
@@ -229,6 +237,152 @@ function finalizeTrackedIntent(intent, exitReason, monitoringState) {
   };
 }
 
+function isTerminalUnfilledOrderState(orderState) {
+  const normalized = String(orderState ?? '').trim().toUpperCase();
+
+  return normalized === 'ORDER_STATE_EXPIRED'
+    || normalized === 'ORDER_STATE_REJECTED'
+    || normalized === 'ORDER_STATE_CANCELED'
+    || normalized === 'ORDER_STATE_CANCELLED';
+}
+
+function getTerminalOrderStateFromVenueOrder(venueOrder) {
+  const states = [getOrderState(venueOrder)];
+  const executions = Array.isArray(venueOrder?.executions) ? venueOrder.executions : [];
+
+  for (const execution of executions) {
+    states.push(execution?.order?.state ?? null);
+  }
+
+  for (const state of states) {
+    if (isTerminalUnfilledOrderState(state)) {
+      return String(state);
+    }
+  }
+
+  return getOrderState(venueOrder);
+}
+
+function buildVenueSyncClosedIntent(intent, nextState, notes) {
+  return {
+    ...intent,
+    status: 'closed',
+    monitoring: {
+      ...intent.monitoring,
+      state: nextState,
+      lastEvaluationAt: new Date().toISOString(),
+      exitReason: 'entry-order-unfilled',
+      notes
+    },
+    updatedAt: new Date().toISOString()
+  };
+}
+
+async function reconcileTrackingIntentWithVenue(env, intent) {
+  if (intent.status !== 'tracking') {
+    return intent;
+  }
+
+  const orderId = intent.executionRequest?.venueOrderId ?? intent.position?.entryOrderId ?? null;
+
+  if (!orderId) {
+    return buildVenueSyncClosedIntent(
+      intent,
+      'sync-removed-missing-order',
+      'Removed from tracking because no venue order ID is attached to this intent.'
+    );
+  }
+
+  let venueOrder;
+
+  try {
+    venueOrder = await getPolymarketUsOrderById(env, orderId);
+  } catch (error) {
+    return buildVenueSyncClosedIntent(
+      intent,
+      'sync-removed-order-not-found',
+      error instanceof Error
+        ? `Removed from tracking because venue order lookup failed: ${error.message}`
+        : 'Removed from tracking because venue order lookup failed.'
+    );
+  }
+
+  const sharesFilled = Number.parseFloat(getSharesFromOrder(venueOrder) ?? NaN);
+  const notionalSpent = Number.parseFloat(getSpentFromOrder(venueOrder) ?? NaN);
+  const orderState = getTerminalOrderStateFromVenueOrder(venueOrder);
+  const liveShares = Number.parseFloat(await resolveLivePositionShares(env, intent) ?? NaN);
+  const hasNoShares = (!Number.isFinite(sharesFilled) || sharesFilled <= 0)
+    && (!Number.isFinite(liveShares) || liveShares <= 0);
+
+  if (hasNoShares && isTerminalUnfilledOrderState(orderState)) {
+    return buildVenueSyncClosedIntent(
+      {
+        ...intent,
+        executionRequest: {
+          ...intent.executionRequest,
+          venueOrder: venueOrder
+        }
+      },
+      'sync-removed-unfilled',
+      `Removed from tracking because venue order ${orderId} is ${orderState ?? 'terminal'} with no fills.`
+    );
+  }
+
+  if (hasNoShares) {
+    return buildVenueSyncClosedIntent(
+      {
+        ...intent,
+        executionRequest: {
+          ...intent.executionRequest,
+          venueOrder: venueOrder
+        }
+      },
+      'sync-removed-no-live-position',
+      `Removed from tracking because no live position shares were found on account for order ${orderId}.`
+    );
+  }
+
+  return {
+    ...intent,
+    executionRequest: {
+      ...intent.executionRequest,
+      venueOrderId: orderId,
+      venueOrder
+    },
+    position: {
+      ...intent.position,
+      entryOrderId: orderId,
+      sharesFilled: Number.isFinite(sharesFilled) && sharesFilled > 0
+        ? sharesFilled
+        : (intent.position?.sharesFilled ?? null),
+      notionalSpent: Number.isFinite(notionalSpent) && notionalSpent > 0
+        ? notionalSpent
+        : (intent.position?.notionalSpent ?? null),
+      lastExecutionAt: new Date().toISOString()
+    },
+    updatedAt: new Date().toISOString()
+  };
+}
+
+async function syncTrackingIntentsWithVenue(env, intents) {
+  if (!env?.hasUsTradingCredentials) {
+    return intents;
+  }
+
+  const nextIntents = [];
+
+  for (const intent of intents) {
+    if (intent.status !== 'tracking') {
+      nextIntents.push(intent);
+      continue;
+    }
+
+    nextIntents.push(await reconcileTrackingIntentWithVenue(env, intent));
+  }
+
+  return nextIntents;
+}
+
 async function executeTriggeredExit(env, intent, exitReason, monitoringState) {
   const resolvedMarket = await resolveIntentMarketMetadata(env, intent);
   const executableIntent = {
@@ -401,9 +555,15 @@ export async function createTradeIntent(payload) {
   return tradeIntent;
 }
 
-export async function listTradeIntents(limit = 10) {
+export async function listTradeIntents(limit = 10, env = null) {
   const intents = await readTradeIntents();
-  return intents.slice(0, Math.max(1, limit));
+  const syncedIntents = env ? await syncTrackingIntentsWithVenue(env, intents) : intents;
+
+  if (syncedIntents !== intents) {
+    await writeTradeIntents(syncedIntents);
+  }
+
+  return syncedIntents.slice(0, Math.max(1, limit));
 }
 
 export async function updateTradeIntent(id, payload) {
@@ -518,9 +678,14 @@ export async function executeTradeIntent(env, id) {
 
 export async function pollTradeIntent(env, id) {
   const intents = await readTradeIntents();
-  const existing = findTradeIntentOrThrow(intents, id);
+  const syncedIntents = await syncTrackingIntentsWithVenue(env, intents);
+  const existing = findTradeIntentOrThrow(syncedIntents, id);
 
   if (existing.status !== 'tracking') {
+    if (syncedIntents !== intents) {
+      await writeTradeIntents(syncedIntents);
+    }
+
     return existing;
   }
 
@@ -529,15 +694,16 @@ export async function pollTradeIntent(env, id) {
   const currentProbability = toTrackedProbability(existing?.position?.entryIntent, outcome?.probability ?? null);
   const nextIntent = await evaluateMonitoringState(env, existing, currentProbability);
 
-  await writeTradeIntents(replaceTradeIntent(intents, nextIntent));
+  await writeTradeIntents(replaceTradeIntent(syncedIntents, nextIntent));
   return nextIntent;
 }
 
 export async function pollTrackingTradeIntents(env) {
   const intents = await readTradeIntents();
+  const syncedIntents = await syncTrackingIntentsWithVenue(env, intents);
   const nextIntents = [];
 
-  for (const intent of intents) {
+  for (const intent of syncedIntents) {
     if (intent.status !== 'tracking') {
       nextIntents.push(intent);
       continue;

@@ -18,8 +18,9 @@ const router = Router();
 
 router.get('/api/trades/intents', async (request, response) => {
   try {
+    const env = getEnv();
     const limit = Number.parseInt(request.query.limit ?? '10', 10);
-    const intents = await listTradeIntents(limit);
+    const intents = await listTradeIntents(limit, env);
 
     response.json({
       ok: true,

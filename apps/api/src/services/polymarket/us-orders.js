@@ -482,7 +482,7 @@ async function fetchPortfolioPositions(env) {
   return getPortfolioPositions(response.data);
 }
 
-async function resolveLivePositionShares(env, intent) {
+export async function resolveLivePositionShares(env, intent) {
   const marketSlug = intent.marketSlug;
 
   if (!marketSlug) {
@@ -700,7 +700,21 @@ function getOrderId(orderResponse) {
   return orderResponse?.id ?? null;
 }
 
-function getSharesFromOrder(orderResponse) {
+export function getOrderState(orderResponse) {
+  const directState = String(orderResponse?.state ?? '').trim();
+
+  if (directState.length > 0) {
+    return directState;
+  }
+
+  const executions = Array.isArray(orderResponse?.executions) ? orderResponse.executions : [];
+  const latestExecution = executions[executions.length - 1] ?? executions[0] ?? null;
+  const executionState = String(latestExecution?.order?.state ?? '').trim();
+
+  return executionState.length > 0 ? executionState : null;
+}
+
+export function getSharesFromOrder(orderResponse) {
   const executions = Array.isArray(orderResponse?.executions) ? orderResponse.executions : [];
   const fromExecutions = executions.reduce((sum, execution) => {
     const filled = parseNumber(execution?.lastShares);
@@ -721,7 +735,7 @@ function getSharesFromOrder(orderResponse) {
   return null;
 }
 
-function getSpentFromOrder(orderResponse) {
+export function getSpentFromOrder(orderResponse) {
   const executions = Array.isArray(orderResponse?.executions) ? orderResponse.executions : [];
 
   const spent = executions.reduce((sum, execution) => {
@@ -736,6 +750,28 @@ function getSpentFromOrder(orderResponse) {
   }, 0);
 
   return spent > 0 ? spent : null;
+}
+
+export async function getPolymarketUsOrderById(env, orderId) {
+  const normalizedOrderId = String(orderId ?? '').trim();
+
+  if (!normalizedOrderId) {
+    throw new Error('Order ID is required to fetch order status.');
+  }
+
+  const encodedOrderId = encodeURIComponent(normalizedOrderId);
+  const path = `/v1/order/${encodedOrderId}`;
+  const client = createPolymarketUsClient(env);
+
+  try {
+    const response = await client.get(path, {
+      headers: getSignedHeaders(env, 'GET', path)
+    });
+
+    return response.data;
+  } catch (error) {
+    throw new Error(getErrorMessage(error));
+  }
 }
 
 export async function createPolymarketUsOrder(env, body) {
