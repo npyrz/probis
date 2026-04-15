@@ -12,7 +12,6 @@ import {
   pollTrackedTradeIntents,
   resolveEvent,
   resolveEventAggregation,
-  sellTradeIntent as sellTradeIntentRequest,
   stopTradeIntent as stopTradeIntentRequest,
   updateTradeIntent as updateTradeIntentRequest
 } from './lib/api.js';
@@ -479,7 +478,8 @@ function estimateTrackedPnl(intent, currentProbability, entryProbability) {
   }
 
   const spent = Number.parseFloat(intent?.position?.notionalSpent ?? intent?.tradeAmount ?? NaN);
-  const pnlDollars = shares * (currentProbability - entryProbability);
+  const direction = intent?.position?.entryIntent === 'ORDER_INTENT_BUY_SHORT' ? -1 : 1;
+  const pnlDollars = shares * (currentProbability - entryProbability) * direction;
   const pnlPercent = Number.isFinite(spent) && spent > 0 ? pnlDollars / spent : null;
 
   return {
@@ -1060,41 +1060,6 @@ export default function App() {
     }
   }
 
-  async function handleSellTrackedIntent(intent) {
-    setError('');
-    setNotice('');
-    setIsMutatingHistory(true);
-
-    try {
-      const nextIntent = await sellTradeIntentRequest(intent.id);
-      setTradeHistory((previous) => replaceIntentInList(previous, nextIntent));
-      const nextStatus = await fetchStatus();
-      setStatus(nextStatus);
-      setLastTradeUpdate(new Date().toISOString());
-
-      if (tradeDraft?.id === nextIntent.id) {
-        setTradeDraft(nextIntent);
-        saveStoredTradeDraft(nextIntent);
-      }
-
-      setNotice('Sell order submitted to Polymarket US and position moved out of active tracking.');
-    } catch (sellError) {
-      if (isTradeIntentNotFoundError(sellError)) {
-        await refreshTradeHistory();
-
-        if (tradeDraft?.id === intent.id) {
-          handleClearTradeDraft();
-        }
-
-        setNotice('That trade intent no longer exists. Refreshed history.');
-      } else {
-        setError(sellError instanceof Error ? sellError.message : 'Unable to sell tracked intent');
-      }
-    } finally {
-      setIsMutatingHistory(false);
-    }
-  }
-
   async function handleStopTrackedIntent(intent) {
     setError('');
     setNotice('');
@@ -1647,8 +1612,9 @@ export default function App() {
                 const currentProbability = intent.monitoring?.currentProbability ?? intent.recommendation?.currentProbability ?? null;
                 const entryProbability = getTrackedEntryProbability(intent);
                 const monitoringState = intent.monitoring?.state ?? 'active';
+                const driftDirection = intent?.position?.entryIntent === 'ORDER_INTENT_BUY_SHORT' ? -1 : 1;
                 const drift = typeof currentProbability === 'number' && typeof entryProbability === 'number'
-                  ? currentProbability - entryProbability
+                  ? (currentProbability - entryProbability) * driftDirection
                   : null;
                 const unrealizedPnl = estimateTrackedPnl(intent, currentProbability, entryProbability);
                 const pnlClassName = typeof unrealizedPnl.dollars === 'number'
@@ -1754,32 +1720,14 @@ export default function App() {
 
                     <div className="trade-history-actions">
                       {isTracking ? (
-                        <>
-                          <button
-                            type="button"
-                            className="secondary-button"
-                            onClick={() => void handleSellTrackedIntent(intent)}
-                            disabled={isMutatingHistory}
-                          >
-                            Sell Now
-                          </button>
-                          <button
-                            type="button"
-                            className="ghost-button"
-                            onClick={() => void handleStopTrackedIntent(intent)}
-                            disabled={isMutatingHistory}
-                          >
-                            Stop Trade
-                          </button>
-                          <button
-                            type="button"
-                            className="ghost-button"
-                            onClick={() => void handleRestoreTradeIntent(intent)}
-                            disabled={isMutatingHistory}
-                          >
-                            Open Intent
-                          </button>
-                        </>
+                        <button
+                          type="button"
+                          className="ghost-button"
+                          onClick={() => void handleStopTrackedIntent(intent)}
+                          disabled={isMutatingHistory}
+                        >
+                          Stop Trade
+                        </button>
                       ) : (
                         <>
                           <button type="button" className="ghost-button" onClick={() => void handleRestoreTradeIntent(intent)}>

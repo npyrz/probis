@@ -104,6 +104,22 @@ function getExecutedEntryProbability(intent, buyOrder) {
   return spent / shares;
 }
 
+function getPositionSideFromEntryIntent(entryIntent) {
+  return entryIntent === 'ORDER_INTENT_BUY_SHORT' ? 'short' : 'long';
+}
+
+function toTrackedProbability(entryIntent, outcomeProbability) {
+  if (typeof outcomeProbability !== 'number') {
+    return null;
+  }
+
+  if (entryIntent === 'ORDER_INTENT_BUY_SHORT') {
+    return 1 - outcomeProbability;
+  }
+
+  return outcomeProbability;
+}
+
 function buildExitRequestShape(intent, exitReason) {
   return {
     requestId: randomUUID(),
@@ -460,6 +476,11 @@ export async function executeTradeIntent(env, id) {
     conditionId: resolvedMarket.conditionId
   };
   const buyOrder = await placeBuyOrderForIntent(env, executableIntent);
+  const sharesFilled = Number.parseFloat(buyOrder?.sharesFilled ?? NaN);
+
+  if (!Number.isFinite(sharesFilled) || sharesFilled <= 0) {
+    throw new Error('Order submitted but no shares were filled. Trade remains unstarted; adjust price/size and try again.');
+  }
 
   const nextIntent = {
     ...executableIntent,
@@ -475,7 +496,7 @@ export async function executeTradeIntent(env, id) {
       submission: buyOrder.request
     },
     position: {
-      side: 'long',
+      side: getPositionSideFromEntryIntent(buyOrder.entryIntent),
       entryIntent: buyOrder.entryIntent,
       entryOrderId: buyOrder.orderId,
       sharesFilled: buyOrder.sharesFilled,
@@ -505,7 +526,7 @@ export async function pollTradeIntent(env, id) {
 
   const event = await fetchEventByInput(env, existing.input ?? existing.eventSlug);
   const { outcome } = findTrackedMarketOutcome(event, existing);
-  const currentProbability = outcome?.probability ?? null;
+  const currentProbability = toTrackedProbability(existing?.position?.entryIntent, outcome?.probability ?? null);
   const nextIntent = await evaluateMonitoringState(env, existing, currentProbability);
 
   await writeTradeIntents(replaceTradeIntent(intents, nextIntent));
@@ -525,7 +546,8 @@ export async function pollTrackingTradeIntents(env) {
     try {
       const event = await fetchEventByInput(env, intent.input ?? intent.eventSlug);
       const { outcome } = findTrackedMarketOutcome(event, intent);
-      nextIntents.push(await evaluateMonitoringState(env, intent, outcome?.probability ?? null));
+      const trackedProbability = toTrackedProbability(intent?.position?.entryIntent, outcome?.probability ?? null);
+      nextIntents.push(await evaluateMonitoringState(env, intent, trackedProbability));
     } catch {
       nextIntents.push({
         ...intent,
