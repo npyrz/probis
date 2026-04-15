@@ -112,12 +112,64 @@ function formatIntentStatus(intent) {
   return 'Confirmed';
 }
 
+function formatMonitoringStateLabel(state) {
+  const normalized = String(state ?? 'active').trim();
+
+  if (normalized === 'active') {
+    return 'Actively Trading';
+  }
+
+  if (normalized === 'stop-loss-triggered-exit-failed') {
+    return 'Stop-Loss Exit Failed';
+  }
+
+  if (normalized === 'take-profit-triggered-exit-failed') {
+    return 'Take-Profit Exit Failed';
+  }
+
+  return normalized
+    .split('-')
+    .map((token) => token.charAt(0).toUpperCase() + token.slice(1))
+    .join(' ');
+}
+
+function getMonitoringStateChipClass(state) {
+  const normalized = String(state ?? 'active').trim();
+
+  if (normalized.endsWith('-failed')) {
+    return 'market-chip market-chip-alert';
+  }
+
+  if (normalized === 'active') {
+    return 'market-chip market-chip-live';
+  }
+
+  return 'market-chip';
+}
+
 function formatOrderId(value) {
   if (typeof value !== 'string' || value.length === 0) {
     return 'n/a';
   }
 
   return value.length > 16 ? `${value.slice(0, 8)}...${value.slice(-6)}` : value;
+}
+
+function isTradeIntentNotFoundError(error) {
+  const message = error instanceof Error ? error.message : String(error ?? '');
+  return message.includes('was not found');
+}
+
+function getExecutePrecheckMessage(intent) {
+  if (!intent?.confirmedAt) {
+    return 'Confirm and save this trade intent first.';
+  }
+
+  if (!intent?.marketSlug) {
+    return 'Missing market mapping. Open Intent and save changes before starting live trading.';
+  }
+
+  return null;
 }
 
 function formatPercent(value) {
@@ -825,7 +877,17 @@ export default function App() {
         setNotice('Deleted saved trade intent.');
       }
     } catch (deleteError) {
-      setError(deleteError instanceof Error ? deleteError.message : 'Unable to delete trade intent');
+      if (isTradeIntentNotFoundError(deleteError)) {
+        await refreshTradeHistory();
+
+        if (tradeDraft?.id === intentId) {
+          handleClearTradeDraft();
+        }
+
+        setNotice('That trade intent no longer exists. Refreshed history.');
+      } else {
+        setError(deleteError instanceof Error ? deleteError.message : 'Unable to delete trade intent');
+      }
     } finally {
       setIsMutatingHistory(false);
     }
@@ -867,7 +929,17 @@ export default function App() {
 
       setNotice('Sell order submitted to Polymarket US and position moved out of active tracking.');
     } catch (sellError) {
-      setError(sellError instanceof Error ? sellError.message : 'Unable to sell tracked intent');
+      if (isTradeIntentNotFoundError(sellError)) {
+        await refreshTradeHistory();
+
+        if (tradeDraft?.id === intent.id) {
+          handleClearTradeDraft();
+        }
+
+        setNotice('That trade intent no longer exists. Refreshed history.');
+      } else {
+        setError(sellError instanceof Error ? sellError.message : 'Unable to sell tracked intent');
+      }
     } finally {
       setIsMutatingHistory(false);
     }
@@ -890,7 +962,17 @@ export default function App() {
 
       setNotice('Trade stopped and moved out of active tracking.');
     } catch (stopError) {
-      setError(stopError instanceof Error ? stopError.message : 'Unable to stop trade monitoring');
+      if (isTradeIntentNotFoundError(stopError)) {
+        await refreshTradeHistory();
+
+        if (tradeDraft?.id === intent.id) {
+          handleClearTradeDraft();
+        }
+
+        setNotice('That trade intent no longer exists. Refreshed history.');
+      } else {
+        setError(stopError instanceof Error ? stopError.message : 'Unable to stop trade monitoring');
+      }
     } finally {
       setIsMutatingHistory(false);
     }
@@ -924,7 +1006,17 @@ export default function App() {
 
       setNotice('Buy order submitted to Polymarket US. Intent is now actively trading.');
     } catch (executeError) {
-      setError(executeError instanceof Error ? executeError.message : 'Unable to start trade monitoring');
+      if (isTradeIntentNotFoundError(executeError)) {
+        await refreshTradeHistory();
+
+        if (tradeDraft?.id === intent.id) {
+          handleClearTradeDraft();
+        }
+
+        setNotice('That trade intent no longer exists. Refreshed history.');
+      } else {
+        setError(executeError instanceof Error ? executeError.message : 'Unable to start trade monitoring');
+      }
     } finally {
       setIsMutatingHistory(false);
     }
@@ -1372,6 +1464,7 @@ export default function App() {
             {activeTradeIntents.map((intent) => {
               const currentProbability = intent.monitoring?.currentProbability ?? intent.recommendation?.currentProbability ?? null;
               const entryProbability = intent.monitoring?.entryProbability ?? intent.executionRequest?.entryProbability ?? null;
+              const monitoringState = intent.monitoring?.state ?? 'active';
               const drift = typeof currentProbability === 'number' && typeof entryProbability === 'number'
                 ? currentProbability - entryProbability
                 : null;
@@ -1383,7 +1476,7 @@ export default function App() {
                       <p className="eyebrow">{intent.eventTitle ?? intent.eventSlug}</p>
                       <h2>{intent.outcomeLabel} in {intent.marketQuestion}</h2>
                     </div>
-                    <span className="market-chip">{intent.monitoring?.state ?? 'active'}</span>
+                    <span className={getMonitoringStateChipClass(monitoringState)}>{formatMonitoringStateLabel(monitoringState)}</span>
                   </div>
 
                   <div className="trade-preview-grid">
@@ -1471,6 +1564,11 @@ export default function App() {
             <div className="trade-history-list terminal-list">
               {tradeHistory.map((intent) => (
                 <article key={intent.id} className="trade-history-item">
+                  {(() => {
+                    const precheckMessage = getExecutePrecheckMessage(intent);
+
+                    return (
+                      <>
                   <button
                     type="button"
                     className="trade-history-main"
@@ -1504,6 +1602,9 @@ export default function App() {
                         Monitor {intent.monitoring.state} · stop {formatPercent(intent.monitoring.stopLossProbability)} · take {formatPercent(intent.monitoring.takeProfitProbability)}
                       </small>
                     ) : null}
+                    {precheckMessage ? (
+                      <small>{precheckMessage}</small>
+                    ) : null}
                   </button>
                   <div className="trade-history-actions">
                     <button type="button" className="ghost-button" onClick={() => void handleRestoreTradeIntent(intent)}>
@@ -1513,7 +1614,8 @@ export default function App() {
                       type="button"
                       className="secondary-button secondary-button-muted"
                       onClick={() => void handleExecuteTradeIntent(intent)}
-                      disabled={isMutatingHistory || intent.status === 'tracking' || !intent.marketSlug || !intent.confirmedAt}
+                      disabled={isMutatingHistory || intent.status === 'tracking'}
+                      title={precheckMessage ?? 'Submit live buy order and transition to actively trading.'}
                     >
                       {intent.status === 'tracking' ? 'Actively Trading' : 'Start Trading'}
                     </button>
@@ -1526,6 +1628,9 @@ export default function App() {
                       Delete
                     </button>
                   </div>
+                      </>
+                    );
+                  })()}
                 </article>
               ))}
             </div>

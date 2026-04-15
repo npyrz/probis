@@ -419,6 +419,18 @@ h3 {
   background: rgba(255, 255, 255, 0.03);
 }
 
+.market-chip-live {
+  border-color: rgba(73, 214, 150, 0.45);
+  background: rgba(44, 113, 84, 0.25);
+  color: #8de8c0;
+}
+
+.market-chip-alert {
+  border-color: rgba(255, 102, 102, 0.55);
+  background: rgba(120, 32, 32, 0.3);
+  color: #ffb3b3;
+}
+
 .outcome-list {
   display: grid;
   gap: 6px;
