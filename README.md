@@ -59,8 +59,11 @@ Probis is a low-latency, AI-assisted trading system for Polymarket US. This repo
 - Express API bootstrapped with environment loading
 - Live Gamma-backed Polymarket event fetching for active events and direct event URL resolution
 - CLOB auth status check that validates whether the configured private key can initialize the SDK
-- React dashboard with event URL input and market outcome display
-- Local Ollama smoke-test endpoint and event analysis endpoint
+- React dashboard with event resolution, live market filtering, ranking controls, decision highlights, and market drilldown
+- Historical aggregation layer for 7-day price series, liquidity snapshots, and event-level derived metrics
+- First-pass statistical model for model probability, edge, confidence, and best-opportunity ranking
+- Local Ollama smoke-test endpoint, analytics-aware event analysis endpoint, and combined decision-engine recommendation
+- In-memory analytics caching with TTL and manual invalidation support
 - `.env` and `.env.example` templates with Polymarket and Ollama settings
 
 ## API Endpoints
@@ -69,15 +72,23 @@ Probis is a low-latency, AI-assisted trading system for Polymarket US. This repo
 - `GET /api/polymarket/status`
 - `GET /api/polymarket/events?limit=10`
 - `GET /api/polymarket/events/resolve?input=https://polymarket.com/event/...`
+- `GET /api/polymarket/events/aggregation?input=...`
+- `GET /api/polymarket/events/aggregation?input=...&refresh=true`
+- `POST /api/polymarket/events/aggregation/invalidate`
 - `GET /api/ai/status`
 - `POST /api/ai/test`
 - `POST /api/ai/analyze-event`
 
-## Step 2 and Step 3
+## Analytics Cache
 
-Step 2 is implemented through the backend Polymarket routes and health checks.
-Step 3 is implemented through the frontend event input flow and market display.
+- Set `ANALYTICS_CACHE_TTL_MS` in `.env` to control the analytics cache TTL. The default is 300000 milliseconds.
+- Use `refresh=true` on the aggregation endpoint to bypass the cache for a single request.
+- Use `POST /api/polymarket/events/aggregation/invalidate` with `{ "input": "..." }` to evict one cached event, or omit `input` to clear the entire analytics cache.
+
+## Progress
+
+Steps 2 through 6.3 are implemented through the backend analytics pipeline and the frontend market analysis workflow.
 
 ## Next Step
 
-Step 4 and beyond can now build on the resolved event data already flowing through the backend and frontend.
+The next plan items can build on the existing event resolution, aggregation, model scoring, and decision-engine layers.

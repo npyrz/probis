@@ -1,6 +1,13 @@
 import { useEffect, useState, useTransition } from 'react';
 
-import { analyzeEvent, fetchActiveEvents, fetchStatus, resolveEvent, resolveEventAggregation } from './lib/api.js';
+import {
+  analyzeEvent,
+  fetchActiveEvents,
+  fetchStatus,
+  invalidateEventAggregationCache,
+  resolveEvent,
+  resolveEventAggregation
+} from './lib/api.js';
 
 function formatCompactNumber(value) {
   if (typeof value !== 'number' || Number.isNaN(value)) {
@@ -46,6 +53,18 @@ function formatPercent(value) {
   }
 
   return `${(value * 100).toFixed(1)}%`;
+}
+
+function formatCurrency(value) {
+  if (typeof value !== 'number' || Number.isNaN(value)) {
+    return 'n/a';
+  }
+
+  return new Intl.NumberFormat('en-US', {
+    style: 'currency',
+    currency: 'USD',
+    maximumFractionDigits: 2
+  }).format(value);
 }
 
 function marketHasLivePrices(market) {
@@ -116,6 +135,52 @@ function getMarketDisplayMetrics(market, aggregation, statisticalModel) {
     confidence: modelMarket?.confidence ?? null,
     liquidity: market.liquidity ?? null,
     momentum: getMarketMomentum(aggregation, market.conditionId)
+  };
+}
+
+function getRecommendedMarket(selectedEvent, decisionEngine) {
+  if (!selectedEvent?.markets || !decisionEngine?.recommendation?.marketQuestion) {
+    return null;
+  }
+
+  return selectedEvent.markets.find(
+    (market) => market.question === decisionEngine.recommendation.marketQuestion
+  ) ?? null;
+}
+
+function buildTradeSuggestion(decisionEngine, amount) {
+  const recommendation = decisionEngine?.recommendation;
+  const numericAmount = Number.parseFloat(amount);
+
+  if (!recommendation || !Number.isFinite(numericAmount) || numericAmount <= 0) {
+    return null;
+  }
+
+  const price = recommendation.currentProbability;
+  const modelProbability = recommendation.modelProbability;
+  const shares = typeof price === 'number' && price > 0 ? numericAmount / price : null;
+  const grossPayout = typeof shares === 'number' ? shares : null;
+  const profitIfCorrect = typeof grossPayout === 'number' ? grossPayout - numericAmount : null;
+  const expectedProfit = typeof recommendation.expectedValuePerDollar === 'number'
+    ? numericAmount * recommendation.expectedValuePerDollar
+    : null;
+  const weightedRisk = typeof recommendation.combinedConfidence === 'number'
+    ? numericAmount * recommendation.combinedConfidence
+    : null;
+  const bankrollHint = typeof recommendation.suggestedStakeFraction === 'number' && recommendation.suggestedStakeFraction > 0
+    ? `${(recommendation.suggestedStakeFraction * 100).toFixed(1)}% of bankroll`
+    : 'No stake size suggested';
+
+  return {
+    amount: numericAmount,
+    shares,
+    grossPayout,
+    profitIfCorrect,
+    expectedProfit,
+    weightedRisk,
+    bankrollHint,
+    modelProbability,
+    breakEvenProbability: recommendation.breakEvenProbability ?? null
   };
 }
 
@@ -197,8 +262,13 @@ export default function App() {
   const [eventInput, setEventInput] = useState('');
   const [sortBy, setSortBy] = useState('modelEdge');
   const [filterBy, setFilterBy] = useState('all');
+  const [tradeAmount, setTradeAmount] = useState('100');
   const [analysis, setAnalysis] = useState('');
   const [error, setError] = useState('');
+  const [notice, setNotice] = useState('');
+  const [isRefreshing, setIsRefreshing] = useState(false);
+  const [isInvalidating, setIsInvalidating] = useState(false);
+  const [isAnalyzing, setIsAnalyzing] = useState(false);
   const [isPending, startTransition] = useTransition();
   const visibleMarkets = selectedEvent?.markets.filter(marketHasLivePrices) ?? [];
   const eventHeadline = selectedEvent ? getEventHeadline(selectedEvent, visibleMarkets) : null;
@@ -206,6 +276,8 @@ export default function App() {
   const selectedMarket = visibleMarkets.find((market) => market.conditionId === selectedMarketId) ?? rankedMarkets[0]?.market ?? null;
   const selectedHistoricalMarket = selectedMarket ? findHistoricalMarket(aggregation, selectedMarket.conditionId) : null;
   const selectedModelMarket = selectedMarket ? getModelMarket(statisticalModel, selectedMarket.conditionId) : null;
+  const recommendedMarket = getRecommendedMarket(selectedEvent, decisionEngine);
+  const tradeSuggestion = buildTradeSuggestion(decisionEngine, tradeAmount);
 
   useEffect(() => {
     let isCancelled = false;
@@ -220,6 +292,7 @@ export default function App() {
 
         setStatus(nextStatus);
         setActiveEvents(nextEvents);
+        setNotice('');
       } catch (loadError) {
         if (!isCancelled) {
           setError(loadError instanceof Error ? loadError.message : 'Unable to load initial data');
@@ -236,6 +309,7 @@ export default function App() {
 
   async function handleResolveEvent(submittedInput) {
     setError('');
+    setNotice('');
     setAnalysis('');
     setDecisionEngine(null);
 
@@ -278,22 +352,81 @@ export default function App() {
     });
   }
 
-  function handleAnalyze() {
+  async function handleAnalyze(options = {}) {
     if (!selectedEvent?.slug) {
       return;
     }
 
     setError('');
+    setNotice('');
+    setIsAnalyzing(true);
 
-    startTransition(async () => {
-      try {
-        const result = await analyzeEvent(selectedEvent.slug);
+    try {
+      const result = await analyzeEvent(selectedEvent.slug, options);
+      setAnalysis(result.analysis);
+      setDecisionEngine(result.decisionEngine ?? null);
+      setNotice(options.refresh ? 'Refreshed analytics and reran the decision engine.' : 'AI analysis updated.');
+    } catch (analysisError) {
+      setError(analysisError instanceof Error ? analysisError.message : 'Unable to run AI analysis');
+    } finally {
+      setIsAnalyzing(false);
+    }
+  }
+
+  async function handleRefreshData() {
+    if (!eventInput.trim()) {
+      setError('Load an event before refreshing analytics.');
+      return;
+    }
+
+    setError('');
+    setNotice('');
+    setIsRefreshing(true);
+
+    try {
+      const [event, analytics] = await Promise.all([
+        resolveEvent(eventInput.trim()),
+        resolveEventAggregation(eventInput.trim(), { refresh: true })
+      ]);
+
+      setSelectedEvent(event);
+      setAggregation(analytics.aggregation ?? null);
+      setStatisticalModel(analytics.statisticalModel ?? null);
+
+      const currentSelection = event.markets.find((market) => market.conditionId === selectedMarketId);
+      const fallbackSelection = event.markets.filter(marketHasLivePrices)[0] ?? null;
+      setSelectedMarketId(currentSelection?.conditionId ?? fallbackSelection?.conditionId ?? null);
+
+      if (decisionEngine || analysis) {
+        const result = await analyzeEvent(event.slug, { refresh: true });
         setAnalysis(result.analysis);
         setDecisionEngine(result.decisionEngine ?? null);
-      } catch (analysisError) {
-        setError(analysisError instanceof Error ? analysisError.message : 'Unable to run AI analysis');
+      } else {
+        setAnalysis('');
+        setDecisionEngine(null);
       }
-    });
+
+      setNotice('Market data refreshed from source.');
+    } catch (refreshError) {
+      setError(refreshError instanceof Error ? refreshError.message : 'Unable to refresh analytics');
+    } finally {
+      setIsRefreshing(false);
+    }
+  }
+
+  async function handleInvalidateCache(scope) {
+    setError('');
+    setNotice('');
+    setIsInvalidating(true);
+
+    try {
+      await invalidateEventAggregationCache(scope === 'all' ? null : eventInput.trim() || null);
+      setNotice(scope === 'all' ? 'Cleared the full analytics cache.' : 'Cleared the current event analytics cache.');
+    } catch (invalidateError) {
+      setError(invalidateError instanceof Error ? invalidateError.message : 'Unable to invalidate analytics cache');
+    } finally {
+      setIsInvalidating(false);
+    }
   }
 
   return (
@@ -371,13 +504,46 @@ export default function App() {
         <article className="panel-card panel-card-wide">
           <div className="panel-heading panel-heading-inline">
             <div>
-              <p className="eyebrow">Steps 4 and 5</p>
+              <p className="eyebrow">Steps 4 through 7</p>
               <h2>{selectedEvent ? selectedEvent.title : 'Resolve an event to inspect its markets'}</h2>
             </div>
-            <button type="button" className="secondary-button" onClick={handleAnalyze} disabled={!selectedEvent || isPending}>
-              Test AI on Event
-            </button>
+            <div className="action-row">
+              <button
+                type="button"
+                className="secondary-button"
+                onClick={() => void handleAnalyze()}
+                disabled={!selectedEvent || isPending || isAnalyzing || isRefreshing}
+              >
+                {isAnalyzing ? 'Analyzing...' : 'Run Decision Engine'}
+              </button>
+              <button
+                type="button"
+                className="secondary-button secondary-button-muted"
+                onClick={() => void handleRefreshData()}
+                disabled={!selectedEvent || isRefreshing || isInvalidating}
+              >
+                {isRefreshing ? 'Refreshing...' : 'Refresh Data'}
+              </button>
+              <button
+                type="button"
+                className="ghost-button"
+                onClick={() => void handleInvalidateCache('event')}
+                disabled={!selectedEvent || isRefreshing || isInvalidating}
+              >
+                {isInvalidating ? 'Clearing...' : 'Clear Event Cache'}
+              </button>
+              <button
+                type="button"
+                className="ghost-button"
+                onClick={() => void handleInvalidateCache('all')}
+                disabled={isRefreshing || isInvalidating}
+              >
+                Clear All Cache
+              </button>
+            </div>
           </div>
+
+          {notice ? <p className="notice-banner">{notice}</p> : null}
 
           {selectedEvent ? (
             <>
@@ -454,14 +620,15 @@ export default function App() {
 
                 {decisionEngine?.recommendation ? (
                   <div className="decision-highlight">
-                    <span>Step 6.3 Decision Engine</span>
+                    <span>Steps 6.3 and 7</span>
                     <strong>
                       {decisionEngine.action.toUpperCase()} {decisionEngine.recommendation.outcomeLabel} in{' '}
                       {decisionEngine.recommendation.marketQuestion}
                     </strong>
                     <p>
                       Combined confidence {formatPercent(decisionEngine.recommendation.combinedConfidence)} · edge{' '}
-                      {formatSignedPercent(decisionEngine.recommendation.edge)}
+                      {formatSignedPercent(decisionEngine.recommendation.edge)} · EV{' '}
+                      {formatSignedPercent(decisionEngine.recommendation.expectedValuePerDollar)} per $1
                     </p>
                     <p>{decisionEngine.recommendation.thesis}</p>
                   </div>
@@ -506,7 +673,15 @@ export default function App() {
                   <section
                     key={market.conditionId ?? market.question}
                     className={`market-card ${selectedMarket?.conditionId === market.conditionId ? 'market-card-active' : ''}`}
+                    role="button"
+                    tabIndex={0}
                     onClick={() => setSelectedMarketId(market.conditionId)}
+                    onKeyDown={(event) => {
+                      if (event.key === 'Enter' || event.key === ' ') {
+                        event.preventDefault();
+                        setSelectedMarketId(market.conditionId);
+                      }
+                    }}
                   >
                     <div className="market-card-header">
                       <h3>{market.question}</h3>
@@ -611,9 +786,107 @@ export default function App() {
                     <div className="detail-callout">
                       <span>Decision engine rationale</span>
                       <strong>{decisionEngine.recommendation.outcomeLabel}</strong>
+                      <div className="decision-rationale-grid">
+                        <article>
+                          <span>Combined confidence</span>
+                          <strong>{formatPercent(decisionEngine.recommendation.combinedConfidence)}</strong>
+                        </article>
+                        <article>
+                          <span>Model confidence</span>
+                          <strong>{formatPercent(decisionEngine.recommendation.modelConfidence)}</strong>
+                        </article>
+                        <article>
+                          <span>LLM confidence</span>
+                          <strong>{formatPercent(decisionEngine.recommendation.llmConfidence)}</strong>
+                        </article>
+                        <article>
+                          <span>Agreement</span>
+                          <strong>{decisionEngine.recommendation.agreementWithModel ? 'Aligned' : 'Divergent'}</strong>
+                        </article>
+                      </div>
                       <p>{decisionEngine.recommendation.thesis}</p>
                       <p>Risk: {decisionEngine.recommendation.keyRisk}</p>
+                      {decisionEngine.recommendation.reasons.length > 0 ? (
+                        <ul className="reason-list">
+                          {decisionEngine.recommendation.reasons.map((reason) => (
+                            <li key={reason}>{reason}</li>
+                          ))}
+                        </ul>
+                      ) : null}
                     </div>
+                  ) : null}
+
+                  {recommendedMarket && decisionEngine?.recommendation ? (
+                    <section className="trade-suggestion-card">
+                      <div className="panel-heading panel-heading-inline">
+                        <div>
+                          <p className="eyebrow">Step 7 Trade Suggestion</p>
+                          <h2>
+                            {decisionEngine.action.toUpperCase()} {decisionEngine.recommendation.outcomeLabel} in{' '}
+                            {decisionEngine.recommendation.marketQuestion}
+                          </h2>
+                        </div>
+                        {recommendedMarket.conditionId !== selectedMarket?.conditionId ? (
+                          <button
+                            type="button"
+                            className="ghost-button"
+                            onClick={() => setSelectedMarketId(recommendedMarket.conditionId)}
+                          >
+                            Jump to Recommended Market
+                          </button>
+                        ) : null}
+                      </div>
+
+                      <div className="trade-input-row">
+                        <label>
+                          Enter amount to invest
+                          <input
+                            type="number"
+                            min="1"
+                            step="1"
+                            value={tradeAmount}
+                            onChange={(event) => setTradeAmount(event.target.value)}
+                          />
+                        </label>
+                        <div className="market-chip-row">
+                          <span className="market-chip">Entry {formatPercent(decisionEngine.recommendation.currentProbability)}</span>
+                          <span className="market-chip">Model {formatPercent(decisionEngine.recommendation.modelProbability)}</span>
+                          <span className="market-chip">EV {formatSignedPercent(decisionEngine.recommendation.expectedValuePerDollar)}</span>
+                          <span className="market-chip">Stake {formatPercent(decisionEngine.recommendation.suggestedStakeFraction)}</span>
+                        </div>
+                      </div>
+
+                      {tradeSuggestion ? (
+                        <div className="trade-preview-grid">
+                          <article>
+                            <span>Expected profit</span>
+                            <strong>{formatCurrency(tradeSuggestion.expectedProfit)}</strong>
+                          </article>
+                          <article>
+                            <span>Profit if correct</span>
+                            <strong>{formatCurrency(tradeSuggestion.profitIfCorrect)}</strong>
+                          </article>
+                          <article>
+                            <span>Gross payout</span>
+                            <strong>{formatCurrency(tradeSuggestion.grossPayout)}</strong>
+                          </article>
+                          <article>
+                            <span>Estimated shares</span>
+                            <strong>{typeof tradeSuggestion.shares === 'number' ? tradeSuggestion.shares.toFixed(2) : 'n/a'}</strong>
+                          </article>
+                          <article>
+                            <span>Break-even probability</span>
+                            <strong>{formatPercent(tradeSuggestion.breakEvenProbability)}</strong>
+                          </article>
+                          <article>
+                            <span>Sizing hint</span>
+                            <strong>{tradeSuggestion.bankrollHint}</strong>
+                          </article>
+                        </div>
+                      ) : (
+                        <p className="empty-state">Enter a positive dollar amount to preview the trade suggestion.</p>
+                      )}
+                    </section>
                   ) : null}
                 </section>
               ) : null}

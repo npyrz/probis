@@ -65,3 +65,13 @@ export async function analyzeEvent(input, options = {}) {
 
   return data;
 }
+
+export async function invalidateEventAggregationCache(input) {
+  return requestJson('/api/polymarket/events/aggregation/invalidate', {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json'
+    },
+    body: JSON.stringify(input ? { input } : {})
+  });
+}

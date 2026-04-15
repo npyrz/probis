@@ -10,6 +10,22 @@ function clamp(value, min = 0, max = 1) {
   return Math.min(max, Math.max(min, value));
 }
 
+function getExpectedValuePerDollar(currentProbability, modelProbability) {
+  if (typeof currentProbability !== 'number' || typeof modelProbability !== 'number' || currentProbability <= 0) {
+    return null;
+  }
+
+  return modelProbability / currentProbability - 1;
+}
+
+function getSuggestedStakeFraction(action, edge, combinedConfidence) {
+  if (action !== 'buy' || typeof edge !== 'number' || typeof combinedConfidence !== 'number') {
+    return 0;
+  }
+
+  return clamp(edge * combinedConfidence * 4, 0.01, 0.2);
+}
+
 function findModelOutcome(statisticalModel, marketQuestion, outcomeLabel) {
   const market = statisticalModel.markets.find((candidate) => candidate.question === marketQuestion);
   const outcome = market?.outcomes.find((candidate) => candidate.label === outcomeLabel) ?? null;
@@ -69,6 +85,12 @@ export function combineDecisionRecommendation(event, aggregation, statisticalMod
     action = 'avoid';
   }
 
+  const expectedValuePerDollar = getExpectedValuePerDollar(
+    chosenOutcome?.currentProbability ?? null,
+    chosenOutcome?.estimatedProbability ?? null
+  );
+  const suggestedStakeFraction = getSuggestedStakeFraction(action, edge, combinedConfidence);
+
   return {
     generatedAt: new Date().toISOString(),
     action,
@@ -78,10 +100,16 @@ export function combineDecisionRecommendation(event, aggregation, statisticalMod
       currentProbability: chosenOutcome?.currentProbability ?? null,
       modelProbability: chosenOutcome?.estimatedProbability ?? null,
       edge,
+      expectedValuePerDollar,
       combinedConfidence,
       modelConfidence,
       llmConfidence,
       agreementWithModel: agreement,
+      breakEvenProbability: chosenOutcome?.currentProbability ?? null,
+      payoutMultiple: typeof chosenOutcome?.currentProbability === 'number' && chosenOutcome.currentProbability > 0
+        ? 1 / chosenOutcome.currentProbability
+        : null,
+      suggestedStakeFraction,
       thesis: aiRecommendation?.thesis ?? null,
       keyRisk: aiRecommendation?.keyRisk ?? null,
       reasons: Array.isArray(aiRecommendation?.reasons) ? aiRecommendation.reasons : []
