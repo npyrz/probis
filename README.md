@@ -57,10 +57,27 @@ Probis is a low-latency, AI-assisted trading system for Polymarket US. This repo
 
 - Root npm workspace for multi-app development
 - Express API bootstrapped with environment loading
-- Placeholder Polymarket client wiring for Step 2
-- React dashboard shell bootstrapped for Step 4
+- Live Gamma-backed Polymarket event fetching for active events and direct event URL resolution
+- CLOB auth status check that validates whether the configured private key can initialize the SDK
+- React dashboard with event URL input and market outcome display
+- Local Ollama smoke-test endpoint and event analysis endpoint
 - `.env` and `.env.example` templates with Polymarket and Ollama settings
+
+## API Endpoints
+
+- `GET /health`
+- `GET /api/polymarket/status`
+- `GET /api/polymarket/events?limit=10`
+- `GET /api/polymarket/events/resolve?input=https://polymarket.com/event/...`
+- `GET /api/ai/status`
+- `POST /api/ai/test`
+- `POST /api/ai/analyze-event`
+
+## Step 2 and Step 3
+
+Step 2 is implemented through the backend Polymarket routes and health checks.
+Step 3 is implemented through the frontend event input flow and market display.
 
 ## Next Step
 
-Step 2 is now the next meaningful implementation target: authenticate against Polymarket and validate market-fetching endpoints.
+Step 4 and beyond can now build on the resolved event data already flowing through the backend and frontend.

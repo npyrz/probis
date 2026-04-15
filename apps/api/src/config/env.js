@@ -1,6 +1,13 @@
+import path from 'node:path';
+import { fileURLToPath } from 'node:url';
+
 import dotenv from 'dotenv';
 
-dotenv.config({ path: process.env.NODE_ENV === 'test' ? '.env.test' : '.env' });
+const currentDirectory = path.dirname(fileURLToPath(import.meta.url));
+const repoRoot = path.resolve(currentDirectory, '../../../../');
+const envFileName = process.env.NODE_ENV === 'test' ? '.env.test' : '.env';
+
+dotenv.config({ path: path.join(repoRoot, envFileName) });
 
 const requiredKeys = ['POLYMARKET_API_KEY', 'POLYMARKET_PRIVATE_KEY'];
 
