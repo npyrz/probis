@@ -1169,7 +1169,10 @@ export default function App() {
     <main className="app-shell terminal-shell">
       <header className="terminal-topbar">
         <div className="terminal-brand-block">
-          <p className="terminal-kicker">Step 12 Dashboard</p>
+          <div className="brand-row">
+            <img src="/logo.png" alt="Probis logo" className="brand-logo" />
+            <p className="terminal-kicker">Operator Dashboard</p>
+          </div>
           <h1>PROBIS OPS</h1>
           <p className="terminal-subtitle">Local-first prediction market console with live trade planning, monitoring, and operator controls.</p>
         </div>
@@ -1748,7 +1751,7 @@ export default function App() {
               </button>
             </div>
 
-            <p className="modal-copy">Review the Step 7 draft before Step 8 risk controls and Step 9 execution wiring.</p>
+            <p className="modal-copy">Review this draft, confirm risk controls, then submit execution when ready.</p>
 
             <div className="trade-preview-grid">
               <article>
