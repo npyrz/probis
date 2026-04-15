@@ -92,6 +92,37 @@ function formatClockTime(value) {
   }).format(parsed);
 }
 
+function formatRelativeAge(value, now = new Date()) {
+  if (!value) {
+    return 'n/a';
+  }
+
+  const parsed = new Date(value);
+
+  if (Number.isNaN(parsed.getTime())) {
+    return 'n/a';
+  }
+
+  const diffSeconds = Math.max(0, Math.floor((now.getTime() - parsed.getTime()) / 1000));
+
+  if (diffSeconds < 2) {
+    return 'just now';
+  }
+
+  if (diffSeconds < 60) {
+    return `${diffSeconds}s ago`;
+  }
+
+  const diffMinutes = Math.floor(diffSeconds / 60);
+
+  if (diffMinutes < 60) {
+    return `${diffMinutes}m ago`;
+  }
+
+  const diffHours = Math.floor(diffMinutes / 60);
+  return `${diffHours}h ago`;
+}
+
 function formatIntentStatus(intent) {
   if (intent.status === 'draft') {
     return 'Draft';
@@ -554,6 +585,7 @@ export default function App() {
   const recommendedMarket = getRecommendedMarket(selectedEvent, decisionEngine);
   const tradeSuggestion = buildTradeSuggestion(decisionEngine, tradeAmount, riskInputs);
   const activeTradeIntents = tradeHistory.filter((intent) => intent.status === 'tracking');
+  const lastPolledAge = formatRelativeAge(lastTradeUpdate, liveClock);
   const selectedLeader = selectedMarket ? getMarketLeader(selectedMarket) : null;
   const currentRecommendation = decisionEngine?.recommendation ?? null;
 
@@ -1488,6 +1520,7 @@ export default function App() {
           </div>
           <div className="action-row">
             <span className="market-chip">{activeTradeIntents.length} tracking</span>
+            <span className="market-chip market-chip-muted">Last polled {lastPolledAge}</span>
             <button
               type="button"
               className="secondary-button secondary-button-muted"

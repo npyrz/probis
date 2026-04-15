@@ -503,6 +503,12 @@ h3 {
   color: #ffb3b3;
 }
 
+.market-chip-muted {
+  border-color: rgba(79, 93, 110, 0.46);
+  background: rgba(7, 13, 19, 0.96);
+  color: #9fb0c4;
+}
+
 .outcome-list {
   display: grid;
   gap: 6px;
