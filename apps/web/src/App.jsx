@@ -192,6 +192,15 @@ function formatCurrency(value) {
   }).format(value);
 }
 
+function formatSignedCurrency(value) {
+  if (typeof value !== 'number' || Number.isNaN(value)) {
+    return 'n/a';
+  }
+
+  const prefix = value > 0 ? '+' : '';
+  return `${prefix}${formatCurrency(value)}`;
+}
+
 function formatMarketPrice(value) {
   if (typeof value !== 'number' || Number.isNaN(value)) {
     return 'n/a';
@@ -404,6 +413,33 @@ function buildTradeDraft(event, recommendedMarket, decisionEngine, tradeSuggesti
     analysis: decisionEngine.rawAnalysis ?? null,
     generatedAt: decisionEngine.generatedAt,
     confirmedAt: existingDraft?.confirmedAt ?? null
+  };
+}
+
+function estimateTrackedPnl(intent, currentProbability, entryProbability) {
+  if (typeof currentProbability !== 'number' || typeof entryProbability !== 'number') {
+    return {
+      dollars: null,
+      percent: null
+    };
+  }
+
+  const shares = Number.parseFloat(intent?.position?.sharesFilled ?? intent?.executionRequest?.sharesEstimate ?? NaN);
+
+  if (!Number.isFinite(shares) || shares <= 0) {
+    return {
+      dollars: null,
+      percent: null
+    };
+  }
+
+  const spent = Number.parseFloat(intent?.position?.notionalSpent ?? intent?.tradeAmount ?? NaN);
+  const pnlDollars = shares * (currentProbability - entryProbability);
+  const pnlPercent = Number.isFinite(spent) && spent > 0 ? pnlDollars / spent : null;
+
+  return {
+    dollars: pnlDollars,
+    percent: pnlPercent
   };
 }
 
@@ -722,7 +758,7 @@ export default function App() {
           // Ignore background polling failures and keep the last known state in the UI.
         }
       })();
-    }, 30000);
+    }, 10000);
 
     return () => {
       window.clearInterval(intervalId);
@@ -1299,7 +1335,7 @@ export default function App() {
 
                     <div className="trade-input-row compact-input-grid">
                       <label>
-                        <span className="label-with-tooltip" title="Dollar amount you plan to commit to this position.">Stake</span>
+                        <span className="label-with-tooltip" data-tooltip="Dollar amount you plan to commit to this position." tabIndex={0}>Stake</span>
                         <input
                           type="number"
                           min="1"
@@ -1309,7 +1345,7 @@ export default function App() {
                         />
                       </label>
                       <label>
-                        <span className="label-with-tooltip" title="Stop-loss trigger probability. If live probability drops to or below this value, the system attempts an exit.">Stop</span>
+                        <span className="label-with-tooltip" data-tooltip="Stop-loss trigger probability. If live probability drops to or below this value, the system attempts an exit." tabIndex={0}>Stop</span>
                         <input
                           type="number"
                           min="0.01"
@@ -1323,7 +1359,7 @@ export default function App() {
                         />
                       </label>
                       <label>
-                        <span className="label-with-tooltip" title="Take-profit trigger probability. If live probability rises to or above this value, the system attempts an exit.">Take</span>
+                        <span className="label-with-tooltip" data-tooltip="Take-profit trigger probability. If live probability rises to or above this value, the system attempts an exit." tabIndex={0}>Take</span>
                         <input
                           type="number"
                           min="0.01"
@@ -1341,31 +1377,31 @@ export default function App() {
                     {tradeSuggestion ? (
                       <div className="trade-preview-grid compact-preview-grid">
                         <article>
-                          <span className="label-with-tooltip" title="Model-based expected profit for this trade size.">Expected</span>
+                          <span className="label-with-tooltip" data-tooltip="Model-based expected profit for this trade size." tabIndex={0}>Expected</span>
                           <strong>{formatCurrency(tradeSuggestion.expectedProfit)}</strong>
                         </article>
                         <article>
-                          <span className="label-with-tooltip" title="Estimated shares purchased at the current price.">Shares</span>
+                          <span className="label-with-tooltip" data-tooltip="Estimated shares purchased at the current price." tabIndex={0}>Shares</span>
                           <strong>{typeof tradeSuggestion.shares === 'number' ? tradeSuggestion.shares.toFixed(2) : 'n/a'}</strong>
                         </article>
                         <article>
-                          <span className="label-with-tooltip" title="Estimated upside-to-downside ratio based on your take-profit and stop-loss settings.">Risk/Reward</span>
+                          <span className="label-with-tooltip" data-tooltip="Estimated upside-to-downside ratio based on your take-profit and stop-loss settings." tabIndex={0}>Risk/Reward</span>
                           <strong>{tradeSuggestion.riskRewardRatio ? `${tradeSuggestion.riskRewardRatio.toFixed(2)}x` : 'n/a'}</strong>
                         </article>
                         <article>
-                          <span className="label-with-tooltip" title="Projected dollar loss if stop-loss is triggered.">Loss @ Stop</span>
+                          <span className="label-with-tooltip" data-tooltip="Projected dollar loss if stop-loss is triggered." tabIndex={0}>Loss @ Stop</span>
                           <strong>{formatCurrency(tradeSuggestion.stopLossLoss)}</strong>
                         </article>
                         <article>
-                          <span className="label-with-tooltip" title="Projected dollar gain if take-profit is triggered.">Gain @ Take</span>
+                          <span className="label-with-tooltip" data-tooltip="Projected dollar gain if take-profit is triggered." tabIndex={0}>Gain @ Take</span>
                           <strong>{formatCurrency(tradeSuggestion.takeProfitGain)}</strong>
                         </article>
                         <article>
-                          <span className="label-with-tooltip" title="Current lifecycle state of this trade draft or saved intent.">Status</span>
+                          <span className="label-with-tooltip" data-tooltip="Current lifecycle state of this trade draft or saved intent." tabIndex={0}>Status</span>
                           <strong>{tradeDraft?.confirmedAt ? formatIntentStatus(tradeDraft) : 'Draft'}</strong>
                         </article>
                         <article>
-                          <span className="label-with-tooltip" title="Current live market price for the recommended outcome.">Current Price</span>
+                          <span className="label-with-tooltip" data-tooltip="Current live market price for the recommended outcome." tabIndex={0}>Current Price</span>
                           <strong>
                             {formatPercent(currentRecommendation.currentProbability)} ({formatMarketPrice(currentRecommendation.currentProbability)})
                           </strong>
@@ -1474,6 +1510,12 @@ export default function App() {
               const drift = typeof currentProbability === 'number' && typeof entryProbability === 'number'
                 ? currentProbability - entryProbability
                 : null;
+              const unrealizedPnl = estimateTrackedPnl(intent, currentProbability, entryProbability);
+              const pnlClassName = typeof unrealizedPnl.dollars === 'number'
+                ? unrealizedPnl.dollars >= 0
+                  ? 'pnl-positive'
+                  : 'pnl-negative'
+                : '';
 
               return (
                 <article key={intent.id} className="active-position-item">
@@ -1497,6 +1539,13 @@ export default function App() {
                     <article>
                       <span>Drift from entry</span>
                       <strong>{formatSignedPercent(drift)}</strong>
+                    </article>
+                    <article>
+                      <span>Unrealized P/L</span>
+                      <strong className={pnlClassName}>
+                        {formatSignedCurrency(unrealizedPnl.dollars)}
+                        {typeof unrealizedPnl.percent === 'number' ? ` (${formatSignedPercent(unrealizedPnl.percent)})` : ''}
+                      </strong>
                     </article>
                     <article>
                       <span>Stop-loss</span>

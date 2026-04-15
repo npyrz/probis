@@ -166,6 +166,63 @@ select {
   cursor: help;
   text-decoration: underline dotted rgba(111, 131, 155, 0.75);
   text-underline-offset: 2px;
+  position: relative;
+}
+
+.label-with-tooltip::after {
+  content: attr(data-tooltip);
+  position: absolute;
+  left: 0;
+  bottom: calc(100% + 8px);
+  width: max-content;
+  max-width: min(280px, 80vw);
+  padding: 7px 9px;
+  border-radius: 6px;
+  border: 1px solid rgba(79, 93, 110, 0.55);
+  background: rgba(6, 11, 17, 0.98);
+  color: #dce8f8;
+  font-size: 11px;
+  font-weight: 500;
+  letter-spacing: 0.01em;
+  line-height: 1.35;
+  text-transform: none;
+  white-space: normal;
+  opacity: 0;
+  visibility: hidden;
+  transform: translateY(4px);
+  transition: opacity 130ms ease, transform 130ms ease, visibility 130ms ease;
+  z-index: 20;
+  pointer-events: none;
+}
+
+.label-with-tooltip::before {
+  content: '';
+  position: absolute;
+  left: 10px;
+  bottom: calc(100% + 3px);
+  width: 8px;
+  height: 8px;
+  background: rgba(6, 11, 17, 0.98);
+  border-left: 1px solid rgba(79, 93, 110, 0.55);
+  border-top: 1px solid rgba(79, 93, 110, 0.55);
+  transform: rotate(225deg);
+  opacity: 0;
+  visibility: hidden;
+  transition: opacity 130ms ease, visibility 130ms ease;
+  z-index: 20;
+}
+
+.label-with-tooltip:hover::after,
+.label-with-tooltip:hover::before,
+.label-with-tooltip:focus-visible::after,
+.label-with-tooltip:focus-visible::before {
+  opacity: 1;
+  visibility: visible;
+}
+
+.label-with-tooltip:hover::after,
+.label-with-tooltip:focus-visible::after {
+  transform: translateY(0);
 }
 
 .terminal-meta-grid strong,
@@ -212,6 +269,14 @@ select {
 }
 
 .error-banner {
+  color: #ff8b8b;
+}
+
+.pnl-positive {
+  color: #5ff0a5;
+}
+
+.pnl-negative {
   color: #ff8b8b;
 }
 
