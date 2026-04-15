@@ -144,6 +144,32 @@ function getPortfolioPositions(payload) {
   return [];
 }
 
+function getAccountBalances(payload) {
+  if (Array.isArray(payload)) {
+    return payload;
+  }
+
+  if (Array.isArray(payload?.balances)) {
+    return payload.balances;
+  }
+
+  if (Array.isArray(payload?.data?.balances)) {
+    return payload.data.balances;
+  }
+
+  return [];
+}
+
+function pickUsdBalance(balances) {
+  if (!Array.isArray(balances) || balances.length === 0) {
+    return null;
+  }
+
+  return balances.find((balance) => String(balance?.currency ?? '').toUpperCase() === 'USD')
+    ?? balances[0]
+    ?? null;
+}
+
 function getUsMarketsFromPayload(payload) {
   if (Array.isArray(payload)) {
     return payload;
@@ -734,6 +760,9 @@ export async function getPolymarketUsTradingStatus(env) {
     keyIdPresent: Boolean(env.polymarketUsKeyId),
     secretKeyValid: Boolean(decodeSecretSeed(env.polymarketUsSecretKey)),
     authenticated: false,
+    totalAccountBudget: null,
+    buyingPower: null,
+    budgetCurrency: 'USD',
     error: null
   };
 
@@ -746,6 +775,7 @@ export async function getPolymarketUsTradingStatus(env) {
   }
 
   const path = '/v1/portfolio/positions';
+  const balancesPath = '/v1/account/balances';
   const client = createPolymarketUsClient(env);
 
   try {
@@ -753,6 +783,29 @@ export async function getPolymarketUsTradingStatus(env) {
       headers: getSignedHeaders(env, 'GET', path)
     });
     status.authenticated = true;
+
+    try {
+      const balancesResponse = await client.get(balancesPath, {
+        headers: getSignedHeaders(env, 'GET', balancesPath)
+      });
+      const balances = getAccountBalances(balancesResponse.data);
+      const usdBalance = pickUsdBalance(balances);
+
+      status.totalAccountBudget = parseNumber(
+        usdBalance?.currentBalance
+        ?? usdBalance?.balance
+        ?? usdBalance?.balance?.value
+      );
+      status.buyingPower = parseNumber(
+        usdBalance?.buyingPower
+        ?? usdBalance?.availableBalance
+        ?? usdBalance?.available
+        ?? usdBalance?.available?.value
+      );
+      status.budgetCurrency = String(usdBalance?.currency ?? 'USD').toUpperCase();
+    } catch {
+      // Keep status reachable/authenticated even if account balance endpoint is temporarily unavailable.
+    }
   } catch (error) {
     status.error = getErrorMessage(error);
   }

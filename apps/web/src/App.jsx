@@ -192,6 +192,14 @@ function formatCurrency(value) {
   }).format(value);
 }
 
+function formatMarketPrice(value) {
+  if (typeof value !== 'number' || Number.isNaN(value)) {
+    return 'n/a';
+  }
+
+  return `$${value.toFixed(3)}`;
+}
+
 function loadStoredTradeDraft() {
   if (typeof window === 'undefined') {
     return null;
@@ -902,6 +910,8 @@ export default function App() {
     try {
       await pollTrackedTradeIntents();
       const intents = await refreshTradeHistory();
+      const nextStatus = await fetchStatus();
+      setStatus(nextStatus);
       setLastMarketUpdate(new Date().toISOString());
       setLastTradeUpdate(new Date().toISOString());
       const stillTracking = intents.filter((intent) => intent.status === 'tracking').length;
@@ -921,6 +931,8 @@ export default function App() {
     try {
       const nextIntent = await sellTradeIntentRequest(intent.id);
       setTradeHistory((previous) => replaceIntentInList(previous, nextIntent));
+      const nextStatus = await fetchStatus();
+      setStatus(nextStatus);
       setLastTradeUpdate(new Date().toISOString());
 
       if (tradeDraft?.id === nextIntent.id) {
@@ -998,6 +1010,8 @@ export default function App() {
     try {
       const nextIntent = await executeTradeIntentRequest(intent.id);
       setTradeHistory((previous) => replaceIntentInList(previous, nextIntent));
+      const nextStatus = await fetchStatus();
+      setStatus(nextStatus);
       setLastTradeUpdate(new Date().toISOString());
 
       if (tradeDraft?.id === nextIntent.id) {
@@ -1092,6 +1106,10 @@ export default function App() {
           <p className="terminal-subtitle">Local-first prediction market console with live trade planning, monitoring, and operator controls.</p>
         </div>
         <div className="terminal-meta-grid">
+          <article>
+            <span>Total Buying Power</span>
+            <strong>{formatCurrency(status?.polymarket?.usTrading?.buyingPower)}</strong>
+          </article>
           <article>
             <span>Clock</span>
             <strong>{formatClockTime(liveClock)}</strong>
@@ -1281,7 +1299,7 @@ export default function App() {
 
                     <div className="trade-input-row compact-input-grid">
                       <label>
-                        Stake
+                        <span className="label-with-tooltip" title="Dollar amount you plan to commit to this position.">Stake</span>
                         <input
                           type="number"
                           min="1"
@@ -1291,7 +1309,7 @@ export default function App() {
                         />
                       </label>
                       <label>
-                        Stop
+                        <span className="label-with-tooltip" title="Stop-loss trigger probability. If live probability drops to or below this value, the system attempts an exit.">Stop</span>
                         <input
                           type="number"
                           min="0.01"
@@ -1305,7 +1323,7 @@ export default function App() {
                         />
                       </label>
                       <label>
-                        Take
+                        <span className="label-with-tooltip" title="Take-profit trigger probability. If live probability rises to or above this value, the system attempts an exit.">Take</span>
                         <input
                           type="number"
                           min="0.01"
@@ -1323,28 +1341,34 @@ export default function App() {
                     {tradeSuggestion ? (
                       <div className="trade-preview-grid compact-preview-grid">
                         <article>
-                          <span>Expected</span>
+                          <span className="label-with-tooltip" title="Model-based expected profit for this trade size.">Expected</span>
                           <strong>{formatCurrency(tradeSuggestion.expectedProfit)}</strong>
                         </article>
                         <article>
-                          <span>Shares</span>
+                          <span className="label-with-tooltip" title="Estimated shares purchased at the current price.">Shares</span>
                           <strong>{typeof tradeSuggestion.shares === 'number' ? tradeSuggestion.shares.toFixed(2) : 'n/a'}</strong>
                         </article>
                         <article>
-                          <span>Risk/Reward</span>
+                          <span className="label-with-tooltip" title="Estimated upside-to-downside ratio based on your take-profit and stop-loss settings.">Risk/Reward</span>
                           <strong>{tradeSuggestion.riskRewardRatio ? `${tradeSuggestion.riskRewardRatio.toFixed(2)}x` : 'n/a'}</strong>
                         </article>
                         <article>
-                          <span>Loss @ Stop</span>
+                          <span className="label-with-tooltip" title="Projected dollar loss if stop-loss is triggered.">Loss @ Stop</span>
                           <strong>{formatCurrency(tradeSuggestion.stopLossLoss)}</strong>
                         </article>
                         <article>
-                          <span>Gain @ Take</span>
+                          <span className="label-with-tooltip" title="Projected dollar gain if take-profit is triggered.">Gain @ Take</span>
                           <strong>{formatCurrency(tradeSuggestion.takeProfitGain)}</strong>
                         </article>
                         <article>
-                          <span>Status</span>
+                          <span className="label-with-tooltip" title="Current lifecycle state of this trade draft or saved intent.">Status</span>
                           <strong>{tradeDraft?.confirmedAt ? formatIntentStatus(tradeDraft) : 'Draft'}</strong>
+                        </article>
+                        <article>
+                          <span className="label-with-tooltip" title="Current live market price for the recommended outcome.">Current Price</span>
+                          <strong>
+                            {formatPercent(currentRecommendation.currentProbability)} ({formatMarketPrice(currentRecommendation.currentProbability)})
+                          </strong>
                         </article>
                       </div>
                     ) : (

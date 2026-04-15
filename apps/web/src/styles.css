@@ -109,9 +109,9 @@ select {
 
 .terminal-meta-grid {
   display: grid;
-  grid-template-columns: repeat(4, minmax(110px, 1fr));
+  grid-template-columns: repeat(5, minmax(110px, 1fr));
   gap: 8px;
-  min-width: min(100%, 520px);
+  min-width: min(100%, 650px);
 }
 
 .terminal-meta-grid article,
@@ -159,6 +159,13 @@ select {
   letter-spacing: 0.12em;
   text-transform: uppercase;
   color: #6f839b;
+}
+
+.label-with-tooltip {
+  display: inline-block;
+  cursor: help;
+  text-decoration: underline dotted rgba(111, 131, 155, 0.75);
+  text-underline-offset: 2px;
 }
 
 .terminal-meta-grid strong,
