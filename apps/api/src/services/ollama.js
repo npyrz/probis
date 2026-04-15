@@ -86,24 +86,40 @@ export async function runAiTest(env, prompt) {
   };
 }
 
-export function buildEventAnalysisPrompt(event) {
-  const marketLines = event.markets
+export function buildEventAnalysisPrompt(event, aggregation, statisticalModel) {
+  const marketLines = aggregation.historicalPrices.markets
     .map((market) => {
       const outcomes = market.outcomes
-        .map((outcome) => `${outcome.label}: ${outcome.price ?? 'n/a'}`)
+        .map((outcome) => {
+          const currentProbability = typeof outcome.currentProbability === 'number'
+            ? outcome.currentProbability.toFixed(3)
+            : 'n/a';
+          const move = typeof outcome.historySummary?.percentChange === 'number'
+            ? `${(outcome.historySummary.percentChange * 100).toFixed(1)}%`
+            : 'n/a';
+
+          return `${outcome.label}: now=${currentProbability}, move_7d=${move}`;
+        })
         .join(', ');
 
-      return `- ${market.question} | outcomes: ${outcomes}`;
+      return `- ${market.question} | ${outcomes}`;
     })
     .join('\n');
 
+  const bestOpportunity = statisticalModel.summary.bestOpportunity;
+
   return [
-    'You are testing local model connectivity for a prediction-market trading assistant.',
-    'Summarize the event and highlight one market that appears most interesting based only on the quoted prices.',
-    'Keep the response to 4 short bullet points.',
+    'You are an offline analysis assistant for a prediction-market trading system.',
+    'Use the statistical model and aggregated market data to identify the most mispriced live opportunity.',
+    'Return exactly 4 bullet points:',
+    '1) event state, 2) strongest market/opportunity, 3) why the model differs from market price, 4) key risk.',
     `Event: ${event.title}`,
     `Slug: ${event.slug}`,
-    'Markets:',
+    `Event volume: ${aggregation.liquiditySnapshot.eventVolume ?? 'n/a'}`,
+    `Event liquidity: ${aggregation.liquiditySnapshot.eventLiquidity ?? 'n/a'}`,
+    `Top outcome: ${statisticalModel.summary.bestOpportunity ? `${bestOpportunity.label} in ${bestOpportunity.question}` : 'n/a'}`,
+    `Model methodology: ${statisticalModel.methodology.description}`,
+    'Live markets:',
     marketLines
   ].join('\n');
 }

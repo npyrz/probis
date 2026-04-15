@@ -2,7 +2,7 @@ import { Router } from 'express';
 
 import { getEnv } from '../config/env.js';
 import { buildEventAnalysisPrompt, getOllamaStatus, runAiTest } from '../services/ollama.js';
-import { fetchEventByInput } from '../services/polymarket/gamma.js';
+import { resolveEventAnalytics } from '../services/polymarket/event-data.js';
 
 const router = Router();
 
@@ -50,13 +50,15 @@ router.post('/api/ai/analyze-event', async (request, response) => {
       return;
     }
 
-    const event = await fetchEventByInput(env, input);
-    const prompt = buildEventAnalysisPrompt(event);
+    const analytics = await resolveEventAnalytics(env, input);
+    const prompt = buildEventAnalysisPrompt(analytics.event, analytics.aggregation, analytics.statisticalModel);
     const result = await runAiTest(env, prompt);
 
     response.json({
       ok: true,
-      event,
+      event: analytics.event,
+      aggregation: analytics.aggregation,
+      statisticalModel: analytics.statisticalModel,
       analysis: result.response,
       model: result.resolvedModel,
       requestedModel: result.requestedModel

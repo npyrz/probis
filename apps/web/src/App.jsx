@@ -82,6 +82,76 @@ function findHistoricalMarket(aggregation, conditionId) {
   return aggregation?.historicalPrices?.markets?.find((market) => market.conditionId === conditionId) ?? null;
 }
 
+function getModelMarket(statisticalModel, conditionId) {
+  return statisticalModel?.markets?.find((market) => market.conditionId === conditionId) ?? null;
+}
+
+function getMarketMomentum(aggregation, conditionId) {
+  const market = findHistoricalMarket(aggregation, conditionId);
+
+  if (!market) {
+    return null;
+  }
+
+  const changes = market.outcomes
+    .map((outcome) => outcome.historySummary?.percentChange)
+    .filter((value) => typeof value === 'number');
+
+  if (changes.length === 0) {
+    return null;
+  }
+
+  return Math.max(...changes.map((value) => Math.abs(value)));
+}
+
+function getMarketDisplayMetrics(market, aggregation, statisticalModel) {
+  const modelMarket = getModelMarket(statisticalModel, market.conditionId);
+  const topEdge = modelMarket?.outcomes
+    ?.map((outcome) => outcome.edge)
+    .filter((value) => typeof value === 'number')
+    .sort((left, right) => right - left)[0] ?? null;
+
+  return {
+    modelEdge: topEdge,
+    confidence: modelMarket?.confidence ?? null,
+    liquidity: market.liquidity ?? null,
+    momentum: getMarketMomentum(aggregation, market.conditionId)
+  };
+}
+
+function filterAndSortMarkets(markets, aggregation, statisticalModel, sortBy, filterBy) {
+  const enriched = markets.map((market) => ({
+    market,
+    metrics: getMarketDisplayMetrics(market, aggregation, statisticalModel)
+  }));
+
+  const filtered = enriched.filter(({ metrics }) => {
+    if (filterBy === 'positive-edge') {
+      return typeof metrics.modelEdge === 'number' && metrics.modelEdge > 0;
+    }
+
+    if (filterBy === 'high-confidence') {
+      return typeof metrics.confidence === 'number' && metrics.confidence >= 0.55;
+    }
+
+    if (filterBy === 'positive-momentum') {
+      return typeof metrics.momentum === 'number' && metrics.momentum > 0;
+    }
+
+    return true;
+  });
+
+  const sorted = filtered.sort((left, right) => {
+    const getValue = (candidate) => candidate.metrics[sortBy];
+    const leftValue = typeof getValue(left) === 'number' ? getValue(left) : -Infinity;
+    const rightValue = typeof getValue(right) === 'number' ? getValue(right) : -Infinity;
+
+    return rightValue - leftValue;
+  });
+
+  return sorted;
+}
+
 function buildSparklinePath(history) {
   if (!Array.isArray(history) || history.length === 0) {
     return '';
@@ -123,11 +193,14 @@ export default function App() {
   const [aggregation, setAggregation] = useState(null);
   const [statisticalModel, setStatisticalModel] = useState(null);
   const [eventInput, setEventInput] = useState('');
+  const [sortBy, setSortBy] = useState('modelEdge');
+  const [filterBy, setFilterBy] = useState('all');
   const [analysis, setAnalysis] = useState('');
   const [error, setError] = useState('');
   const [isPending, startTransition] = useTransition();
   const visibleMarkets = selectedEvent?.markets.filter(marketHasLivePrices) ?? [];
   const eventHeadline = selectedEvent ? getEventHeadline(selectedEvent, visibleMarkets) : null;
+  const rankedMarkets = filterAndSortMarkets(visibleMarkets, aggregation, statisticalModel, sortBy, filterBy);
 
   useEffect(() => {
     let isCancelled = false;
@@ -381,7 +454,30 @@ export default function App() {
               </section>
 
               <div className="market-grid">
-                {visibleMarkets.map((market) => (
+                <div className="market-toolbar">
+                  <label>
+                    Sort by
+                    <select value={sortBy} onChange={(event) => setSortBy(event.target.value)}>
+                      <option value="modelEdge">Model edge</option>
+                      <option value="confidence">Confidence</option>
+                      <option value="liquidity">Liquidity</option>
+                      <option value="momentum">Momentum</option>
+                    </select>
+                  </label>
+                  <label>
+                    Filter
+                    <select value={filterBy} onChange={(event) => setFilterBy(event.target.value)}>
+                      <option value="all">All live markets</option>
+                      <option value="positive-edge">Positive edge only</option>
+                      <option value="high-confidence">High confidence</option>
+                      <option value="positive-momentum">Positive momentum</option>
+                    </select>
+                  </label>
+                </div>
+                {rankedMarkets.length === 0 ? (
+                  <p className="empty-state market-empty-state">No markets match the current filter.</p>
+                ) : null}
+                {rankedMarkets.map(({ market, metrics }) => (
                   <section key={market.conditionId ?? market.question} className="market-card">
                     <div className="market-card-header">
                       <h3>{market.question}</h3>
@@ -389,6 +485,8 @@ export default function App() {
                         <span className="market-chip">{market.outcomes.length} outcomes</span>
                         <span className="market-chip">Vol {formatCompactNumber(market.volume)}</span>
                         <span className="market-chip">Liq {formatCompactNumber(market.liquidity)}</span>
+                        <span className="market-chip">Edge {formatSignedPercent(metrics.modelEdge)}</span>
+                        <span className="market-chip">Conf {formatPercent(metrics.confidence)}</span>
                       </div>
                     </div>
                     <div className="outcome-list">
