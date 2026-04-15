@@ -225,7 +225,14 @@ h2 {
   gap: 0.75rem;
 }
 
+.derived-metrics-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+  gap: 0.75rem;
+}
+
 .event-summary-stats article,
+.derived-metrics-grid article,
 .event-highlight {
   padding: 0.9rem 1rem;
   border-radius: 16px;
@@ -234,6 +241,7 @@ h2 {
 }
 
 .event-summary-stats span,
+.derived-metrics-grid span,
 .event-highlight span,
 .market-chip {
   display: block;
@@ -242,6 +250,7 @@ h2 {
 }
 
 .event-summary-stats strong,
+.derived-metrics-grid strong,
 .event-highlight strong {
   display: block;
   margin-top: 0.35rem;

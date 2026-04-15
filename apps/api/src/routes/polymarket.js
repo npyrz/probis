@@ -3,6 +3,7 @@ import { Router } from 'express';
 import { getEnv } from '../config/env.js';
 import { getPolymarketStatus } from '../services/polymarket/client.js';
 import { fetchActiveEvents, fetchEventByInput } from '../services/polymarket/gamma.js';
+import { resolveEventWithAggregation } from '../services/polymarket/event-data.js';
 
 const router = Router();
 
@@ -56,7 +57,7 @@ router.get('/api/polymarket/events/resolve', async (request, response) => {
       return;
     }
 
-    const event = await fetchEventByInput(env, input);
+    const event = await resolveEventWithAggregation(env, input);
 
     response.json({
       ok: true,

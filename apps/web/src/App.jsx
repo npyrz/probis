@@ -13,6 +13,15 @@ function formatCompactNumber(value) {
   }).format(value);
 }
 
+function formatSignedPercent(value) {
+  if (typeof value !== 'number' || Number.isNaN(value)) {
+    return 'n/a';
+  }
+
+  const prefix = value > 0 ? '+' : '';
+  return `${prefix}${(value * 100).toFixed(1)}%`;
+}
+
 function formatDate(value) {
   if (!value) {
     return 'n/a';
@@ -69,6 +78,10 @@ function getEventHeadline(event, visibleMarkets) {
   return leaders[0] ?? null;
 }
 
+function findHistoricalMarket(aggregation, conditionId) {
+  return aggregation?.historicalPrices?.markets?.find((market) => market.conditionId === conditionId) ?? null;
+}
+
 export default function App() {
   const [status, setStatus] = useState(null);
   const [activeEvents, setActiveEvents] = useState([]);
@@ -79,6 +92,7 @@ export default function App() {
   const [isPending, startTransition] = useTransition();
   const visibleMarkets = selectedEvent?.markets.filter(marketHasLivePrices) ?? [];
   const eventHeadline = selectedEvent ? getEventHeadline(selectedEvent, visibleMarkets) : null;
+  const aggregation = selectedEvent?.aggregation ?? null;
 
   useEffect(() => {
     let isCancelled = false;
@@ -161,7 +175,7 @@ export default function App() {
     <main className="app-shell">
       <section className="hero-card">
         <div className="hero-copy">
-          <p className="eyebrow">Step 4 live</p>
+          <p className="eyebrow">Steps 4 and 5 live</p>
           <h1>Resolve an event and inspect its live market board.</h1>
           <p className="lede">
             The app now resolves a Polymarket event, surfaces event-level context, and displays live quoted
@@ -232,7 +246,7 @@ export default function App() {
         <article className="panel-card panel-card-wide">
           <div className="panel-heading panel-heading-inline">
             <div>
-              <p className="eyebrow">Step 4</p>
+              <p className="eyebrow">Steps 4 and 5</p>
               <h2>{selectedEvent ? selectedEvent.title : 'Resolve an event to inspect its markets'}</h2>
             </div>
             <button type="button" className="secondary-button" onClick={handleAnalyze} disabled={!selectedEvent || isPending}>
@@ -272,6 +286,31 @@ export default function App() {
                   </article>
                 </div>
 
+                {aggregation ? (
+                  <div className="derived-metrics-grid">
+                    <article>
+                      <span>Most Active Market</span>
+                      <strong>{aggregation.derivedMetrics.highestVolumeMarket?.question ?? 'n/a'}</strong>
+                    </article>
+                    <article>
+                      <span>Most Competitive</span>
+                      <strong>{aggregation.derivedMetrics.mostCompetitiveMarket?.question ?? 'n/a'}</strong>
+                    </article>
+                    <article>
+                      <span>Top Outcome</span>
+                      <strong>
+                        {aggregation.derivedMetrics.topOutcome
+                          ? `${aggregation.derivedMetrics.topOutcome.label} · ${formatPercent(aggregation.derivedMetrics.topOutcome.probability)}`
+                          : 'n/a'}
+                      </strong>
+                    </article>
+                    <article>
+                      <span>Avg Liquidity / Live Market</span>
+                      <strong>{formatCompactNumber(aggregation.derivedMetrics.averageLiquidityPerLiveMarket)}</strong>
+                    </article>
+                  </div>
+                ) : null}
+
                 {eventHeadline ? (
                   <div className="event-highlight">
                     <span>Highest-conviction live market</span>
@@ -291,26 +330,36 @@ export default function App() {
                       <div className="market-chip-row">
                         <span className="market-chip">{market.outcomes.length} outcomes</span>
                         <span className="market-chip">Vol {formatCompactNumber(market.volume)}</span>
+                        <span className="market-chip">Liq {formatCompactNumber(market.liquidity)}</span>
                       </div>
                     </div>
                     <div className="outcome-list">
-                      {sortOutcomes(market.outcomes).map((outcome) => (
-                        <div key={`${market.conditionId}-${outcome.label}`} className="outcome-row">
-                          <div className="outcome-copy">
-                            <span>{outcome.label}</span>
-                            <small>{outcome.tokenId ? `Token ${outcome.tokenId.slice(0, 8)}...` : 'No token id'}</small>
-                          </div>
-                          <div className="outcome-value">
-                            <strong>{formatPercent(outcome.probability)}</strong>
-                            <div className="outcome-bar-track" aria-hidden="true">
-                              <div
-                                className="outcome-bar-fill"
-                                style={{ width: `${Math.max(0, Math.min(100, (outcome.probability ?? 0) * 100))}%` }}
-                              />
+                      {sortOutcomes(market.outcomes).map((outcome) => {
+                        const historicalMarket = findHistoricalMarket(aggregation, market.conditionId);
+                        const historicalOutcome = historicalMarket?.outcomes?.find(
+                          (candidate) => candidate.label === outcome.label
+                        );
+
+                        return (
+                          <div key={`${market.conditionId}-${outcome.label}`} className="outcome-row">
+                            <div className="outcome-copy">
+                              <span>{outcome.label}</span>
+                              <small>
+                                7d move {formatSignedPercent(historicalOutcome?.historySummary?.percentChange)}
+                              </small>
+                            </div>
+                            <div className="outcome-value">
+                              <strong>{formatPercent(outcome.probability)}</strong>
+                              <div className="outcome-bar-track" aria-hidden="true">
+                                <div
+                                  className="outcome-bar-fill"
+                                  style={{ width: `${Math.max(0, Math.min(100, (outcome.probability ?? 0) * 100))}%` }}
+                                />
+                              </div>
                             </div>
                           </div>
-                        </div>
-                      ))}
+                        );
+                      })}
                     </div>
                   </section>
                 ))}
