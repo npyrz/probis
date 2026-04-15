@@ -641,7 +641,11 @@ function computeAggressiveBuyLimitPrice(basePrice, maxSlippageBps, minimumStep =
   return clampLimitPrice(withMinimumBump);
 }
 
-function resolveBuyPriceCap(intent, basePrice) {
+function isShortBuyOrderIntent(orderIntent) {
+  return orderIntent === 'ORDER_INTENT_BUY_SHORT';
+}
+
+function resolveBuyLongPriceCap(intent, basePrice) {
   const normalizedBasePrice = normalizeLimitPrice(basePrice);
 
   if (!normalizedBasePrice) {
@@ -668,11 +672,48 @@ function resolveBuyPriceCap(intent, basePrice) {
   return clampLimitPrice(Math.min(normalizedBasePrice + 0.05, 0.95));
 }
 
-function buildAggressiveBuyLimitLadder(basePrice, maxSlippageBps, maxPriceCap = null) {
+function resolveBuyShortPriceFloor(basePrice) {
+  const normalizedBasePrice = normalizeLimitPrice(basePrice);
+
+  if (!normalizedBasePrice) {
+    return null;
+  }
+
+  // BUY_SHORT routes through SELL-side behavior, so lower prices are more marketable.
+  const widenedFloor = clampLimitPrice(normalizedBasePrice - 0.20);
+
+  if (typeof widenedFloor === 'number' && widenedFloor < normalizedBasePrice) {
+    return Math.max(widenedFloor, 0.05);
+  }
+
+  return clampLimitPrice(Math.max(normalizedBasePrice - 0.05, 0.05));
+}
+
+function buildAggressiveBuyLimitLadder(basePrice, maxSlippageBps, { direction = 'up', boundary = null } = {}) {
   const normalizedBasePrice = normalizeLimitPrice(basePrice);
 
   if (!normalizedBasePrice) {
     return [];
+  }
+
+  if (direction === 'down') {
+    const primary = clampLimitPrice(normalizedBasePrice - 0.01);
+    const secondary = clampLimitPrice(normalizedBasePrice - 0.02);
+    const tertiary = clampLimitPrice(normalizedBasePrice - 0.05);
+    const quaternary = clampLimitPrice(normalizedBasePrice - 0.08);
+    const quinary = clampLimitPrice(normalizedBasePrice - 0.15);
+    const values = [primary, secondary, tertiary, quaternary, quinary, boundary]
+      .filter((price) => typeof price === 'number');
+
+    return [...new Set(values)]
+      .filter((price) => {
+        if (typeof boundary !== 'number') {
+          return true;
+        }
+
+        return price >= boundary;
+      })
+      .sort((left, right) => right - left);
   }
 
   const primary = computeAggressiveBuyLimitPrice(normalizedBasePrice, maxSlippageBps, 0.01);
@@ -680,20 +721,18 @@ function buildAggressiveBuyLimitLadder(basePrice, maxSlippageBps, maxPriceCap = 
   const tertiary = computeAggressiveBuyLimitPrice(normalizedBasePrice, Math.max(maxSlippageBps * 4, 800), 0.05);
   const quaternary = clampLimitPrice(normalizedBasePrice + 0.08);
   const quinary = clampLimitPrice(normalizedBasePrice + 0.15);
-  const values = [primary, secondary, tertiary, quaternary, quinary, maxPriceCap]
+  const values = [primary, secondary, tertiary, quaternary, quinary, boundary]
     .filter((price) => typeof price === 'number');
 
-  const deduped = [...new Set(values)]
+  return [...new Set(values)]
     .filter((price) => {
-      if (typeof maxPriceCap !== 'number') {
+      if (typeof boundary !== 'number') {
         return true;
       }
 
-      return price <= maxPriceCap;
+      return price <= boundary;
     })
     .sort((left, right) => left - right);
-
-  return deduped;
 }
 
 async function submitLimitBuyOrder(env, { marketSlug, orderIntent, amount, limitPrice }) {
@@ -1149,8 +1188,15 @@ export async function placeBuyOrderForIntent(env, intent) {
 
   const quote = await resolveOutcomeMarketQuote(env, marketSlug, intent.outcomeLabel);
   const maxSlippageBpsForRetry = Number.isFinite(maxSlippageBps) ? maxSlippageBps : 100;
-  const buyPriceCap = resolveBuyPriceCap(intent, quote.outcomePrice);
-  const aggressiveLimitPrices = buildAggressiveBuyLimitLadder(quote.outcomePrice, maxSlippageBpsForRetry, buyPriceCap);
+  const isShortBuy = isShortBuyOrderIntent(orderIntent);
+  const boundary = isShortBuy
+    ? resolveBuyShortPriceFloor(quote.outcomePrice)
+    : resolveBuyLongPriceCap(intent, quote.outcomePrice);
+  const aggressiveLimitPrices = buildAggressiveBuyLimitLadder(
+    quote.outcomePrice,
+    maxSlippageBpsForRetry,
+    { direction: isShortBuy ? 'down' : 'up', boundary }
+  );
 
   if (aggressiveLimitPrices.length === 0) {
     throw new Error('Unable to derive a valid limit price for buy retry.');

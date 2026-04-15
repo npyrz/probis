@@ -798,6 +798,9 @@ export async function executeTradeIntent(env, id) {
     const orderIdText = typeof orderId === 'string' && orderId.trim().length > 0
       ? ` orderId=${orderId}`
       : '';
+    const entryIntentText = typeof buyOrder?.entryIntent === 'string' && buyOrder.entryIntent.trim().length > 0
+      ? ` intent=${buyOrder.entryIntent}`
+      : '';
     const limitAttempts = Array.isArray(buyOrder?.attempts?.aggressiveLimit)
       ? buyOrder.attempts.aggressiveLimit
       : (buyOrder?.attempts?.aggressiveLimit ? [buyOrder.attempts.aggressiveLimit] : []);
@@ -817,7 +820,7 @@ export async function executeTradeIntent(env, id) {
     const attemptsText = attemptSummary.length > 0
       ? ` attempts=${attemptSummary}`
       : '';
-    throw new Error(`Order submitted but no shares were filled.${orderStateText}${orderIdText}${attemptsText} Trade remains unstarted; adjust price/size and try again.`);
+    throw new Error(`Order submitted but no shares were filled.${entryIntentText}${orderStateText}${orderIdText}${attemptsText} Trade remains unstarted; adjust price/size and try again.`);
   }
 
   const nextIntent = withApiVerification({
