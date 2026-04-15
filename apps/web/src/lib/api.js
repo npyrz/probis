@@ -10,14 +10,26 @@ async function readJson(response) {
   return data;
 }
 
-export async function fetchStatus() {
-  const [polymarketResponse, aiResponse] = await Promise.all([
-    fetch(`${API_BASE_URL}/api/polymarket/status`),
-    fetch(`${API_BASE_URL}/api/ai/status`)
-  ]);
+async function requestJson(path, options) {
+  try {
+    const response = await fetch(`${API_BASE_URL}${path}`, options);
+    return await readJson(response);
+  } catch (error) {
+    if (error instanceof TypeError) {
+      throw new Error(
+        `Backend API is not reachable at ${API_BASE_URL}. Start it with "npm run dev:api" or "npm run dev".`
+      );
+    }
 
-  const polymarket = await readJson(polymarketResponse);
-  const ai = await readJson(aiResponse);
+    throw error;
+  }
+}
+
+export async function fetchStatus() {
+  const [polymarket, ai] = await Promise.all([
+    requestJson('/api/polymarket/status'),
+    requestJson('/api/ai/status')
+  ]);
 
   return {
     polymarket: polymarket.status,
@@ -26,21 +38,19 @@ export async function fetchStatus() {
 }
 
 export async function fetchActiveEvents(limit = 5) {
-  const response = await fetch(`${API_BASE_URL}/api/polymarket/events?limit=${limit}`);
-  const data = await readJson(response);
+  const data = await requestJson(`/api/polymarket/events?limit=${limit}`);
   return data.events;
 }
 
 export async function resolveEvent(input) {
-  const response = await fetch(
-    `${API_BASE_URL}/api/polymarket/events/resolve?input=${encodeURIComponent(input)}`
+  const data = await requestJson(
+    `/api/polymarket/events/resolve?input=${encodeURIComponent(input)}`
   );
-  const data = await readJson(response);
   return data.event;
 }
 
 export async function analyzeEvent(input) {
-  const response = await fetch(`${API_BASE_URL}/api/ai/analyze-event`, {
+  const data = await requestJson('/api/ai/analyze-event', {
     method: 'POST',
     headers: {
       'Content-Type': 'application/json'
@@ -48,6 +58,5 @@ export async function analyzeEvent(input) {
     body: JSON.stringify({ input })
   });
 
-  const data = await readJson(response);
   return data;
 }

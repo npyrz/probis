@@ -10,6 +10,10 @@ function formatPercent(value) {
   return `${(value * 100).toFixed(1)}%`;
 }
 
+function marketHasLivePrices(market) {
+  return market.outcomes.some((outcome) => typeof outcome.probability === 'number');
+}
+
 export default function App() {
   const [status, setStatus] = useState(null);
   const [activeEvents, setActiveEvents] = useState([]);
@@ -187,6 +191,9 @@ export default function App() {
               <div className="market-grid">
                 {selectedEvent.markets.map((market) => (
                   <section key={market.conditionId ?? market.question} className="market-card">
+                    {!marketHasLivePrices(market) ? (
+                      <p className="market-status market-status-unavailable">Not live on Polymarket</p>
+                    ) : null}
                     <h3>{market.question}</h3>
                     <div className="outcome-list">
                       {market.outcomes.map((outcome) => (

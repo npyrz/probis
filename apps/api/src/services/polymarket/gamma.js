@@ -87,14 +87,14 @@ export function extractEventSlug(input) {
 
   const trimmed = input.trim();
 
-  if (!trimmed.includes('://') && !trimmed.startsWith('polymarket.com/')) {
-    return trimmed.replace(/^\/event\//, '').replace(/^\/+|\/+$/g, '');
+  if (!trimmed.includes('://') && !trimmed.startsWith('polymarket.com/') && !trimmed.startsWith('polymarket.us/')) {
+    return trimmed.replace(/^\/(event|events)\//, '').replace(/^\/+|\/+$/g, '');
   }
 
   const normalizedUrl = trimmed.startsWith('http') ? trimmed : `https://${trimmed}`;
   const parsedUrl = new URL(normalizedUrl);
   const segments = parsedUrl.pathname.split('/').filter(Boolean);
-  const eventIndex = segments.indexOf('event');
+  const eventIndex = segments.findIndex((segment) => segment === 'event' || segment === 'events');
 
   if (eventIndex === -1 || !segments[eventIndex + 1]) {
     throw new Error('Could not extract an event slug from the provided URL.');
