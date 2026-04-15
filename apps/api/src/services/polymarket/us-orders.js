@@ -160,6 +160,54 @@ function getUsMarketsFromPayload(payload) {
   return [];
 }
 
+export async function fetchUsMarketsBySlug(env, slug, { includeClosed = true } = {}) {
+  const normalizedSlug = String(slug ?? '').trim().toLowerCase();
+
+  if (!normalizedSlug) {
+    return [];
+  }
+
+  if (!env.polymarketUsKeyId || !env.polymarketUsSecretKey) {
+    return [];
+  }
+
+  const path = '/v1/markets';
+  const client = createPolymarketUsClient(env);
+  const candidateSlugs = [
+    normalizedSlug,
+    normalizedSlug.startsWith('aec-') ? normalizedSlug.slice(4) : `aec-${normalizedSlug}`
+  ];
+  const dedupedCandidates = [...new Set(candidateSlugs.filter(Boolean))];
+
+  for (const candidateSlug of dedupedCandidates) {
+    const params = new URLSearchParams();
+    params.set('slug', candidateSlug);
+
+    if (!includeClosed) {
+      params.set('active', 'true');
+      params.set('closed', 'false');
+    }
+
+    const requestPath = `${path}?${params.toString()}`;
+
+    try {
+      const response = await client.get(requestPath, {
+        headers: getSignedHeaders(env, 'GET', path)
+      });
+      const markets = getUsMarketsFromPayload(response.data)
+        .filter((market) => market && typeof market === 'object');
+
+      if (markets.length > 0) {
+        return markets;
+      }
+    } catch {
+      // Continue trying slug variants.
+    }
+  }
+
+  return [];
+}
+
 function getUsMarketsPageCursor(payload) {
   if (typeof payload?.nextCursor === 'string') {
     return payload.nextCursor;
@@ -181,7 +229,7 @@ function getUsMarketsPageEof(payload) {
     return payload.data.eof;
   }
 
-  return true;
+  return null;
 }
 
 function normalizeMatchText(value) {
@@ -246,7 +294,7 @@ function hasStrongQuestionMatch(question, targetQuestions, titleTokens) {
 
 async function listUsMarkets(env, { limit = 200, maxPages = 20 } = {}) {
   const path = '/v1/markets';
-  const cacheKey = `${env.polymarketUsBaseUrl}:${limit}:${maxPages}`;
+  const cacheKey = `${env.polymarketUsBaseUrl}:${limit}:${maxPages}:active-open`;
   const cached = usMarketsCache.get(cacheKey);
 
   if (cached && cached.expiresAt > Date.now()) {
@@ -260,11 +308,21 @@ async function listUsMarkets(env, { limit = 200, maxPages = 20 } = {}) {
   const client = createPolymarketUsClient(env);
   const collected = [];
   let cursor = '';
+  let offset = 0;
 
   for (let page = 0; page < maxPages; page += 1) {
-    const requestPath = cursor
-      ? `${path}?limit=${limit}&cursor=${encodeURIComponent(cursor)}`
-      : `${path}?limit=${limit}`;
+    const params = new URLSearchParams();
+    params.set('limit', String(limit));
+    params.set('active', 'true');
+    params.set('closed', 'false');
+
+    if (cursor) {
+      params.set('cursor', cursor);
+    } else if (offset > 0) {
+      params.set('offset', String(offset));
+    }
+
+    const requestPath = `${path}?${params.toString()}`;
     const response = await client.get(requestPath, {
       headers: getSignedHeaders(env, 'GET', path)
     });
@@ -277,17 +335,25 @@ async function listUsMarkets(env, { limit = 200, maxPages = 20 } = {}) {
       }
     }
 
-    if (getUsMarketsPageEof(payload)) {
+    const eof = getUsMarketsPageEof(payload);
+
+    if (eof === true) {
       break;
     }
 
     const nextCursor = getUsMarketsPageCursor(payload);
 
-    if (!nextCursor) {
+    if (nextCursor) {
+      cursor = nextCursor;
+      continue;
+    }
+
+    // Some API responses omit cursor/eof fields but still support offset paging.
+    if (markets.length < limit) {
       break;
     }
 
-    cursor = nextCursor;
+    offset += limit;
   }
 
   usMarketsCache.set(cacheKey, {
@@ -423,18 +489,163 @@ function normalizeOutcomeLabel(label) {
   return String(label ?? '').trim().toLowerCase();
 }
 
-function buyIntentForOutcome(outcomeLabel) {
+function parseOutcomeLabels(value) {
+  if (Array.isArray(value)) {
+    return value.map((label) => String(label ?? '').trim()).filter(Boolean);
+  }
+
+  if (typeof value !== 'string' || value.trim().length === 0) {
+    return [];
+  }
+
+  try {
+    const parsed = JSON.parse(value);
+    return Array.isArray(parsed)
+      ? parsed.map((label) => String(label ?? '').trim()).filter(Boolean)
+      : [];
+  } catch {
+    return [];
+  }
+}
+
+function parseOutcomePrices(value) {
+  if (Array.isArray(value)) {
+    return value.map((price) => parseNumber(price));
+  }
+
+  if (typeof value !== 'string' || value.trim().length === 0) {
+    return [];
+  }
+
+  try {
+    const parsed = JSON.parse(value);
+    return Array.isArray(parsed)
+      ? parsed.map((price) => parseNumber(price))
+      : [];
+  } catch {
+    return [];
+  }
+}
+
+function normalizeOutcomeForComparison(label) {
+  return String(label ?? '')
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, ' ')
+    .trim();
+}
+
+function isLimitPriceRequiredError(error) {
+  const message = String(error instanceof Error ? error.message : error ?? '').toLowerCase();
+  return message.includes('price is required for limit order');
+}
+
+function normalizeLimitPrice(price) {
+  const numeric = parseNumber(price);
+
+  if (typeof numeric !== 'number' || numeric <= 0) {
+    return null;
+  }
+
+  return Number(numeric.toFixed(3));
+}
+
+async function resolveOutcomeMarketQuote(env, marketSlug, outcomeLabel) {
+  const markets = await fetchUsMarketsBySlug(env, marketSlug, { includeClosed: true });
+  const market = markets.find((candidate) => String(candidate?.slug ?? '').toLowerCase() === String(marketSlug).toLowerCase())
+    ?? markets[0]
+    ?? null;
+
+  if (!market) {
+    throw new Error(`Unable to resolve Polymarket US market metadata for slug "${marketSlug}".`);
+  }
+
+  const outcomes = parseOutcomeLabels(market.outcomes);
+  const outcomePrices = parseOutcomePrices(market.outcomePrices);
+
+  if (outcomes.length < 2 || outcomePrices.length < 2) {
+    throw new Error(`Polymarket US market "${marketSlug}" does not expose enough outcome pricing metadata.`);
+  }
+
+  const normalizedOutcome = normalizeOutcomeForComparison(outcomeLabel);
+  const matchingIndex = outcomes.findIndex((candidate) => normalizeOutcomeForComparison(candidate) === normalizedOutcome);
+
+  if (matchingIndex < 0 || matchingIndex >= outcomePrices.length) {
+    throw new Error(
+      `Outcome "${outcomeLabel}" does not match market outcomes for "${marketSlug}": ${outcomes.join(' / ')}.`
+    );
+  }
+
+  const outcomePrice = normalizeLimitPrice(outcomePrices[matchingIndex]);
+
+  if (!outcomePrice) {
+    throw new Error(`Unable to derive a valid limit price for outcome "${outcomeLabel}" in "${marketSlug}".`);
+  }
+
+  return {
+    resolvedMarketSlug: market.slug ?? marketSlug,
+    outcomePrice
+  };
+}
+
+async function resolveOrderIntentsForOutcome(env, marketSlug, outcomeLabel) {
   const normalized = normalizeOutcomeLabel(outcomeLabel);
 
   if (normalized === 'yes') {
-    return 'ORDER_INTENT_BUY_LONG';
+    return {
+      buy: 'ORDER_INTENT_BUY_LONG',
+      sell: 'ORDER_INTENT_SELL_LONG'
+    };
   }
 
   if (normalized === 'no') {
-    return 'ORDER_INTENT_BUY_SHORT';
+    return {
+      buy: 'ORDER_INTENT_BUY_SHORT',
+      sell: 'ORDER_INTENT_SELL_SHORT'
+    };
   }
 
-  throw new Error(`Unsupported outcomeLabel "${outcomeLabel}" for Polymarket US order intent. Expected YES/NO.`);
+  if (!marketSlug) {
+    throw new Error(`Unsupported outcomeLabel "${outcomeLabel}" for Polymarket US order intent.`);
+  }
+
+  const markets = await fetchUsMarketsBySlug(env, marketSlug, { includeClosed: true });
+  const market = markets.find((candidate) => String(candidate?.slug ?? '').toLowerCase() === String(marketSlug).toLowerCase())
+    ?? markets[0]
+    ?? null;
+
+  if (!market) {
+    throw new Error(`Unable to resolve Polymarket US market metadata for slug "${marketSlug}".`);
+  }
+
+  const outcomes = parseOutcomeLabels(market.outcomes);
+
+  if (outcomes.length < 2) {
+    throw new Error(`Polymarket US market "${marketSlug}" does not expose at least two outcomes.`);
+  }
+
+  const normalizedOutcome = normalizeOutcomeForComparison(outcomeLabel);
+  const matchingIndex = outcomes.findIndex((candidate) => normalizeOutcomeForComparison(candidate) === normalizedOutcome);
+
+  if (matchingIndex === 0) {
+    return {
+      resolvedMarketSlug: market.slug ?? marketSlug,
+      buy: 'ORDER_INTENT_BUY_LONG',
+      sell: 'ORDER_INTENT_SELL_LONG'
+    };
+  }
+
+  if (matchingIndex === 1) {
+    return {
+      resolvedMarketSlug: market.slug ?? marketSlug,
+      buy: 'ORDER_INTENT_BUY_SHORT',
+      sell: 'ORDER_INTENT_SELL_SHORT'
+    };
+  }
+
+  throw new Error(
+    `Outcome "${outcomeLabel}" does not match market outcomes for "${marketSlug}": ${outcomes.join(' / ')}.`
+  );
 }
 
 function sellIntentForEntryIntent(entryIntent, outcomeLabel) {
@@ -456,7 +667,7 @@ function sellIntentForEntryIntent(entryIntent, outcomeLabel) {
     return 'ORDER_INTENT_SELL_SHORT';
   }
 
-  throw new Error('Unable to determine sell order intent from existing position metadata.');
+  return null;
 }
 
 function getOrderId(orderResponse) {
@@ -550,9 +761,9 @@ export async function getPolymarketUsTradingStatus(env) {
 }
 
 export async function placeBuyOrderForIntent(env, intent) {
-  const marketSlug = intent.marketSlug;
+  const requestedMarketSlug = intent.marketSlug;
 
-  if (!marketSlug) {
+  if (!requestedMarketSlug) {
     throw new Error('Trade intent is missing marketSlug. Re-resolve the event and save a new intent before executing.');
   }
 
@@ -562,7 +773,9 @@ export async function placeBuyOrderForIntent(env, intent) {
     throw new Error('Trade intent has invalid tradeAmount for market buy.');
   }
 
-  const orderIntent = buyIntentForOutcome(intent.outcomeLabel);
+  const orderIntents = await resolveOrderIntentsForOutcome(env, requestedMarketSlug, intent.outcomeLabel);
+  const marketSlug = orderIntents.resolvedMarketSlug ?? requestedMarketSlug;
+  const orderIntent = orderIntents.buy;
   const maxSlippageBps = Number.parseInt(intent.executionRequest?.maxSlippageBps ?? '100', 10);
 
   const orderBody = {
@@ -582,7 +795,49 @@ export async function placeBuyOrderForIntent(env, intent) {
     }
   };
 
-  const orderResponse = await createPolymarketUsOrder(env, orderBody);
+  let orderResponse;
+
+  try {
+    orderResponse = await createPolymarketUsOrder(env, orderBody);
+  } catch (error) {
+    if (!isLimitPriceRequiredError(error)) {
+      throw error;
+    }
+
+    const quote = await resolveOutcomeMarketQuote(env, marketSlug, intent.outcomeLabel);
+    const limitPrice = quote.outcomePrice;
+    const limitQuantity = Number((amount / limitPrice).toFixed(4));
+
+    if (!Number.isFinite(limitQuantity) || limitQuantity <= 0) {
+      throw new Error('Unable to derive a valid quantity for limit order fallback.');
+    }
+
+    const limitOrderBody = {
+      marketSlug: quote.resolvedMarketSlug,
+      intent: orderIntent,
+      type: 'ORDER_TYPE_LIMIT',
+      tif: 'TIME_IN_FORCE_IMMEDIATE_OR_CANCEL',
+      price: {
+        value: limitPrice.toFixed(3),
+        currency: 'USD'
+      },
+      quantity: limitQuantity,
+      manualOrderIndicator: 'MANUAL_ORDER_INDICATOR_AUTOMATIC',
+      synchronousExecution: true,
+      maxBlockTime: '10'
+    };
+
+    orderResponse = await createPolymarketUsOrder(env, limitOrderBody);
+
+    return {
+      request: limitOrderBody,
+      response: orderResponse,
+      orderId: getOrderId(orderResponse),
+      sharesFilled: getSharesFromOrder(orderResponse),
+      notionalSpent: getSpentFromOrder(orderResponse),
+      entryIntent: orderIntent
+    };
+  }
 
   return {
     request: orderBody,
@@ -595,11 +850,14 @@ export async function placeBuyOrderForIntent(env, intent) {
 }
 
 export async function placeSellOrderForIntent(env, intent) {
-  const marketSlug = intent.marketSlug;
+  const requestedMarketSlug = intent.marketSlug;
 
-  if (!marketSlug) {
+  if (!requestedMarketSlug) {
     throw new Error('Trade intent is missing marketSlug and cannot be sold automatically.');
   }
+
+  const orderIntents = await resolveOrderIntentsForOutcome(env, requestedMarketSlug, intent.outcomeLabel);
+  const marketSlug = orderIntents.resolvedMarketSlug ?? requestedMarketSlug;
 
   const localShares = parseNumber(intent.position?.sharesFilled ?? intent.executionRequest?.sharesEstimate);
   const liveShares = localShares && localShares > 0 ? null : await resolveLivePositionShares(env, intent);
@@ -609,7 +867,11 @@ export async function placeSellOrderForIntent(env, intent) {
     throw new Error('Trade intent does not have a valid filled share quantity for sell.');
   }
 
-  const orderIntent = sellIntentForEntryIntent(intent.position?.entryIntent, intent.outcomeLabel);
+  let orderIntent = sellIntentForEntryIntent(intent.position?.entryIntent, intent.outcomeLabel);
+
+  if (!orderIntent) {
+    orderIntent = orderIntents.sell;
+  }
 
   const orderBody = {
     marketSlug,
@@ -622,7 +884,43 @@ export async function placeSellOrderForIntent(env, intent) {
     maxBlockTime: '10'
   };
 
-  const orderResponse = await createPolymarketUsOrder(env, orderBody);
+  let orderResponse;
+
+  try {
+    orderResponse = await createPolymarketUsOrder(env, orderBody);
+  } catch (error) {
+    if (!isLimitPriceRequiredError(error)) {
+      throw error;
+    }
+
+    const quote = await resolveOutcomeMarketQuote(env, marketSlug, intent.outcomeLabel);
+    const limitPrice = quote.outcomePrice;
+
+    const limitOrderBody = {
+      marketSlug: quote.resolvedMarketSlug,
+      intent: orderIntent,
+      type: 'ORDER_TYPE_LIMIT',
+      tif: 'TIME_IN_FORCE_IMMEDIATE_OR_CANCEL',
+      price: {
+        value: limitPrice.toFixed(3),
+        currency: 'USD'
+      },
+      quantity: shares,
+      manualOrderIndicator: 'MANUAL_ORDER_INDICATOR_AUTOMATIC',
+      synchronousExecution: true,
+      maxBlockTime: '10'
+    };
+
+    orderResponse = await createPolymarketUsOrder(env, limitOrderBody);
+
+    return {
+      request: limitOrderBody,
+      response: orderResponse,
+      orderId: getOrderId(orderResponse),
+      sharesFilled: getSharesFromOrder(orderResponse),
+      entryIntent: orderIntent
+    };
+  }
 
   return {
     request: orderBody,

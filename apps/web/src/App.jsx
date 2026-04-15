@@ -500,7 +500,8 @@ export default function App() {
   const [isMutatingHistory, setIsMutatingHistory] = useState(false);
   const [isPollingTracking, setIsPollingTracking] = useState(false);
   const [isPending, startTransition] = useTransition();
-  const visibleMarkets = selectedEvent?.markets.filter(marketHasLivePrices) ?? [];
+  const tradableMarkets = selectedEvent?.markets ?? [];
+  const visibleMarkets = tradableMarkets.filter(marketHasLivePrices);
   const eventHeadline = selectedEvent ? getEventHeadline(selectedEvent, visibleMarkets) : null;
   const rankedMarkets = filterAndSortMarkets(visibleMarkets, aggregation, statisticalModel, sortBy, filterBy);
   const selectedMarket = visibleMarkets.find((market) => market.conditionId === selectedMarketId) ?? rankedMarkets[0]?.market ?? null;
@@ -1233,6 +1234,10 @@ export default function App() {
                   <strong>{visibleMarkets.length}</strong>
                 </article>
                 <article>
+                  <span>Tradable Markets</span>
+                  <strong>{tradableMarkets.length}</strong>
+                </article>
+                <article>
                   <span>Volume</span>
                   <strong>{formatCompactNumber(selectedEvent.volume)}</strong>
                 </article>
@@ -1245,8 +1250,11 @@ export default function App() {
                   <strong>{formatDate(selectedEvent.endDate)}</strong>
                 </article>
               </div>
-              {selectedEvent.usFiltered && visibleMarkets.length === 0 ? (
+              {selectedEvent.usFiltered && tradableMarkets.length === 0 ? (
                 <p className="empty-state">No tradable markets are currently available for this event via your connected Polymarket US API key.</p>
+              ) : null}
+              {selectedEvent.usFiltered && tradableMarkets.length > 0 && visibleMarkets.length === 0 ? (
+                <p className="empty-state">Markets exist for this event, but none are live-priced yet. Trading becomes available once the market is live.</p>
               ) : null}
               {eventHeadline ? (
                 <div className="event-highlight compact-highlight">

@@ -1,5 +1,5 @@
 import axios from 'axios';
-import { getUsMarketAvailabilityForEvent } from './us-orders.js';
+import { fetchUsMarketsBySlug, getUsMarketAvailabilityForEvent } from './us-orders.js';
 
 const TOKEN_ALIASES = {
   usho: ['house'],
@@ -54,6 +54,8 @@ function normalizeOutcomes(market) {
 }
 
 function normalizeMarket(market) {
+  const fallbackConditionId = market.conditionId ?? market.slug ?? market.id ?? null;
+
   return {
     id: market.id ?? null,
     slug: market.slug ?? null,
@@ -61,7 +63,7 @@ function normalizeMarket(market) {
     subtitle: market.subtitle ?? '',
     active: Boolean(market.active),
     closed: Boolean(market.closed),
-    conditionId: market.conditionId ?? null,
+    conditionId: fallbackConditionId,
     liquidity: toNumberOrNull(market.liquidity),
     volume: toNumberOrNull(market.volume),
     endDate: market.endDate ?? null,
@@ -207,6 +209,38 @@ async function findFallbackEvent(env, slug) {
   return ranked[0].event;
 }
 
+async function findUsEventByMarketSlug(env, slug) {
+  const usMarkets = await fetchUsMarketsBySlug(env, slug, { includeClosed: true });
+
+  if (usMarkets.length === 0) {
+    return null;
+  }
+
+  const primaryMarket = usMarkets[0];
+  const normalizedMarkets = usMarkets.map(normalizeMarket);
+  const firstMarket = normalizedMarkets[0];
+
+  return {
+    id: primaryMarket.id ?? `us:${slug}`,
+    slug,
+    title: primaryMarket.question ?? slug,
+    description: primaryMarket.description ?? '',
+    active: Boolean(primaryMarket.active),
+    closed: Boolean(primaryMarket.closed),
+    endDate: primaryMarket.endDate ?? null,
+    startDate: primaryMarket.startDate ?? null,
+    liquidity: toNumberOrNull(primaryMarket.liquidity),
+    volume: toNumberOrNull(primaryMarket.volume),
+    markets: normalizedMarkets,
+    usFiltered: true,
+    usAvailableMarketCount: normalizedMarkets.length,
+    resolvedFromFallback: true,
+    resolvedFromUsMarketSlug: true,
+    requestedSlug: slug,
+    sourceMarketSlug: firstMarket?.slug ?? slug
+  };
+}
+
 export function extractEventSlug(input) {
   if (typeof input !== 'string' || input.trim().length === 0) {
     throw new Error('A Polymarket event URL or slug is required.');
@@ -264,6 +298,12 @@ export async function fetchEventByInput(env, input) {
 
     if (status && status !== 404) {
       throw error;
+    }
+
+    const usEvent = await findUsEventByMarketSlug(env, slug);
+
+    if (usEvent) {
+      return usEvent;
     }
 
     const fallbackEvent = await findFallbackEvent(env, slug);
