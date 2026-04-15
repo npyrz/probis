@@ -152,9 +152,15 @@ export function buildDecisionEnginePrompt(event, aggregation, statisticalModel) 
     .slice(0, 3)
     .map((market) => {
       const best = market.opportunity;
-      return `- ${market.question} | outcome=${best.label} | market=${best.currentProbability.toFixed(3)} | model=${best.estimatedProbability.toFixed(3)} | edge=${best.edge.toFixed(3)} | confidence=${best.confidence.toFixed(3)}`;
-    })
-    .join('\n');
+      return {
+        marketQuestion: market.question,
+        outcomeLabel: best.label,
+        marketProbability: Number(best.currentProbability.toFixed(3)),
+        modelProbability: Number(best.estimatedProbability.toFixed(3)),
+        edge: Number(best.edge.toFixed(3)),
+        confidence: Number(best.confidence.toFixed(3))
+      };
+    });
 
   return [
     'You are a decision engine for a prediction-market trading assistant.',
@@ -162,11 +168,11 @@ export function buildDecisionEnginePrompt(event, aggregation, statisticalModel) 
     'The JSON schema is:',
     '{"marketQuestion":"string","outcomeLabel":"string","confidence":0.0,"agreeWithModel":true,"thesis":"string","keyRisk":"string","reasons":["string","string","string"]}',
     'Choose a recommendation from the provided model-ranked live markets only.',
+    'Use the marketQuestion and outcomeLabel values exactly as provided in validCandidates.',
     `Event: ${event.title}`,
     `Slug: ${event.slug}`,
     `Event volume: ${aggregation.liquiditySnapshot.eventVolume ?? 'n/a'}`,
     `Event liquidity: ${aggregation.liquiditySnapshot.eventLiquidity ?? 'n/a'}`,
-    'Top model-ranked markets:',
-    topMarkets
+    `validCandidates: ${JSON.stringify(topMarkets)}`
   ].join('\n');
 }

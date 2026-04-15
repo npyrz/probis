@@ -20,15 +20,42 @@ function findModelOutcome(statisticalModel, marketQuestion, outcomeLabel) {
   };
 }
 
+function resolveRecommendedSelection(statisticalModel, aiRecommendation) {
+  const rankedCandidates = statisticalModel.markets
+    .filter((market) => market.opportunity)
+    .sort((left, right) => right.opportunity.score - left.opportunity.score);
+  const bestOpportunity = statisticalModel.summary.bestOpportunity;
+
+  if (aiRecommendation?.marketQuestion && aiRecommendation?.outcomeLabel) {
+    const exactMatch = findModelOutcome(
+      statisticalModel,
+      aiRecommendation.marketQuestion,
+      aiRecommendation.outcomeLabel
+    );
+
+    if (exactMatch.market && exactMatch.outcome) {
+      return exactMatch;
+    }
+  }
+
+  const fallbackMarket = rankedCandidates.find((market) => market.question === bestOpportunity?.question) ?? null;
+  const fallbackOutcome = fallbackMarket?.outcomes.find((outcome) => outcome.label === bestOpportunity?.label)
+    ?? bestOpportunity
+    ?? null;
+
+  return {
+    market: fallbackMarket,
+    outcome: fallbackOutcome
+  };
+}
+
 export function combineDecisionRecommendation(event, aggregation, statisticalModel, aiRecommendation, rawAnalysis) {
   const bestOpportunity = statisticalModel.summary.bestOpportunity;
-  const recommendedMarketQuestion = aiRecommendation?.marketQuestion || bestOpportunity?.question || null;
-  const recommendedOutcomeLabel = aiRecommendation?.outcomeLabel || bestOpportunity?.label || null;
-  const modelMatch = recommendedMarketQuestion && recommendedOutcomeLabel
-    ? findModelOutcome(statisticalModel, recommendedMarketQuestion, recommendedOutcomeLabel)
-    : { market: null, outcome: null };
-  const chosenMarket = modelMatch.market ?? statisticalModel.markets.find((market) => market.question === bestOpportunity?.question) ?? null;
-  const chosenOutcome = modelMatch.outcome ?? bestOpportunity ?? null;
+  const validatedSelection = resolveRecommendedSelection(statisticalModel, aiRecommendation);
+  const chosenMarket = validatedSelection.market;
+  const chosenOutcome = validatedSelection.outcome;
+  const recommendedMarketQuestion = chosenMarket?.question ?? bestOpportunity?.question ?? null;
+  const recommendedOutcomeLabel = chosenOutcome?.label ?? bestOpportunity?.label ?? null;
   const llmConfidence = typeof aiRecommendation?.confidence === 'number' ? aiRecommendation.confidence : null;
   const modelConfidence = chosenOutcome?.confidence ?? chosenMarket?.confidence ?? null;
   const combinedConfidence = clamp(average([llmConfidence, modelConfidence].filter((value) => typeof value === 'number')) ?? 0.5);
