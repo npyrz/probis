@@ -92,3 +92,31 @@ export async function createTradeIntent(payload) {
 
   return data.intent;
 }
+
+export async function updateTradeIntent(id, payload) {
+  const data = await requestJson(`/api/trades/intents/${encodeURIComponent(id)}`, {
+    method: 'PATCH',
+    headers: {
+      'Content-Type': 'application/json'
+    },
+    body: JSON.stringify(payload)
+  });
+
+  return data.intent;
+}
+
+export async function deleteTradeIntent(id) {
+  const data = await requestJson(`/api/trades/intents/${encodeURIComponent(id)}`, {
+    method: 'DELETE'
+  });
+
+  return data.intent;
+}
+
+export async function executeTradeIntent(id) {
+  const data = await requestJson(`/api/trades/intents/${encodeURIComponent(id)}/execute`, {
+    method: 'POST'
+  });
+
+  return data.intent;
+}

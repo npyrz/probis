@@ -3,12 +3,15 @@ import { useEffect, useState, useTransition } from 'react';
 import {
   analyzeEvent,
   createTradeIntent,
+  deleteTradeIntent as deleteTradeIntentRequest,
+  executeTradeIntent as executeTradeIntentRequest,
   fetchActiveEvents,
   fetchStatus,
   fetchTradeIntents,
   invalidateEventAggregationCache,
   resolveEvent,
-  resolveEventAggregation
+  resolveEventAggregation,
+  updateTradeIntent as updateTradeIntentRequest
 } from './lib/api.js';
 
 const TRADE_DRAFT_STORAGE_KEY = 'probis.tradeDraft';
@@ -297,6 +300,10 @@ function buildTradeDraft(event, recommendedMarket, decisionEngine, tradeSuggesti
   };
 }
 
+function replaceIntentInList(intents, nextIntent) {
+  return intents.map((intent) => (intent.id === nextIntent.id ? nextIntent : intent));
+}
+
 function filterAndSortMarkets(markets, aggregation, statisticalModel, sortBy, filterBy) {
   const enriched = markets.map((market) => ({
     market,
@@ -387,6 +394,7 @@ export default function App() {
   const [isInvalidating, setIsInvalidating] = useState(false);
   const [isAnalyzing, setIsAnalyzing] = useState(false);
   const [isSavingTradeIntent, setIsSavingTradeIntent] = useState(false);
+  const [isMutatingHistory, setIsMutatingHistory] = useState(false);
   const [isPending, startTransition] = useTransition();
   const visibleMarkets = selectedEvent?.markets.filter(marketHasLivePrices) ?? [];
   const eventHeadline = selectedEvent ? getEventHeadline(selectedEvent, visibleMarkets) : null;
@@ -682,6 +690,49 @@ export default function App() {
     }
   }
 
+  async function handleDeleteTradeIntent(intentId) {
+    setError('');
+    setNotice('');
+    setIsMutatingHistory(true);
+
+    try {
+      await deleteTradeIntentRequest(intentId);
+      setTradeHistory((previous) => previous.filter((intent) => intent.id !== intentId));
+
+      if (tradeDraft?.id === intentId) {
+        handleClearTradeDraft();
+      } else {
+        setNotice('Deleted saved trade intent.');
+      }
+    } catch (deleteError) {
+      setError(deleteError instanceof Error ? deleteError.message : 'Unable to delete trade intent');
+    } finally {
+      setIsMutatingHistory(false);
+    }
+  }
+
+  async function handleExecuteTradeIntent(intent) {
+    setError('');
+    setNotice('');
+    setIsMutatingHistory(true);
+
+    try {
+      const nextIntent = await executeTradeIntentRequest(intent.id);
+      setTradeHistory((previous) => replaceIntentInList(previous, nextIntent));
+
+      if (tradeDraft?.id === nextIntent.id) {
+        setTradeDraft(nextIntent);
+        saveStoredTradeDraft(nextIntent);
+      }
+
+      setNotice('Execution request prepared and monitoring state activated.');
+    } catch (executeError) {
+      setError(executeError instanceof Error ? executeError.message : 'Unable to start trade monitoring');
+    } finally {
+      setIsMutatingHistory(false);
+    }
+  }
+
   function handleOpenTradeModal() {
     if (!tradeSuggestion || !decisionEngine?.recommendation) {
       return;
@@ -711,12 +762,18 @@ export default function App() {
           confirmedAt,
           tradeSuggestion
         };
-        const savedIntent = await createTradeIntent(payload);
+        const savedIntent = tradeDraft?.id
+          ? await updateTradeIntentRequest(tradeDraft.id, {
+              tradeAmount: payload.tradeAmount,
+              tradeSuggestion: payload.tradeSuggestion,
+              eventTitle: payload.eventTitle
+            })
+          : await createTradeIntent(payload);
 
         setTradeDraft(savedIntent);
         setTradeHistory((previous) => [savedIntent, ...previous.filter((intent) => intent.id !== savedIntent.id)].slice(0, 6));
         saveStoredTradeDraft(savedIntent);
-        setNotice('Trade draft confirmed and stored in backend intent history.');
+        setNotice(tradeDraft?.id ? 'Saved trade intent changes.' : 'Trade draft confirmed and stored in backend intent history.');
         setIsTradeModalOpen(false);
       } catch (saveError) {
         setError(saveError instanceof Error ? saveError.message : 'Unable to save trade intent');
@@ -1253,13 +1310,15 @@ export default function App() {
                           onClick={handleOpenTradeModal}
                           disabled={!tradeSuggestion || !tradeSuggestion.isRiskValid}
                         >
-                          Review Recommendation
+                          {tradeDraft?.id ? 'Review Changes' : 'Review Recommendation'}
                         </button>
                         <button type="button" className="ghost-button" onClick={handleClearTradeDraft}>
                           Clear Draft
                         </button>
                         {tradeDraft?.confirmedAt ? (
-                          <p className="trade-status-copy">Confirmed {formatDate(tradeDraft.confirmedAt)}</p>
+                          <p className="trade-status-copy">
+                            {tradeDraft.status === 'tracking' ? 'Tracking' : 'Confirmed'} {formatDate(tradeDraft.confirmedAt)}
+                          </p>
                         ) : (
                           <p className="trade-status-copy">Draft autosaves and survives refresh.</p>
                         )}
@@ -1281,19 +1340,53 @@ export default function App() {
                     ) : (
                       <div className="trade-history-list">
                         {tradeHistory.map((intent) => (
-                          <button
-                            key={intent.id}
-                            type="button"
-                            className="trade-history-item"
-                            onClick={() => void handleRestoreTradeIntent(intent)}
-                          >
-                            <strong>{intent.eventTitle ?? intent.eventSlug}</strong>
-                            <span>{intent.outcomeLabel} in {intent.marketQuestion}</span>
-                            <span>
-                              {formatCurrency(intent.tradeAmount)} · stop {formatPercent(intent.tradeSuggestion?.stopLossProbability)} · take {formatPercent(intent.tradeSuggestion?.takeProfitProbability)}
-                            </span>
-                            <small>{formatDateTime(intent.confirmedAt)}</small>
-                          </button>
+                          <article key={intent.id} className="trade-history-item">
+                            <button
+                              type="button"
+                              className="trade-history-main"
+                              onClick={() => void handleRestoreTradeIntent(intent)}
+                            >
+                              <strong>{intent.eventTitle ?? intent.eventSlug}</strong>
+                              <span>{intent.outcomeLabel} in {intent.marketQuestion}</span>
+                              <span>
+                                {formatCurrency(intent.tradeAmount)} · stop {formatPercent(intent.tradeSuggestion?.stopLossProbability)} · take {formatPercent(intent.tradeSuggestion?.takeProfitProbability)}
+                              </span>
+                              <small>
+                                {intent.status === 'tracking' ? 'Tracking' : 'Confirmed'} · {formatDateTime(intent.confirmedAt)}
+                              </small>
+                              {intent.executionRequest?.readyForExecution ? (
+                                <small>
+                                  Request ready · {intent.executionRequest.orderType} · {intent.executionRequest.side}
+                                </small>
+                              ) : null}
+                              {intent.monitoring?.state ? (
+                                <small>
+                                  Monitor {intent.monitoring.state} · stop {formatPercent(intent.monitoring.stopLossProbability)} · take {formatPercent(intent.monitoring.takeProfitProbability)}
+                                </small>
+                              ) : null}
+                            </button>
+                            <div className="trade-history-actions">
+                              <button type="button" className="ghost-button" onClick={() => void handleRestoreTradeIntent(intent)}>
+                                Edit
+                              </button>
+                              <button
+                                type="button"
+                                className="secondary-button secondary-button-muted"
+                                onClick={() => void handleExecuteTradeIntent(intent)}
+                                disabled={isMutatingHistory || intent.status === 'tracking'}
+                              >
+                                {intent.status === 'tracking' ? 'Tracking' : 'Start Tracking'}
+                              </button>
+                              <button
+                                type="button"
+                                className="ghost-button"
+                                onClick={() => void handleDeleteTradeIntent(intent.id)}
+                                disabled={isMutatingHistory}
+                              >
+                                Delete
+                              </button>
+                            </div>
+                          </article>
                         ))}
                       </div>
                     )}
@@ -1389,7 +1482,7 @@ export default function App() {
                 onClick={handleConfirmTradeDraft}
                 disabled={isSavingTradeIntent || !tradeSuggestion.isRiskValid}
               >
-                {isSavingTradeIntent ? 'Saving...' : 'Confirm Draft'}
+                {isSavingTradeIntent ? 'Saving...' : tradeDraft?.id ? 'Save Changes' : 'Confirm Draft'}
               </button>
               <button type="button" className="ghost-button" onClick={handleCloseTradeModal}>
                 Keep Editing

@@ -66,6 +66,8 @@ Probis is a low-latency, AI-assisted trading system for Polymarket US. This repo
 - Step 7 trade suggestion flow with draft persistence, review modal, and amount-based trade preview
 - Step 8 editable stop-loss and take-profit controls with default risk targets derived from current probability and model edge
 - Step 9 trade-intent payload persistence with a small saved-history view in the UI
+- Saved trade intents can now be edited, deleted, and converted into backend execution-request shapes
+- Step 10 monitoring state scaffold lets saved intents transition into active tracked positions
 - In-memory analytics caching with TTL and manual invalidation support
 - `.env` and `.env.example` templates with Polymarket and Ollama settings
 
@@ -83,6 +85,9 @@ Probis is a low-latency, AI-assisted trading system for Polymarket US. This repo
 - `POST /api/ai/analyze-event`
 - `GET /api/trades/intents?limit=6`
 - `POST /api/trades/intents`
+- `PATCH /api/trades/intents/:id`
+- `DELETE /api/trades/intents/:id`
+- `POST /api/trades/intents/:id/execute`
 
 ## Analytics Cache
 
@@ -96,4 +101,4 @@ Steps 2 through 9 are started through the backend analytics pipeline and the fro
 
 ## Next Step
 
-The next plan items can build on the existing event resolution, aggregation, model scoring, editable risk controls, and persisted trade intents for execution wiring.
+The next plan items can build on the existing event resolution, aggregation, model scoring, editable risk controls, persisted trade intents, and tracking-state transitions for live monitoring.
