@@ -570,6 +570,14 @@ h2 {
   background: linear-gradient(180deg, rgba(212, 108, 47, 0.1), rgba(117, 176, 201, 0.08));
 }
 
+.trade-history-card {
+  margin-top: 1rem;
+  padding: 0.9rem 1rem;
+  border-radius: 16px;
+  background: rgba(255, 255, 255, 0.04);
+  border: 1px solid rgba(255, 255, 255, 0.06);
+}
+
 .trade-actions,
 .modal-actions {
   display: flex;
@@ -587,7 +595,7 @@ h2 {
 
 .trade-input-row {
   display: grid;
-  grid-template-columns: minmax(220px, 280px) minmax(0, 1fr);
+  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
   gap: 1rem;
   align-items: end;
   margin-top: 1rem;
@@ -623,6 +631,32 @@ h2 {
   border: 1px solid rgba(255, 255, 255, 0.12);
   background: linear-gradient(180deg, rgba(20, 24, 28, 0.96), rgba(27, 21, 17, 0.96));
   box-shadow: 0 24px 80px rgba(0, 0, 0, 0.45);
+}
+
+.trade-history-list {
+  display: grid;
+  gap: 0.75rem;
+}
+
+.trade-history-item {
+  width: 100%;
+  text-align: left;
+  padding: 0.9rem 1rem;
+  border-radius: 14px;
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  background: linear-gradient(180deg, rgba(255, 255, 255, 0.07), rgba(255, 255, 255, 0.03));
+  color: inherit;
+  display: grid;
+  gap: 0.3rem;
+}
+
+.trade-history-item span,
+.trade-history-item small {
+  color: rgba(244, 239, 229, 0.72);
+}
+
+.trade-error-banner {
+  margin-top: 0.75rem;
 }
 
 .analysis-card pre {

@@ -2,8 +2,10 @@ import { useEffect, useState, useTransition } from 'react';
 
 import {
   analyzeEvent,
+  createTradeIntent,
   fetchActiveEvents,
   fetchStatus,
+  fetchTradeIntents,
   invalidateEventAggregationCache,
   resolveEvent,
   resolveEventAggregation
@@ -46,6 +48,26 @@ function formatDate(value) {
     month: 'short',
     day: 'numeric',
     year: 'numeric'
+  }).format(parsed);
+}
+
+function formatDateTime(value) {
+  if (!value) {
+    return 'n/a';
+  }
+
+  const parsed = new Date(value);
+
+  if (Number.isNaN(parsed.getTime())) {
+    return 'n/a';
+  }
+
+  return new Intl.DateTimeFormat('en-US', {
+    month: 'short',
+    day: 'numeric',
+    year: 'numeric',
+    hour: 'numeric',
+    minute: '2-digit'
   }).format(parsed);
 }
 
@@ -179,7 +201,12 @@ function getRecommendedMarket(selectedEvent, decisionEngine) {
   ) ?? null;
 }
 
-function buildTradeSuggestion(decisionEngine, amount) {
+function parseProbabilityInput(value, fallback) {
+  const parsed = Number.parseFloat(value);
+  return Number.isFinite(parsed) ? parsed : fallback;
+}
+
+function buildTradeSuggestion(decisionEngine, amount, riskInputs = {}) {
   const recommendation = decisionEngine?.recommendation;
   const numericAmount = Number.parseFloat(amount);
 
@@ -201,14 +228,30 @@ function buildTradeSuggestion(decisionEngine, amount) {
   const bankrollHint = typeof recommendation.suggestedStakeFraction === 'number' && recommendation.suggestedStakeFraction > 0
     ? `${(recommendation.suggestedStakeFraction * 100).toFixed(1)}% of bankroll`
     : 'No stake size suggested';
-  const stopLossProbability = recommendation.stopLossProbability ?? null;
-  const takeProfitProbability = recommendation.takeProfitProbability ?? null;
+  const stopLossProbability = parseProbabilityInput(riskInputs.stopLossProbability, recommendation.stopLossProbability ?? null);
+  const takeProfitProbability = parseProbabilityInput(riskInputs.takeProfitProbability, recommendation.takeProfitProbability ?? null);
   const stopLossLoss = typeof shares === 'number' && typeof stopLossProbability === 'number' && typeof price === 'number'
     ? shares * Math.max(0, price - stopLossProbability)
     : null;
   const takeProfitGain = typeof shares === 'number' && typeof takeProfitProbability === 'number' && typeof price === 'number'
     ? shares * Math.max(0, takeProfitProbability - price)
     : null;
+  const hasValidRange = typeof stopLossProbability === 'number'
+    && typeof takeProfitProbability === 'number'
+    && stopLossProbability > 0
+    && takeProfitProbability < 1
+    && stopLossProbability < takeProfitProbability;
+  const followsEntryDirection = typeof price === 'number'
+    ? stopLossProbability < price && takeProfitProbability > price
+    : true;
+  const isRiskValid = hasValidRange && followsEntryDirection;
+  let riskValidationMessage = null;
+
+  if (!hasValidRange) {
+    riskValidationMessage = 'Stop-loss must be below take-profit and both must stay between 0% and 100%.';
+  } else if (!followsEntryDirection) {
+    riskValidationMessage = 'For a long entry, stop-loss should stay below the entry probability and take-profit above it.';
+  }
 
   return {
     amount: numericAmount,
@@ -224,7 +267,9 @@ function buildTradeSuggestion(decisionEngine, amount) {
     takeProfitProbability,
     stopLossLoss,
     takeProfitGain,
-    riskRewardRatio: recommendation.riskRewardRatio ?? null
+    riskRewardRatio: recommendation.riskRewardRatio ?? null,
+    isRiskValid,
+    riskValidationMessage
   };
 }
 
@@ -234,6 +279,8 @@ function buildTradeDraft(event, recommendedMarket, decisionEngine, tradeSuggesti
   }
 
   return {
+    id: existingDraft?.id ?? null,
+    status: existingDraft?.status ?? null,
     input: event.slug,
     eventSlug: event.slug,
     eventTitle: event.title,
@@ -329,7 +376,9 @@ export default function App() {
   const [sortBy, setSortBy] = useState('modelEdge');
   const [filterBy, setFilterBy] = useState('all');
   const [tradeAmount, setTradeAmount] = useState('100');
+  const [riskInputs, setRiskInputs] = useState({ stopLossProbability: '', takeProfitProbability: '' });
   const [tradeDraft, setTradeDraft] = useState(null);
+  const [tradeHistory, setTradeHistory] = useState([]);
   const [isTradeModalOpen, setIsTradeModalOpen] = useState(false);
   const [analysis, setAnalysis] = useState('');
   const [error, setError] = useState('');
@@ -337,6 +386,7 @@ export default function App() {
   const [isRefreshing, setIsRefreshing] = useState(false);
   const [isInvalidating, setIsInvalidating] = useState(false);
   const [isAnalyzing, setIsAnalyzing] = useState(false);
+  const [isSavingTradeIntent, setIsSavingTradeIntent] = useState(false);
   const [isPending, startTransition] = useTransition();
   const visibleMarkets = selectedEvent?.markets.filter(marketHasLivePrices) ?? [];
   const eventHeadline = selectedEvent ? getEventHeadline(selectedEvent, visibleMarkets) : null;
@@ -345,7 +395,44 @@ export default function App() {
   const selectedHistoricalMarket = selectedMarket ? findHistoricalMarket(aggregation, selectedMarket.conditionId) : null;
   const selectedModelMarket = selectedMarket ? getModelMarket(statisticalModel, selectedMarket.conditionId) : null;
   const recommendedMarket = getRecommendedMarket(selectedEvent, decisionEngine);
-  const tradeSuggestion = buildTradeSuggestion(decisionEngine, tradeAmount);
+  const tradeSuggestion = buildTradeSuggestion(decisionEngine, tradeAmount, riskInputs);
+
+  async function applyStoredTradeDraft(storedDraft, successMessage) {
+    const [event, analytics] = await Promise.all([
+      resolveEvent(storedDraft.input),
+      resolveEventAggregation(storedDraft.input)
+    ]);
+
+    setEventInput(storedDraft.input);
+    setSelectedEvent(event);
+    setAggregation(analytics.aggregation ?? null);
+    setStatisticalModel(analytics.statisticalModel ?? null);
+    setDecisionEngine(storedDraft.action && storedDraft.recommendation
+      ? {
+          action: storedDraft.action,
+          recommendation: storedDraft.recommendation,
+          rawAnalysis: storedDraft.analysis,
+          generatedAt: storedDraft.generatedAt
+        }
+      : null);
+    setTradeAmount(storedDraft.tradeAmount ?? '100');
+    setRiskInputs({
+      stopLossProbability:
+        typeof storedDraft.tradeSuggestion?.stopLossProbability === 'number'
+          ? String(storedDraft.tradeSuggestion.stopLossProbability)
+          : '',
+      takeProfitProbability:
+        typeof storedDraft.tradeSuggestion?.takeProfitProbability === 'number'
+          ? String(storedDraft.tradeSuggestion.takeProfitProbability)
+          : ''
+    });
+    setTradeDraft(storedDraft);
+
+    const matchingMarket = event.markets.find((market) => market.conditionId === storedDraft.conditionId);
+    const fallbackMarket = event.markets.filter(marketHasLivePrices)[0] ?? null;
+    setSelectedMarketId(matchingMarket?.conditionId ?? fallbackMarket?.conditionId ?? null);
+    setNotice(successMessage);
+  }
 
   useEffect(() => {
     const storedDraft = loadStoredTradeDraft();
@@ -358,34 +445,11 @@ export default function App() {
 
     async function restoreDraft() {
       try {
-        const [event, analytics] = await Promise.all([
-          resolveEvent(storedDraft.input),
-          resolveEventAggregation(storedDraft.input)
-        ]);
-
         if (isCancelled) {
           return;
         }
 
-        setEventInput(storedDraft.input);
-        setSelectedEvent(event);
-        setAggregation(analytics.aggregation ?? null);
-        setStatisticalModel(analytics.statisticalModel ?? null);
-        setDecisionEngine(storedDraft.action && storedDraft.recommendation
-          ? {
-              action: storedDraft.action,
-              recommendation: storedDraft.recommendation,
-              rawAnalysis: storedDraft.analysis,
-              generatedAt: storedDraft.generatedAt
-            }
-          : null);
-        setTradeAmount(storedDraft.tradeAmount ?? '100');
-        setTradeDraft(storedDraft);
-
-        const matchingMarket = event.markets.find((market) => market.conditionId === storedDraft.conditionId);
-        const fallbackMarket = event.markets.filter(marketHasLivePrices)[0] ?? null;
-        setSelectedMarketId(matchingMarket?.conditionId ?? fallbackMarket?.conditionId ?? null);
-        setNotice('Restored saved trade draft.');
+        await applyStoredTradeDraft(storedDraft, 'Restored saved trade draft.');
       } catch {
         clearStoredTradeDraft();
       }
@@ -414,14 +478,51 @@ export default function App() {
 
     setTradeDraft(nextDraft);
     saveStoredTradeDraft(nextDraft);
-  }, [selectedEvent, recommendedMarket, decisionEngine, tradeSuggestion, tradeAmount]);
+  }, [selectedEvent, recommendedMarket, decisionEngine, tradeSuggestion, tradeAmount, tradeDraft?.confirmedAt]);
+
+  useEffect(() => {
+    if (!decisionEngine?.recommendation) {
+      return;
+    }
+
+    const matchingSavedDraft = tradeDraft
+      && tradeDraft.marketQuestion === decisionEngine.recommendation.marketQuestion
+      && tradeDraft.outcomeLabel === decisionEngine.recommendation.outcomeLabel
+      ? tradeDraft
+      : null;
+
+    setRiskInputs({
+      stopLossProbability:
+        typeof matchingSavedDraft?.tradeSuggestion?.stopLossProbability === 'number'
+          ? String(matchingSavedDraft.tradeSuggestion.stopLossProbability)
+          : typeof decisionEngine.recommendation.stopLossProbability === 'number'
+          ? String(decisionEngine.recommendation.stopLossProbability)
+          : '',
+      takeProfitProbability:
+        typeof matchingSavedDraft?.tradeSuggestion?.takeProfitProbability === 'number'
+          ? String(matchingSavedDraft.tradeSuggestion.takeProfitProbability)
+          : typeof decisionEngine.recommendation.takeProfitProbability === 'number'
+          ? String(decisionEngine.recommendation.takeProfitProbability)
+          : ''
+    });
+  }, [
+    tradeDraft?.id,
+    decisionEngine?.recommendation?.marketQuestion,
+    decisionEngine?.recommendation?.outcomeLabel,
+    decisionEngine?.recommendation?.stopLossProbability,
+    decisionEngine?.recommendation?.takeProfitProbability
+  ]);
 
   useEffect(() => {
     let isCancelled = false;
 
     async function loadInitialData() {
       try {
-        const [nextStatus, nextEvents] = await Promise.all([fetchStatus(), fetchActiveEvents(5)]);
+        const [nextStatus, nextEvents, nextTradeHistory] = await Promise.all([
+          fetchStatus(),
+          fetchActiveEvents(5),
+          fetchTradeIntents(6)
+        ]);
 
         if (isCancelled) {
           return;
@@ -429,6 +530,7 @@ export default function App() {
 
         setStatus(nextStatus);
         setActiveEvents(nextEvents);
+        setTradeHistory(nextTradeHistory);
         setNotice('');
       } catch (loadError) {
         if (!isCancelled) {
@@ -450,6 +552,7 @@ export default function App() {
     setAnalysis('');
     setDecisionEngine(null);
     setTradeDraft(null);
+    setRiskInputs({ stopLossProbability: '', takeProfitProbability: '' });
     setIsTradeModalOpen(false);
 
     try {
@@ -568,6 +671,17 @@ export default function App() {
     }
   }
 
+  async function handleRestoreTradeIntent(intent) {
+    setError('');
+    setNotice('');
+
+    try {
+      await applyStoredTradeDraft(intent, 'Loaded saved trade intent.');
+    } catch (restoreError) {
+      setError(restoreError instanceof Error ? restoreError.message : 'Unable to restore trade intent');
+    }
+  }
+
   function handleOpenTradeModal() {
     if (!tradeSuggestion || !decisionEngine?.recommendation) {
       return;
@@ -581,19 +695,35 @@ export default function App() {
   }
 
   function handleConfirmTradeDraft() {
-    if (!tradeDraft) {
+    if (!tradeDraft || !tradeSuggestion?.isRiskValid) {
       return;
     }
 
-    const confirmedDraft = {
-      ...tradeDraft,
-      confirmedAt: new Date().toISOString()
-    };
+    void (async () => {
+      setIsSavingTradeIntent(true);
+      setError('');
+      setNotice('');
 
-    setTradeDraft(confirmedDraft);
-    saveStoredTradeDraft(confirmedDraft);
-    setNotice('Trade draft confirmed and saved for execution wiring.');
-    setIsTradeModalOpen(false);
+      try {
+        const confirmedAt = new Date().toISOString();
+        const payload = {
+          ...tradeDraft,
+          confirmedAt,
+          tradeSuggestion
+        };
+        const savedIntent = await createTradeIntent(payload);
+
+        setTradeDraft(savedIntent);
+        setTradeHistory((previous) => [savedIntent, ...previous.filter((intent) => intent.id !== savedIntent.id)].slice(0, 6));
+        saveStoredTradeDraft(savedIntent);
+        setNotice('Trade draft confirmed and stored in backend intent history.');
+        setIsTradeModalOpen(false);
+      } catch (saveError) {
+        setError(saveError instanceof Error ? saveError.message : 'Unable to save trade intent');
+      } finally {
+        setIsSavingTradeIntent(false);
+      }
+    })();
   }
 
   function handleClearTradeDraft() {
@@ -1023,6 +1153,34 @@ export default function App() {
                             onChange={(event) => setTradeAmount(event.target.value)}
                           />
                         </label>
+                        <label>
+                          Stop-loss probability
+                          <input
+                            type="number"
+                            min="0.01"
+                            max="0.99"
+                            step="0.01"
+                            value={riskInputs.stopLossProbability}
+                            onChange={(event) => setRiskInputs((current) => ({
+                              ...current,
+                              stopLossProbability: event.target.value
+                            }))}
+                          />
+                        </label>
+                        <label>
+                          Take-profit probability
+                          <input
+                            type="number"
+                            min="0.01"
+                            max="0.99"
+                            step="0.01"
+                            value={riskInputs.takeProfitProbability}
+                            onChange={(event) => setRiskInputs((current) => ({
+                              ...current,
+                              takeProfitProbability: event.target.value
+                            }))}
+                          />
+                        </label>
                         <div className="market-chip-row">
                           <span className="market-chip">Entry {formatPercent(decisionEngine.recommendation.currentProbability)}</span>
                           <span className="market-chip">Model {formatPercent(decisionEngine.recommendation.modelProbability)}</span>
@@ -1084,8 +1242,17 @@ export default function App() {
                         <p className="empty-state">Enter a positive dollar amount to preview the trade suggestion.</p>
                       )}
 
+                      {tradeSuggestion && !tradeSuggestion.isRiskValid ? (
+                        <p className="error-banner trade-error-banner">{tradeSuggestion.riskValidationMessage}</p>
+                      ) : null}
+
                       <div className="trade-actions">
-                        <button type="button" className="secondary-button" onClick={handleOpenTradeModal} disabled={!tradeSuggestion}>
+                        <button
+                          type="button"
+                          className="secondary-button"
+                          onClick={handleOpenTradeModal}
+                          disabled={!tradeSuggestion || !tradeSuggestion.isRiskValid}
+                        >
                           Review Recommendation
                         </button>
                         <button type="button" className="ghost-button" onClick={handleClearTradeDraft}>
@@ -1099,6 +1266,38 @@ export default function App() {
                       </div>
                     </section>
                   ) : null}
+
+                  <section className="trade-history-card">
+                    <div className="panel-heading panel-heading-inline">
+                      <div>
+                        <p className="eyebrow">Saved Drafts</p>
+                        <h2>Recent trade intents</h2>
+                      </div>
+                      <span className="market-chip">{tradeHistory.length} saved</span>
+                    </div>
+
+                    {tradeHistory.length === 0 ? (
+                      <p className="empty-state">No confirmed trade intents yet.</p>
+                    ) : (
+                      <div className="trade-history-list">
+                        {tradeHistory.map((intent) => (
+                          <button
+                            key={intent.id}
+                            type="button"
+                            className="trade-history-item"
+                            onClick={() => void handleRestoreTradeIntent(intent)}
+                          >
+                            <strong>{intent.eventTitle ?? intent.eventSlug}</strong>
+                            <span>{intent.outcomeLabel} in {intent.marketQuestion}</span>
+                            <span>
+                              {formatCurrency(intent.tradeAmount)} · stop {formatPercent(intent.tradeSuggestion?.stopLossProbability)} · take {formatPercent(intent.tradeSuggestion?.takeProfitProbability)}
+                            </span>
+                            <small>{formatDateTime(intent.confirmedAt)}</small>
+                          </button>
+                        ))}
+                      </div>
+                    )}
+                  </section>
                 </section>
               ) : null}
             </>
@@ -1166,6 +1365,10 @@ export default function App() {
               </article>
             </div>
 
+            {tradeSuggestion && !tradeSuggestion.isRiskValid ? (
+              <p className="error-banner trade-error-banner">{tradeSuggestion.riskValidationMessage}</p>
+            ) : null}
+
             <div className="detail-callout">
               <span>Rationale</span>
               <strong>{decisionEngine.recommendation.thesis}</strong>
@@ -1180,8 +1383,13 @@ export default function App() {
             </div>
 
             <div className="modal-actions">
-              <button type="button" className="secondary-button" onClick={handleConfirmTradeDraft}>
-                Confirm Draft
+              <button
+                type="button"
+                className="secondary-button"
+                onClick={handleConfirmTradeDraft}
+                disabled={isSavingTradeIntent || !tradeSuggestion.isRiskValid}
+              >
+                {isSavingTradeIntent ? 'Saving...' : 'Confirm Draft'}
               </button>
               <button type="button" className="ghost-button" onClick={handleCloseTradeModal}>
                 Keep Editing

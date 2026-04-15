@@ -6,6 +6,7 @@ import { logStartup } from './lib/logger.js';
 import aiRouter from './routes/ai.js';
 import healthRouter from './routes/health.js';
 import polymarketRouter from './routes/polymarket.js';
+import tradesRouter from './routes/trades.js';
 
 const env = getEnv();
 const app = express();
@@ -25,7 +26,8 @@ app.get('/', (_request, response) => {
       '/api/polymarket/events/aggregation',
       '/api/ai/status',
       '/api/ai/test',
-      '/api/ai/analyze-event'
+      '/api/ai/analyze-event',
+      '/api/trades/intents'
     ]
   });
 });
@@ -33,6 +35,7 @@ app.get('/', (_request, response) => {
 app.use(healthRouter);
 app.use(polymarketRouter);
 app.use(aiRouter);
+app.use(tradesRouter);
 
 app.listen(env.port, () => {
   logStartup(env);

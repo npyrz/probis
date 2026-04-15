@@ -75,3 +75,20 @@ export async function invalidateEventAggregationCache(input) {
     body: JSON.stringify(input ? { input } : {})
   });
 }
+
+export async function fetchTradeIntents(limit = 6) {
+  const data = await requestJson(`/api/trades/intents?limit=${limit}`);
+  return data.intents;
+}
+
+export async function createTradeIntent(payload) {
+  const data = await requestJson('/api/trades/intents', {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json'
+    },
+    body: JSON.stringify(payload)
+  });
+
+  return data.intent;
+}
