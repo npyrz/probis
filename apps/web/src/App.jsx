@@ -1,6 +1,6 @@
 import { useEffect, useState, useTransition } from 'react';
 
-import { analyzeEvent, fetchActiveEvents, fetchStatus, resolveEvent } from './lib/api.js';
+import { analyzeEvent, fetchActiveEvents, fetchStatus, resolveEvent, resolveEventAggregation } from './lib/api.js';
 
 function formatCompactNumber(value) {
   if (typeof value !== 'number' || Number.isNaN(value)) {
@@ -82,17 +82,52 @@ function findHistoricalMarket(aggregation, conditionId) {
   return aggregation?.historicalPrices?.markets?.find((market) => market.conditionId === conditionId) ?? null;
 }
 
+function buildSparklinePath(history) {
+  if (!Array.isArray(history) || history.length === 0) {
+    return '';
+  }
+
+  const prices = history.map((point) => point.price);
+  const minPrice = Math.min(...prices);
+  const maxPrice = Math.max(...prices);
+  const range = maxPrice - minPrice || 1;
+
+  return history
+    .map((point, index) => {
+      const x = history.length === 1 ? 50 : (index / (history.length - 1)) * 100;
+      const y = 100 - ((point.price - minPrice) / range) * 100;
+
+      return `${x},${y}`;
+    })
+    .join(' ');
+}
+
+function OutcomeSparkline({ history }) {
+  const path = buildSparklinePath(history);
+
+  if (!path) {
+    return <div className="sparkline-empty">No history</div>;
+  }
+
+  return (
+    <svg className="sparkline" viewBox="0 0 100 100" preserveAspectRatio="none" aria-hidden="true">
+      <polyline points={path} className="sparkline-line" />
+    </svg>
+  );
+}
+
 export default function App() {
   const [status, setStatus] = useState(null);
   const [activeEvents, setActiveEvents] = useState([]);
   const [selectedEvent, setSelectedEvent] = useState(null);
+  const [aggregation, setAggregation] = useState(null);
+  const [statisticalModel, setStatisticalModel] = useState(null);
   const [eventInput, setEventInput] = useState('');
   const [analysis, setAnalysis] = useState('');
   const [error, setError] = useState('');
   const [isPending, startTransition] = useTransition();
   const visibleMarkets = selectedEvent?.markets.filter(marketHasLivePrices) ?? [];
   const eventHeadline = selectedEvent ? getEventHeadline(selectedEvent, visibleMarkets) : null;
-  const aggregation = selectedEvent?.aggregation ?? null;
 
   useEffect(() => {
     let isCancelled = false;
@@ -126,11 +161,18 @@ export default function App() {
     setAnalysis('');
 
     try {
-      const event = await resolveEvent(submittedInput);
+      const [event, analytics] = await Promise.all([
+        resolveEvent(submittedInput),
+        resolveEventAggregation(submittedInput)
+      ]);
       setSelectedEvent(event);
+      setAggregation(analytics.aggregation ?? null);
+      setStatisticalModel(analytics.statisticalModel ?? null);
       setEventInput(submittedInput);
     } catch (resolveError) {
       setSelectedEvent(null);
+      setAggregation(null);
+      setStatisticalModel(null);
       setError(resolveError instanceof Error ? resolveError.message : 'Unable to resolve event');
     }
   }
@@ -311,6 +353,22 @@ export default function App() {
                   </div>
                 ) : null}
 
+                {statisticalModel?.summary?.bestOpportunity ? (
+                  <div className="model-highlight">
+                    <span>Step 6.1 Statistical Edge</span>
+                    <strong>{statisticalModel.summary.bestOpportunity.question}</strong>
+                    <p>
+                      {statisticalModel.summary.bestOpportunity.label} est. true probability{' '}
+                      {formatPercent(statisticalModel.summary.bestOpportunity.estimatedProbability)} vs market{' '}
+                      {formatPercent(statisticalModel.summary.bestOpportunity.currentProbability)}.
+                    </p>
+                    <p>
+                      Edge {formatSignedPercent(statisticalModel.summary.bestOpportunity.edge)} · confidence{' '}
+                      {formatPercent(statisticalModel.summary.bestOpportunity.confidence)}
+                    </p>
+                  </div>
+                ) : null}
+
                 {eventHeadline ? (
                   <div className="event-highlight">
                     <span>Highest-conviction live market</span>
@@ -347,6 +405,7 @@ export default function App() {
                               <small>
                                 7d move {formatSignedPercent(historicalOutcome?.historySummary?.percentChange)}
                               </small>
+                              <OutcomeSparkline history={historicalOutcome?.history ?? []} />
                             </div>
                             <div className="outcome-value">
                               <strong>{formatPercent(outcome.probability)}</strong>
@@ -356,6 +415,17 @@ export default function App() {
                                   style={{ width: `${Math.max(0, Math.min(100, (outcome.probability ?? 0) * 100))}%` }}
                                 />
                               </div>
+                              {statisticalModel ? (
+                                <small className="model-estimate">
+                                  model{' '}
+                                  {formatPercent(
+                                    statisticalModel.markets
+                                      ?.find((candidate) => candidate.conditionId === market.conditionId)
+                                      ?.outcomes?.find((candidate) => candidate.label === outcome.label)
+                                      ?.estimatedProbability
+                                  )}
+                                </small>
+                              ) : null}
                             </div>
                           </div>
                         );

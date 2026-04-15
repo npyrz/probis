@@ -3,7 +3,7 @@ import { Router } from 'express';
 import { getEnv } from '../config/env.js';
 import { getPolymarketStatus } from '../services/polymarket/client.js';
 import { fetchActiveEvents, fetchEventByInput } from '../services/polymarket/gamma.js';
-import { resolveEventWithAggregation } from '../services/polymarket/event-data.js';
+import { resolveEventAnalytics } from '../services/polymarket/event-data.js';
 
 const router = Router();
 
@@ -57,7 +57,7 @@ router.get('/api/polymarket/events/resolve', async (request, response) => {
       return;
     }
 
-    const event = await resolveEventWithAggregation(env, input);
+    const event = await fetchEventByInput(env, input);
 
     response.json({
       ok: true,
@@ -67,6 +67,33 @@ router.get('/api/polymarket/events/resolve', async (request, response) => {
     response.status(502).json({
       ok: false,
       error: error instanceof Error ? error.message : 'Unable to resolve Polymarket event'
+    });
+  }
+});
+
+router.get('/api/polymarket/events/aggregation', async (request, response) => {
+  try {
+    const env = getEnv();
+    const input = request.query.input ?? request.query.url ?? request.query.slug;
+
+    if (typeof input !== 'string') {
+      response.status(400).json({
+        ok: false,
+        error: 'Provide an event URL or slug with the input query parameter.'
+      });
+      return;
+    }
+
+    const analytics = await resolveEventAnalytics(env, input);
+
+    response.json({
+      ok: true,
+      ...analytics
+    });
+  } catch (error) {
+    response.status(502).json({
+      ok: false,
+      error: error instanceof Error ? error.message : 'Unable to resolve Polymarket analytics'
     });
   }
 });

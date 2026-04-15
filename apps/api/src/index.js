@@ -22,6 +22,7 @@ app.get('/', (_request, response) => {
       '/api/polymarket/status',
       '/api/polymarket/events',
       '/api/polymarket/events/resolve',
+      '/api/polymarket/events/aggregation',
       '/api/ai/status',
       '/api/ai/test',
       '/api/ai/analyze-event'

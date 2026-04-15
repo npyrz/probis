@@ -49,6 +49,10 @@ export async function resolveEvent(input) {
   return data.event;
 }
 
+export async function resolveEventAggregation(input) {
+  return requestJson(`/api/polymarket/events/aggregation?input=${encodeURIComponent(input)}`);
+}
+
 export async function analyzeEvent(input) {
   const data = await requestJson('/api/ai/analyze-event', {
     method: 'POST',

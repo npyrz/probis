@@ -233,7 +233,8 @@ h2 {
 
 .event-summary-stats article,
 .derived-metrics-grid article,
-.event-highlight {
+.event-highlight,
+.model-highlight {
   padding: 0.9rem 1rem;
   border-radius: 16px;
   background: rgba(255, 255, 255, 0.04);
@@ -243,6 +244,7 @@ h2 {
 .event-summary-stats span,
 .derived-metrics-grid span,
 .event-highlight span,
+.model-highlight span,
 .market-chip {
   display: block;
   font-size: 0.78rem;
@@ -251,14 +253,20 @@ h2 {
 
 .event-summary-stats strong,
 .derived-metrics-grid strong,
-.event-highlight strong {
+.event-highlight strong,
+.model-highlight strong {
   display: block;
   margin-top: 0.35rem;
 }
 
-.event-highlight p {
+.event-highlight p,
+.model-highlight p {
   margin: 0.45rem 0 0;
   color: rgba(244, 239, 229, 0.78);
+}
+
+.model-highlight {
+  background: linear-gradient(180deg, rgba(117, 176, 201, 0.12), rgba(239, 176, 93, 0.08));
 }
 
 .panel-heading {
@@ -345,6 +353,29 @@ h2 {
 
 .outcome-copy small {
   color: rgba(244, 239, 229, 0.54);
+}
+
+.sparkline {
+  width: 100%;
+  height: 34px;
+  margin-top: 0.3rem;
+}
+
+.sparkline-line {
+  fill: none;
+  stroke: #75b0c9;
+  stroke-width: 3;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+
+.sparkline-empty,
+.model-estimate {
+  color: rgba(244, 239, 229, 0.54);
+}
+
+.model-estimate {
+  display: block;
 }
 
 .outcome-value {
