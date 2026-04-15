@@ -327,7 +327,7 @@ select {
 
 .dashboard-footer-grid {
   display: grid;
-  grid-template-columns: 1.2fr 1fr;
+  grid-template-columns: 1fr;
   gap: 10px;
 }
 
@@ -685,6 +685,38 @@ textarea:focus-visible,
 .active-positions-card {
   display: grid;
   gap: 10px;
+}
+
+.trade-center-list {
+  gap: 10px;
+}
+
+.trade-center-item {
+  display: grid;
+  gap: 8px;
+}
+
+.trade-center-filter-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.filter-chip {
+  border-radius: 999px;
+  border: 1px solid rgba(79, 93, 110, 0.4);
+  background: rgba(255, 255, 255, 0.02);
+  color: #b6c6d8;
+  padding: 5px 10px;
+  font-size: 11px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.filter-chip-active {
+  border-color: rgba(0, 198, 255, 0.5);
+  background: rgba(20, 77, 92, 0.4);
+  color: #dff7ff;
 }
 
 .active-position-item .trade-status-copy,

@@ -574,6 +574,7 @@ export default function App() {
   const [isSavingTradeIntent, setIsSavingTradeIntent] = useState(false);
   const [isMutatingHistory, setIsMutatingHistory] = useState(false);
   const [isPollingTracking, setIsPollingTracking] = useState(false);
+  const [tradeCenterFilter, setTradeCenterFilter] = useState('all');
   const [isPending, startTransition] = useTransition();
   const tradableMarkets = selectedEvent?.markets ?? [];
   const visibleMarkets = tradableMarkets.filter(marketHasLivePrices);
@@ -585,9 +586,33 @@ export default function App() {
   const recommendedMarket = getRecommendedMarket(selectedEvent, decisionEngine);
   const tradeSuggestion = buildTradeSuggestion(decisionEngine, tradeAmount, riskInputs);
   const activeTradeIntents = tradeHistory.filter((intent) => intent.status === 'tracking');
+  const filteredTradeHistory = tradeHistory.filter((intent) => {
+    if (tradeCenterFilter === 'tracking') {
+      return intent.status === 'tracking';
+    }
+
+    if (tradeCenterFilter === 'closed') {
+      return intent.status === 'closed';
+    }
+
+    return true;
+  });
   const lastPolledAge = formatRelativeAge(lastTradeUpdate, liveClock);
   const selectedLeader = selectedMarket ? getMarketLeader(selectedMarket) : null;
   const currentRecommendation = decisionEngine?.recommendation ?? null;
+
+  function clearSelectedEventContext() {
+    setSelectedEvent(null);
+    setAggregation(null);
+    setStatisticalModel(null);
+    setDecisionEngine(null);
+    setAnalysis('');
+    setSelectedMarketId(null);
+    setEventInput('');
+    setTradeDraft(null);
+    setRiskInputs({ stopLossProbability: '', takeProfitProbability: '' });
+    setIsTradeModalOpen(false);
+  }
 
   useEffect(() => {
     const intervalId = window.setInterval(() => {
@@ -1087,6 +1112,10 @@ export default function App() {
         saveStoredTradeDraft(nextIntent);
       }
 
+      if (selectedEvent?.slug && nextIntent.eventSlug === selectedEvent.slug) {
+        clearSelectedEventContext();
+      }
+
       setNotice('Buy order submitted to Polymarket US. Intent is now actively trading.');
     } catch (executeError) {
       if (isTradeIntentNotFoundError(executeError)) {
@@ -1515,215 +1544,231 @@ export default function App() {
       </section>
 
       <section className="dashboard-footer-grid">
-        <section className="panel-card terminal-card active-positions-card">
-        <div className="panel-heading panel-heading-inline">
-          <div>
-            <p className="eyebrow">Active Trades</p>
-            <h2>Active tracked positions</h2>
-          </div>
-          <div className="action-row">
-            <span className="market-chip">{activeTradeIntents.length} tracking</span>
-            <span className="market-chip market-chip-muted">Last polled {lastPolledAge}</span>
-            <button
-              type="button"
-              className="secondary-button secondary-button-muted"
-              onClick={() => void handlePollActivePositions()}
-              disabled={activeTradeIntents.length === 0 || isPollingTracking}
-            >
-              {isPollingTracking ? 'Polling...' : 'Poll Now'}
-            </button>
-          </div>
-        </div>
-
-        {activeTradeIntents.length === 0 ? (
-          <p className="empty-state">No active tracked positions yet.</p>
-        ) : (
-          <div className="active-positions-grid compact-active-grid">
-            {activeTradeIntents.map((intent) => {
-              const currentProbability = intent.monitoring?.currentProbability ?? intent.recommendation?.currentProbability ?? null;
-              const entryProbability = intent.monitoring?.entryProbability ?? intent.executionRequest?.entryProbability ?? null;
-              const monitoringState = intent.monitoring?.state ?? 'active';
-              const drift = typeof currentProbability === 'number' && typeof entryProbability === 'number'
-                ? currentProbability - entryProbability
-                : null;
-              const unrealizedPnl = estimateTrackedPnl(intent, currentProbability, entryProbability);
-              const pnlClassName = typeof unrealizedPnl.dollars === 'number'
-                ? unrealizedPnl.dollars >= 0
-                  ? 'pnl-positive'
-                  : 'pnl-negative'
-                : '';
-
-              return (
-                <article key={intent.id} className="active-position-item">
-                  <div className="panel-heading panel-heading-inline">
-                    <div>
-                      <p className="eyebrow">{intent.eventTitle ?? intent.eventSlug}</p>
-                      <h2>{intent.outcomeLabel} in {intent.marketQuestion}</h2>
-                    </div>
-                    <span className={getMonitoringStateChipClass(monitoringState)}>{formatMonitoringStateLabel(monitoringState)}</span>
-                  </div>
-
-                  <div className="trade-preview-grid">
-                    <article>
-                      <span>Current probability</span>
-                      <strong>{formatPercent(currentProbability)}</strong>
-                    </article>
-                    <article>
-                      <span>Entry probability</span>
-                      <strong>{formatPercent(entryProbability)}</strong>
-                    </article>
-                    <article>
-                      <span>Drift from entry</span>
-                      <strong>{formatSignedPercent(drift)}</strong>
-                    </article>
-                    <article>
-                      <span>Unrealized P/L</span>
-                      <strong className={pnlClassName}>
-                        {formatSignedCurrency(unrealizedPnl.dollars)}
-                        {typeof unrealizedPnl.percent === 'number' ? ` (${formatSignedPercent(unrealizedPnl.percent)})` : ''}
-                      </strong>
-                    </article>
-                    <article>
-                      <span>Stop-loss</span>
-                      <strong>{formatPercent(intent.monitoring?.stopLossProbability)}</strong>
-                    </article>
-                    <article>
-                      <span>Take-profit</span>
-                      <strong>{formatPercent(intent.monitoring?.takeProfitProbability)}</strong>
-                    </article>
-                    <article>
-                      <span>Last evaluation</span>
-                      <strong>{formatDateTime(intent.monitoring?.lastEvaluationAt)}</strong>
-                    </article>
-                    <article>
-                      <span>Entry order</span>
-                      <strong>{formatOrderId(intent.executionRequest?.venueOrderId)}</strong>
-                    </article>
-                    <article>
-                      <span>Shares filled</span>
-                      <strong>{typeof intent.position?.sharesFilled === 'number' ? intent.position.sharesFilled.toFixed(2) : 'n/a'}</strong>
-                    </article>
-                  </div>
-
-                  <p className="trade-status-copy">{intent.monitoring?.notes ?? 'Monitoring live price movement.'}</p>
-
-                  <div className="trade-history-actions">
-                    <button
-                      type="button"
-                      className="secondary-button"
-                      onClick={() => void handleSellTrackedIntent(intent)}
-                      disabled={isMutatingHistory}
-                    >
-                      Sell Now
-                    </button>
-                    <button
-                      type="button"
-                      className="ghost-button"
-                      onClick={() => void handleStopTrackedIntent(intent)}
-                      disabled={isMutatingHistory}
-                    >
-                      Stop Trade
-                    </button>
-                    <button
-                      type="button"
-                      className="ghost-button"
-                      onClick={() => void handleRestoreTradeIntent(intent)}
-                      disabled={isMutatingHistory}
-                    >
-                      Open Intent
-                    </button>
-                  </div>
-                </article>
-              );
-            })}
-          </div>
-        )}
-        </section>
-
         <section className="panel-card terminal-card trade-history-card footer-history-card">
           <div className="panel-heading panel-heading-inline">
             <div>
               <p className="eyebrow">Active Trades</p>
-              <h2>Recent trade intents</h2>
+              <h2>Trade Center</h2>
             </div>
-            <span className="market-chip">{tradeHistory.length} saved</span>
+            <div className="action-row">
+              <span className="market-chip">{activeTradeIntents.length} tracking</span>
+              <span className="market-chip">{tradeHistory.length} saved</span>
+              <span className="market-chip">{filteredTradeHistory.length} shown</span>
+              <span className="market-chip market-chip-muted">Last polled {lastPolledAge}</span>
+              <button
+                type="button"
+                className="secondary-button secondary-button-muted"
+                onClick={() => void handlePollActivePositions()}
+                disabled={activeTradeIntents.length === 0 || isPollingTracking}
+              >
+                {isPollingTracking ? 'Polling...' : 'Poll Now'}
+              </button>
+            </div>
+          </div>
+
+          <div className="trade-center-filter-row" role="tablist" aria-label="Trade Center Filters">
+            <button
+              type="button"
+              role="tab"
+              aria-selected={tradeCenterFilter === 'all'}
+              className={tradeCenterFilter === 'all' ? 'filter-chip filter-chip-active' : 'filter-chip'}
+              onClick={() => setTradeCenterFilter('all')}
+            >
+              All
+            </button>
+            <button
+              type="button"
+              role="tab"
+              aria-selected={tradeCenterFilter === 'tracking'}
+              className={tradeCenterFilter === 'tracking' ? 'filter-chip filter-chip-active' : 'filter-chip'}
+              onClick={() => setTradeCenterFilter('tracking')}
+            >
+              Tracking
+            </button>
+            <button
+              type="button"
+              role="tab"
+              aria-selected={tradeCenterFilter === 'closed'}
+              className={tradeCenterFilter === 'closed' ? 'filter-chip filter-chip-active' : 'filter-chip'}
+              onClick={() => setTradeCenterFilter('closed')}
+            >
+              Closed
+            </button>
           </div>
 
           {tradeHistory.length === 0 ? (
             <p className="empty-state">No confirmed trade intents yet.</p>
+          ) : filteredTradeHistory.length === 0 ? (
+            <p className="empty-state">No trade intents match the selected filter.</p>
           ) : (
-            <div className="trade-history-list terminal-list">
-              {tradeHistory.map((intent) => (
-                <article key={intent.id} className="trade-history-item">
-                  {(() => {
-                    const precheckMessage = getExecutePrecheckMessage(intent);
+            <div className="trade-history-list terminal-list trade-center-list">
+              {filteredTradeHistory.map((intent) => {
+                const precheckMessage = getExecutePrecheckMessage(intent);
+                const isTracking = intent.status === 'tracking';
+                const currentProbability = intent.monitoring?.currentProbability ?? intent.recommendation?.currentProbability ?? null;
+                const entryProbability = intent.monitoring?.entryProbability ?? intent.executionRequest?.entryProbability ?? null;
+                const monitoringState = intent.monitoring?.state ?? 'active';
+                const drift = typeof currentProbability === 'number' && typeof entryProbability === 'number'
+                  ? currentProbability - entryProbability
+                  : null;
+                const unrealizedPnl = estimateTrackedPnl(intent, currentProbability, entryProbability);
+                const pnlClassName = typeof unrealizedPnl.dollars === 'number'
+                  ? unrealizedPnl.dollars >= 0
+                    ? 'pnl-positive'
+                    : 'pnl-negative'
+                  : '';
 
-                    return (
-                      <>
-                  <button
-                    type="button"
-                    className="trade-history-main"
-                    onClick={() => void handleRestoreTradeIntent(intent)}
-                  >
-                    <strong>{intent.eventTitle ?? intent.eventSlug}</strong>
-                    <span>{intent.outcomeLabel} in {intent.marketQuestion}</span>
-                    <span>
-                      {formatCurrency(intent.tradeAmount)} · stop {formatPercent(intent.tradeSuggestion?.stopLossProbability)} · take {formatPercent(intent.tradeSuggestion?.takeProfitProbability)}
-                    </span>
-                    <small>
-                      {formatIntentStatus(intent)} · {formatDateTime(intent.confirmedAt)}
-                    </small>
-                    {intent.executionRequest?.venueOrderId ? (
-                      <small>
-                        Entry order {formatOrderId(intent.executionRequest.venueOrderId)} · submitted {formatDateTime(intent.executionRequest.executedAt)}
-                      </small>
-                    ) : null}
-                    {intent.exitRequest?.venueOrderId ? (
-                      <small>
-                        Exit order {formatOrderId(intent.exitRequest.venueOrderId)} · submitted {formatDateTime(intent.exitRequest.executedAt)}
-                      </small>
-                    ) : null}
-                    {intent.executionRequest?.readyForExecution ? (
-                      <small>
-                        Request ready · {intent.executionRequest.orderType} · {intent.executionRequest.side}
-                      </small>
-                    ) : null}
-                    {intent.monitoring?.state ? (
-                      <small>
-                        Monitor {intent.monitoring.state} · stop {formatPercent(intent.monitoring.stopLossProbability)} · take {formatPercent(intent.monitoring.takeProfitProbability)}
-                      </small>
-                    ) : null}
-                    {precheckMessage ? (
-                      <small>{precheckMessage}</small>
-                    ) : null}
-                  </button>
-                  <div className="trade-history-actions">
-                    <button type="button" className="ghost-button" onClick={() => void handleRestoreTradeIntent(intent)}>
-                      Edit
-                    </button>
-                    <button
-                      type="button"
-                      className="secondary-button secondary-button-muted"
-                      onClick={() => void handleExecuteTradeIntent(intent)}
-                      disabled={isMutatingHistory || intent.status === 'tracking'}
-                      title={precheckMessage ?? 'Submit live buy order and transition to actively trading.'}
-                    >
-                      {intent.status === 'tracking' ? 'Actively Trading' : 'Start Trading'}
-                    </button>
-                    <button
-                      type="button"
-                      className="ghost-button"
-                      onClick={() => void handleDeleteTradeIntent(intent.id)}
-                      disabled={isMutatingHistory}
-                    >
-                      Delete
-                    </button>
-                  </div>
-                      </>
-                    );
-                  })()}
-                </article>
-              ))}
+                return (
+                  <article key={intent.id} className="trade-history-item trade-center-item">
+                    <div className="panel-heading panel-heading-inline">
+                      <div>
+                        <p className="eyebrow">{intent.eventTitle ?? intent.eventSlug}</p>
+                        <h2>{intent.outcomeLabel} in {intent.marketQuestion}</h2>
+                      </div>
+                      <span className={isTracking ? getMonitoringStateChipClass(monitoringState) : 'market-chip'}>
+                        {isTracking ? formatMonitoringStateLabel(monitoringState) : formatIntentStatus(intent)}
+                      </span>
+                    </div>
+
+                    <div className="trade-preview-grid">
+                      {isTracking ? (
+                        <>
+                          <article>
+                            <span>Current probability</span>
+                            <strong>{formatPercent(currentProbability)}</strong>
+                          </article>
+                          <article>
+                            <span>Entry probability</span>
+                            <strong>{formatPercent(entryProbability)}</strong>
+                          </article>
+                          <article>
+                            <span>Drift from entry</span>
+                            <strong>{formatSignedPercent(drift)}</strong>
+                          </article>
+                          <article>
+                            <span>Unrealized P/L</span>
+                            <strong className={pnlClassName}>
+                              {formatSignedCurrency(unrealizedPnl.dollars)}
+                              {typeof unrealizedPnl.percent === 'number' ? ` (${formatSignedPercent(unrealizedPnl.percent)})` : ''}
+                            </strong>
+                          </article>
+                          <article>
+                            <span>Stop-loss</span>
+                            <strong>{formatPercent(intent.monitoring?.stopLossProbability)}</strong>
+                          </article>
+                          <article>
+                            <span>Take-profit</span>
+                            <strong>{formatPercent(intent.monitoring?.takeProfitProbability)}</strong>
+                          </article>
+                          <article>
+                            <span>Last evaluation</span>
+                            <strong>{formatDateTime(intent.monitoring?.lastEvaluationAt)}</strong>
+                          </article>
+                          <article>
+                            <span>Entry order</span>
+                            <strong>{formatOrderId(intent.executionRequest?.venueOrderId)}</strong>
+                          </article>
+                          <article>
+                            <span>Shares filled</span>
+                            <strong>{typeof intent.position?.sharesFilled === 'number' ? intent.position.sharesFilled.toFixed(2) : 'n/a'}</strong>
+                          </article>
+                        </>
+                      ) : (
+                        <>
+                          <article>
+                            <span>Stake</span>
+                            <strong>{formatCurrency(intent.tradeAmount)}</strong>
+                          </article>
+                          <article>
+                            <span>Confirmed</span>
+                            <strong>{formatDateTime(intent.confirmedAt)}</strong>
+                          </article>
+                          <article>
+                            <span>Stop-loss</span>
+                            <strong>{formatPercent(intent.tradeSuggestion?.stopLossProbability)}</strong>
+                          </article>
+                          <article>
+                            <span>Take-profit</span>
+                            <strong>{formatPercent(intent.tradeSuggestion?.takeProfitProbability)}</strong>
+                          </article>
+                          <article>
+                            <span>Entry order</span>
+                            <strong>{formatOrderId(intent.executionRequest?.venueOrderId)}</strong>
+                          </article>
+                          <article>
+                            <span>Exit order</span>
+                            <strong>{formatOrderId(intent.exitRequest?.venueOrderId)}</strong>
+                          </article>
+                        </>
+                      )}
+                    </div>
+
+                    {isTracking ? (
+                      <p className="trade-status-copy">{intent.monitoring?.notes ?? 'Monitoring live price movement.'}</p>
+                    ) : (
+                      <p className="trade-status-copy">
+                        {intent.executionRequest?.readyForExecution
+                          ? `Request ready · ${intent.executionRequest.orderType} · ${intent.executionRequest.side}`
+                          : precheckMessage ?? 'Intent is ready for review.'}
+                      </p>
+                    )}
+
+                    <div className="trade-history-actions">
+                      {isTracking ? (
+                        <>
+                          <button
+                            type="button"
+                            className="secondary-button"
+                            onClick={() => void handleSellTrackedIntent(intent)}
+                            disabled={isMutatingHistory}
+                          >
+                            Sell Now
+                          </button>
+                          <button
+                            type="button"
+                            className="ghost-button"
+                            onClick={() => void handleStopTrackedIntent(intent)}
+                            disabled={isMutatingHistory}
+                          >
+                            Stop Trade
+                          </button>
+                          <button
+                            type="button"
+                            className="ghost-button"
+                            onClick={() => void handleRestoreTradeIntent(intent)}
+                            disabled={isMutatingHistory}
+                          >
+                            Open Intent
+                          </button>
+                        </>
+                      ) : (
+                        <>
+                          <button type="button" className="ghost-button" onClick={() => void handleRestoreTradeIntent(intent)}>
+                            Edit
+                          </button>
+                          <button
+                            type="button"
+                            className="secondary-button secondary-button-muted"
+                            onClick={() => void handleExecuteTradeIntent(intent)}
+                            disabled={isMutatingHistory || intent.status === 'tracking'}
+                            title={precheckMessage ?? 'Submit live buy order and transition to actively trading.'}
+                          >
+                            Start Trading
+                          </button>
+                          <button
+                            type="button"
+                            className="ghost-button"
+                            onClick={() => void handleDeleteTradeIntent(intent.id)}
+                            disabled={isMutatingHistory}
+                          >
+                            Delete
+                          </button>
+                        </>
+                      )}
+                    </div>
+                  </article>
+                );
+              })}
             </div>
           )}
         </section>
