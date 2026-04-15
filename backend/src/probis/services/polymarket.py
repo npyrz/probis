@@ -1,61 +1,17 @@
 from __future__ import annotations
 
-import asyncio
 import json
-import logging
-import re
+from typing import Any, Dict, List, Optional
 from urllib.parse import urlparse
-from typing import Any
-from typing import Optional
-from typing import Union
 
 import httpx
 
-from ..bus import EventBus, InMemoryBus
-from ..config import settings
-from ..models import MarketDescriptor
+from ..config import Settings
+from ..models import MarketOutcome, MarketSnapshot
 
 
-log = logging.getLogger(__name__)
-
-PRICE_CHANNEL = "prices"
-SPORT_CODE_LABELS = {
-    "nba": "NBA",
-    "nfl": "NFL",
-    "mlb": "MLB",
-    "nhl": "NHL",
-    "ufc": "UFC",
-    "epl": "EPL",
-    "mls": "MLS",
-    "ucl": "UCL",
-    "wta": "WTA",
-    "atp": "ATP",
-    "cbb": "CBB",
-    "cfb": "CFB",
-    "wcbb": "WCBB",
-    "cs2": "CS2",
-    "lol": "LoL",
-    "cod": "COD",
-    "ipl": "IPL",
-    "lal": "LaLiga",
-    "bun": "Bundesliga",
-    "sea": "Serie A",
-    "masters": "Masters",
-    "rbcheri": "RBC Heritage",
-}
-PREFERRED_DESK_VIEWS = (
-    "NBA",
-    "MLB",
-    "NHL",
-    "UFC",
-    "ATP",
-    "WTA",
-    "EPL",
-    "MLS",
-    "UCL",
-    "NFL",
-    "Politics",
-)
+class MarketLookupError(RuntimeError):
+    pass
 
 
 def _safe_float(value: Any) -> Optional[float]:
@@ -67,203 +23,124 @@ def _safe_float(value: Any) -> Optional[float]:
         return None
 
 
-def _mid_price(best_bid: Optional[float], best_ask: Optional[float], last_trade: Optional[float]) -> Optional[float]:
-    if best_bid is not None and best_ask is not None and best_bid > 0 and best_ask > 0:
-        return (best_bid + best_ask) / 2.0
-    if best_bid is not None and best_bid > 0:
-        return best_bid
-    if best_ask is not None and best_ask > 0:
-        return best_ask
-    return last_trade
-
-
-def _titleize_code(value: str) -> str:
-    parts = re.split(r"[^a-z0-9]+", value.lower())
-    if not parts:
-        return value.upper()
-    acronyms = {"nba", "nfl", "mlb", "nhl", "ufc", "epl", "mls", "ucl", "wta", "atp", "ipl", "cs2", "lol", "cod", "cfb", "cbb", "wcbb"}
-    formatted: list[str] = []
-    for part in parts:
-        if not part:
-            continue
-        formatted.append(part.upper() if part in acronyms else part.capitalize())
-    return " ".join(formatted) if formatted else value.upper()
-
-
-def _build_sport_labels(sports_payload: Any, series_payload: Any) -> dict[str, str]:
-    sports = []
-    if isinstance(sports_payload, dict):
-        sports = sports_payload.get("sports") or []
-
-    series = []
-    if isinstance(series_payload, dict):
-        series = series_payload.get("series") or []
-
-    series_by_id = {
-        str(item.get("id")): str(item.get("title"))
-        for item in series
-        if isinstance(item, dict) and item.get("id") and item.get("title")
-    }
-    series_by_slug = {
-        str(item.get("slug")): str(item.get("title"))
-        for item in series
-        if isinstance(item, dict) and item.get("slug") and item.get("title")
-    }
-
-    labels: dict[str, str] = {}
-    for item in sports:
-        if not isinstance(item, dict):
-            continue
-        code = str(item.get("sport") or "").strip().lower()
-        if not code:
-            continue
-        series_id = str(item.get("series") or "").strip()
-        label = SPORT_CODE_LABELS.get(code) or series_by_id.get(series_id) or series_by_slug.get(code) or _titleize_code(code)
-        labels[code] = label
-    return labels
-
-
-def _infer_market_type(slug: str, sport_labels: dict[str, str]) -> Optional[str]:
-    slug_lower = slug.lower()
-    parts = [part for part in re.split(r"[^a-z0-9]+", slug_lower) if part]
-    part_set = set(parts)
-    for code in sorted(sport_labels, key=len, reverse=True):
-        if code in part_set or f"-{code}-" in f"-{slug_lower}-":
-            return sport_labels[code]
-    return None
-
-
-def _diversify_sports_markets(markets: list[dict[str, Any]], *, sport_labels: dict[str, str], limit: int) -> list[dict[str, Any]]:
-    grouped: dict[str, list[dict[str, Any]]] = {}
-    for item in markets:
-        slug = str(item.get("slug") or item.get("marketSlug") or "")
-        label = _infer_market_type(slug, sport_labels) or "Sports"
-        grouped.setdefault(label, []).append(item)
-
-    ordered_labels = [label for label in PREFERRED_DESK_VIEWS if label in grouped]
-    ordered_labels.extend(sorted(label for label in grouped if label not in set(ordered_labels)))
-
-    diversified: list[dict[str, Any]] = []
-    index = 0
-    while len(diversified) < limit:
-        added = False
-        for label in ordered_labels:
-            items = grouped[label]
-            if index < len(items):
-                diversified.append(items[index])
-                added = True
-                if len(diversified) >= limit:
-                    break
-        if not added:
-            break
-        index += 1
-    return diversified
-
-
-def _interleave_market_groups(groups: list[list[dict[str, Any]]], *, limit: int) -> list[dict[str, Any]]:
-    merged: list[dict[str, Any]] = []
-    seen: set[str] = set()
-    index = 0
-    while len(merged) < limit:
-        added = False
-        for group in groups:
-            if index >= len(group):
-                continue
-            item = group[index]
-            slug = str(item.get("slug") or item.get("marketSlug") or "")
-            if not slug or slug in seen:
-                continue
-            seen.add(slug)
-            merged.append(item)
-            added = True
-            if len(merged) >= limit:
-                break
-        if not added:
-            break
-        index += 1
-    return merged
-
-
-def _parse_outcome_strings(value: Any) -> list[str]:
+def _as_list(value: Any) -> List[Any]:
     if isinstance(value, list):
-        return [str(item) for item in value if item not in (None, "")]
+        return value
     if isinstance(value, str):
         try:
             parsed = json.loads(value)
         except json.JSONDecodeError:
-            return [value]
-        if isinstance(parsed, list):
-            return [str(item) for item in parsed if item not in (None, "")]
+            return []
+        return parsed if isinstance(parsed, list) else []
     return []
 
 
-def _parse_outcome_prices(value: Any) -> list[float]:
-    parsed_values = value if isinstance(value, list) else _parse_outcome_strings(value)
-    prices: list[float] = []
-    for item in parsed_values:
-        price = _safe_float(item)
-        if price is not None:
-            prices.append(price)
-    return prices
+class PolymarketService:
+    def __init__(self, settings: Settings):
+        self._settings = settings
 
+    async def lookup_market(self, url: str) -> MarketSnapshot:
+        slug = self._extract_slug(url)
+        if not slug:
+            raise MarketLookupError("Could not extract a market slug from the provided URL")
 
-def _search_query_candidates(value: str) -> list[str]:
-    candidates: list[str] = []
-    normalized = value.strip()
-    if normalized:
-        candidates.append(normalized)
+        async with httpx.AsyncClient(base_url=self._settings.polymarket_gamma_api_base, timeout=10.0) as client:
+            market_records = await self._fetch_records(client, "/markets", {"slug": slug})
+            if market_records:
+                return self._normalize_market(url=url, market=market_records[0], event=None)
 
-    try:
-        parsed = urlparse(normalized)
-    except ValueError:
-        return candidates
+            event_records = await self._fetch_records(client, "/events", {"slug": slug})
+            if event_records:
+                event = event_records[0]
+                event_markets = event.get("markets") or []
+                market = self._pick_event_market(event_markets)
+                if market is None:
+                    raise MarketLookupError("Event found, but it does not expose a tradable market snapshot")
+                return self._normalize_market(url=url, market=market, event=event)
 
-    if not parsed.scheme or not parsed.netloc:
-        return candidates
+        raise MarketLookupError("No Polymarket event or market matched that URL")
 
-    path_segments = [segment for segment in parsed.path.split("/") if segment]
-    if not path_segments:
-        return candidates
-
-    event_segment = path_segments[-1].strip()
-    if not event_segment:
-        return candidates
-
-    candidates.append(event_segment)
-    candidates.append(event_segment.replace("-", " ").replace("_", " "))
-
-    seen: set[str] = set()
-    deduped: list[str] = []
-    for candidate in candidates:
-        key = candidate.strip().lower()
-        if not key or key in seen:
-            continue
-        seen.add(key)
-        deduped.append(candidate.strip())
-    return deduped
-
-
-class PolymarketClient:
-    async def search_markets(self, *, query: str, limit: int) -> list[MarketDescriptor]:
-        search_candidates = _search_query_candidates(query)
-        if not search_candidates:
-            return []
-
-        async with httpx.AsyncClient(base_url=settings.polymarket_search_base_url, timeout=10.0) as client:
-            for candidate in search_candidates:
-                response = await client.get(
-                    "/v1/search",
-                    params={
-                        "query": candidate,
-                        "limit": max(1, limit),
-                    },
-                )
-                response.raise_for_status()
-                payload = response.json() if response.content else {}
-                markets = self._search_results_to_markets(payload, limit=limit)
-                if markets:
-                    return markets
+    async def _fetch_records(
+        self,
+        client: httpx.AsyncClient,
+        path: str,
+        params: Dict[str, Any],
+    ) -> List[Dict[str, Any]]:
+        response = await client.get(path, params=params)
+        response.raise_for_status()
+        payload = response.json()
+        if isinstance(payload, list):
+            return [item for item in payload if isinstance(item, dict)]
+        if isinstance(payload, dict):
+            records = payload.get("data") or payload.get("markets") or payload.get("events") or []
+            return [item for item in records if isinstance(item, dict)]
         return []
+
+    @staticmethod
+    def _pick_event_market(markets: List[Any]) -> Optional[Dict[str, Any]]:
+        normalized = [item for item in markets if isinstance(item, dict)]
+        for item in normalized:
+            if item.get("active") and not item.get("closed"):
+                return item
+        return normalized[0] if normalized else None
+
+    @staticmethod
+    def _extract_slug(value: str) -> str:
+        raw = value.strip()
+        if not raw:
+            return ""
+        parsed = urlparse(raw)
+        if parsed.scheme and parsed.netloc:
+            segments = [segment for segment in parsed.path.split("/") if segment]
+            if not segments:
+                return ""
+            if segments[0] in {"event", "market", "markets"} and len(segments) >= 2:
+                return segments[1]
+            return segments[-1]
+        return raw
+
+    def _normalize_market(
+        self,
+        *,
+        url: str,
+        market: Dict[str, Any],
+        event: Optional[Dict[str, Any]],
+    ) -> MarketSnapshot:
+        outcome_names = _as_list(market.get("outcomes"))
+        outcome_prices = _as_list(market.get("outcomePrices"))
+        outcomes: List[MarketOutcome] = []
+        for index, name in enumerate(outcome_names):
+            price = _safe_float(outcome_prices[index] if index < len(outcome_prices) else None)
+            if price is None:
+                continue
+            outcomes.append(MarketOutcome(name=str(name), price=price))
+
+        if not outcomes:
+            fallback_price = _safe_float(market.get("lastTradePrice")) or 0.5
+            outcomes = [
+                MarketOutcome(name="Yes", price=fallback_price),
+                MarketOutcome(name="No", price=max(0.0, min(1.0, 1.0 - fallback_price))),
+            ]
+
+        return MarketSnapshot(
+            url=url,
+            title=str((event or {}).get("title") or market.get("question") or market.get("slug") or "Untitled market"),
+            question=str(market.get("question") or (event or {}).get("title") or ""),
+            slug=str(market.get("slug") or ""),
+            event_title=None if event is None else str(event.get("title") or ""),
+            event_slug=None if event is None else str(event.get("slug") or ""),
+            category=str((event or {}).get("category") or market.get("category") or "General"),
+            description=str(market.get("description") or (event or {}).get("description") or ""),
+            liquidity=_safe_float(market.get("liquidity")),
+            volume=_safe_float(market.get("volume")),
+            volume_24hr=_safe_float(market.get("volume24hr")),
+            end_date=str(market.get("endDate") or (event or {}).get("endDate") or "") or None,
+            resolution_source=str(market.get("resolutionSource") or (event or {}).get("resolutionSource") or "") or None,
+            outcomes=outcomes,
+            source_status="live",
+            raw_market=market,
+            raw_event=event,
+        )
 
     async def fetch_active_markets(self, *, limit: int) -> list[MarketDescriptor]:
         from polymarket_us import PolymarketUS

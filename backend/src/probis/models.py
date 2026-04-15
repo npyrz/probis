@@ -1,131 +1,96 @@
 from __future__ import annotations
 
 from datetime import datetime
-from typing import Literal
-from typing import Optional
+from typing import Any, Dict, List, Literal, Optional
 
 from pydantic import BaseModel, Field
 
 
-class PriceTick(BaseModel):
-    ts: datetime = Field(default_factory=datetime.utcnow)
-    source: Literal["polymarket", "sim"]
-    market: str
-    outcome: str
+class HealthResponse(BaseModel):
+    ok: bool
+    app: str
+    environment: str
+    version: str
+    timestamp: datetime
+
+
+class AnalyzeRequest(BaseModel):
+    url: str = Field(min_length=8)
+
+
+class AccountSummary(BaseModel):
+    label: str
+    mode: Literal["paper", "live-ready"]
+    trading_ready: bool
+    api_key_configured: bool
+    paper_balance: float
+    buying_power: float
+    max_trade_risk_pct: float
+    max_daily_loss: float
+    notes: List[str] = Field(default_factory=list)
+
+
+class MarketOutcome(BaseModel):
+    name: str
     price: float = Field(ge=0.0, le=1.0)
 
 
-class Signal(BaseModel):
-    ts: datetime = Field(default_factory=datetime.utcnow)
-    source: Literal["news", "twitter", "manual"]
-    event: str
-    sentiment: float = Field(ge=-1.0, le=1.0)
-    confidence: float = Field(ge=0.0, le=1.0)
-
-
-class EdgeDecision(BaseModel):
-    ts: datetime = Field(default_factory=datetime.utcnow)
-    market: str
-    outcome: str
-    your_probability: float = Field(ge=0.0, le=1.0)
-    market_probability: float = Field(ge=0.0, le=1.0)
-    edge: float
-    should_trade: bool
-
-
-class OrderRequest(BaseModel):
-    ts: datetime = Field(default_factory=datetime.utcnow)
-    market: str
-    outcome: str
-    side: Literal["buy", "sell"]
-    size: float = Field(gt=0.0)
-    limit_price: float = Field(ge=0.0, le=1.0)
-    session_id: Optional[str] = None
-    reason: str = "edge"
-
-
-class TradeFill(BaseModel):
-    ts: datetime = Field(default_factory=datetime.utcnow)
-    market: str
-    outcome: str
-    side: Literal["buy", "sell"]
-    size: float
-    price: float
-    venue: Literal["polymarket", "sim"]
-    order_id: str
-    session_id: Optional[str] = None
-    reason: str = "edge"
-
-
-class MarketDescriptor(BaseModel):
-    market: str
+class MarketSnapshot(BaseModel):
+    url: str
     title: str
-    category: str
-    subtitle: Optional[str] = None
-    description: Optional[str] = None
-    market_type: Optional[str] = None
-    outcome: str = "YES"
-    outcomes: list[str] = Field(default_factory=list)
-    outcome_prices: list[float] = Field(default_factory=list)
-    venue: Literal["polymarket", "sim"] = "sim"
-    reference_price: float = 0.5
-    condition_id: Optional[str] = None
-    asset_id: Optional[str] = None
-    no_asset_id: Optional[str] = None
-    active: bool = True
-    closed: bool = False
-    best_bid: Optional[float] = None
-    best_ask: Optional[float] = None
-    last_trade_price: Optional[float] = None
-    min_tick_size: Optional[float] = None
-    start_date: Optional[str] = None
+    question: str
+    slug: str
+    event_title: Optional[str] = None
+    event_slug: Optional[str] = None
+    category: Optional[str] = None
+    description: str = ""
+    liquidity: Optional[float] = None
+    volume: Optional[float] = None
+    volume_24hr: Optional[float] = None
     end_date: Optional[str] = None
-    created_at: Optional[str] = None
-    updated_at: Optional[str] = None
-    image: Optional[str] = None
+    resolution_source: Optional[str] = None
+    outcomes: List[MarketOutcome] = Field(default_factory=list)
+    source_status: Literal["live"] = "live"
+    raw_market: Dict[str, Any] = Field(default_factory=dict)
+    raw_event: Optional[Dict[str, Any]] = None
 
 
-class MonitorSettings(BaseModel):
-    edge_threshold: float = Field(default=0.05, ge=0.0, le=1.0)
-    exit_threshold: float = Field(default=0.01, ge=0.0, le=1.0)
-    order_size: float = Field(default=1.0, gt=0.0)
-    max_position: float = Field(default=3.0, gt=0.0)
-    take_profit: float = Field(default=0.08, ge=0.0, le=1.0)
-    stop_loss: float = Field(default=0.04, ge=0.0, le=1.0)
-    entry_price_min: Optional[float] = Field(default=None, ge=0.0, le=1.0)
-    entry_price_max: Optional[float] = Field(default=None, ge=0.0, le=1.0)
-    add_price: Optional[float] = Field(default=None, ge=0.0, le=1.0)
-    add_order_size: Optional[float] = Field(default=None, gt=0.0)
-    trim_price: Optional[float] = Field(default=None, ge=0.0, le=1.0)
-    trim_order_size: Optional[float] = Field(default=None, gt=0.0)
-    take_profit_price: Optional[float] = Field(default=None, ge=0.0, le=1.0)
-    stop_loss_price: Optional[float] = Field(default=None, ge=0.0, le=1.0)
-    author_notes: str = "Deterministic edge-based monitoring."
+class ExternalSignal(BaseModel):
+    label: str
+    direction: Literal["positive", "neutral", "risk"]
+    score: float = Field(ge=0.0, le=1.0)
+    detail: str
 
 
-class StartMonitorRequest(BaseModel):
-    market: str
-    outcome: str = "YES"
-    settings: MonitorSettings = Field(default_factory=MonitorSettings)
+class AISynthesis(BaseModel):
+    mode: str
+    summary: str
+    drivers: List[str] = Field(default_factory=list)
+    caveats: List[str] = Field(default_factory=list)
 
 
-class MonitorSession(BaseModel):
-    session_id: str
-    market: str
-    outcome: str
-    title: str
-    status: Literal["running", "aborted", "completed"] = "running"
-    settings: MonitorSettings
-    started_at: datetime = Field(default_factory=datetime.utcnow)
-    stopped_at: Optional[datetime] = None
-    reason: Optional[str] = None
-    last_action: str = "Monitoring"
-    last_price: Optional[float] = None
+class TradePlan(BaseModel):
+    action: Literal["buy_yes", "buy_no", "wait"]
+    target_outcome: str
+    market_probability: float = Field(ge=0.0, le=1.0)
+    model_probability: float = Field(ge=0.0, le=1.0)
+    edge_pct: float
+    conviction: float = Field(ge=0.0, le=1.0)
+    entry_window: str
+    sizing: str
+    invalidation: str
+    rationale: List[str] = Field(default_factory=list)
+    risk_flags: List[str] = Field(default_factory=list)
 
 
-class PolymarketAccountSnapshot(BaseModel):
-    status: Literal["disconnected", "connected", "error"] = "disconnected"
-    configured: bool = False
+class AnalyzeResponse(BaseModel):
+    generated_at: datetime
+    account: AccountSummary
+    market: MarketSnapshot
+    external_signals: List[ExternalSignal] = Field(default_factory=list)
+    ai_synthesis: AISynthesis
+    trade_plan: TradePlan
+    source_notes: List[str] = Field(default_factory=list)
     trading_ready: bool = False
     key_id_fingerprint: Optional[str] = None
     balance_usd: Optional[str] = None

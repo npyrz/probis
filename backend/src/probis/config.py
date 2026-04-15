@@ -1,36 +1,44 @@
 from __future__ import annotations
 
-from pydantic_settings import BaseSettings, SettingsConfigDict
+from functools import lru_cache
 
-from typing import Optional
+from pydantic import Field
+from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
 class Settings(BaseSettings):
-    model_config = SettingsConfigDict(env_prefix="", env_file=".env", extra="ignore")
+    model_config = SettingsConfigDict(env_file=".env", env_file_encoding="utf-8", extra="ignore")
 
-    probis_env: str = "dev"
-    log_level: str = "INFO"
+    app_name: str = "Probis"
+    environment: str = Field(default="dev", validation_alias="PROBIS_ENV")
+    log_level: str = Field(default="INFO", validation_alias="LOG_LEVEL")
+    host: str = Field(default="127.0.0.1", validation_alias="PROBIS_HOST")
+    port: int = Field(default=8000, validation_alias="PROBIS_PORT")
+    frontend_origin: str = Field(default="http://127.0.0.1:5173", validation_alias="FRONTEND_ORIGIN")
 
-    edge_threshold: float = 0.05
+    edge_threshold: float = Field(default=0.04, validation_alias="EDGE_THRESHOLD")
+    account_label: str = Field(default="Primary", validation_alias="PROBIS_ACCOUNT_LABEL")
+    paper_cash: float = Field(default=25000.0, validation_alias="PROBIS_PAPER_CASH")
+    max_trade_risk_pct: float = Field(default=0.02, validation_alias="PROBIS_MAX_TRADE_RISK_PCT")
+    max_daily_loss: float = Field(default=1500.0, validation_alias="PROBIS_MAX_DAILY_LOSS")
+    ai_mode: str = Field(default="template", validation_alias="PROBIS_AI_MODE")
 
-    redis_url: str = "redis://localhost:6379/0"
-    database_url: Optional[str] = None
+    polymarket_gamma_api_base: str = Field(
+        default="https://gamma-api.polymarket.com",
+        validation_alias="POLYMARKET_GAMMA_API_BASE",
+    )
+    polymarket_key_id: str = Field(default="", validation_alias="POLYMARKET_KEY_ID")
+    polymarket_secret_key: str = Field(default="", validation_alias="POLYMARKET_SECRET_KEY")
 
-    polymarket_key_id: Optional[str] = None
-    polymarket_secret_key: Optional[str] = None
-    polymarket_market_limit: int = 500
-    polymarket_discovery_interval_seconds: int = 180
-    polymarket_search_base_url: str = "https://gateway.polymarket.us"
-    polymarket_search_limit: int = 10
+    @property
+    def trading_ready(self) -> bool:
+        return bool(self.polymarket_key_id and self.polymarket_secret_key)
 
-    news_api_key: Optional[str] = None
-    news_api_base_url: str = "https://newsapi.org/v2"
-    news_api_everything_endpoint: str = "/everything"
-    news_results_limit: int = 5
-
-    ollama_base_url: str = "http://localhost:11434"
-    ollama_model: str = "gemma2:2b"
-    llm_interval_seconds: int = 60
+    @property
+    def trading_mode(self) -> str:
+        return "live-ready" if self.trading_ready else "paper"
 
 
-settings = Settings()
+@lru_cache(maxsize=1)
+def get_settings() -> Settings:
+    return Settings()

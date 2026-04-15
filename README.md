@@ -1,8 +1,15 @@
 # Probis
-Probis is a low-latency, AI-assisted trading system for real-time prediction markets. It combines live market data, probabilistic modeling, and LLM-based signal extraction to identify mispriced events and execute trades automatically.
 
+Probis has been reset to a clean terminal-first foundation.
 
-The project is designed around a simple principle: keep the hot path small. Market data comes in, state updates in memory, the model computes edge, and the execution layer decides whether to act. LLM usage is isolated to slower signal-enrichment workflows and is not part of the execution brain.
+The current app focuses on a tighter operator loop:
+
+- Show account and risk posture in a Bloomberg-style terminal.
+- Accept a Polymarket bet URL.
+- Pull the public Polymarket Gamma API payload for that market.
+- Run deterministic pricing and risk heuristics.
+- Surface external-event hooks and AI synthesis text without putting them on the execution path.
+- Output a trade plan such as `buy_yes`, `buy_no`, or `wait`.
 
 ## Start
 
@@ -10,214 +17,61 @@ The project is designed around a simple principle: keep the hot path small. Mark
 ./dev.sh
 ```
 
-That single command starts the backend and frontend together, prepares missing local dependencies when needed, and shuts both services down cleanly when you stop the process.
+That starts:
 
-## System Design
+- FastAPI backend at `http://127.0.0.1:8000`
+- Vite frontend at `http://127.0.0.1:5173`
 
-```mermaid
-flowchart LR
-	A[Polymarket US API] --> B[Market Discovery]
-	C[Polymarket US WebSocket] --> D[Live Quote Ingestion]
-	B --> E[In-Memory Market State]
-	D --> E
-	F[LLM Signal Layer] --> G[Structured Signals]
-	G --> H[Processing Engine]
-	E --> H
-	H --> I[Decision Engine]
-	I --> J[Execution Engine]
-	J --> K[Session State / Logs / Fills]
-	K --> L[React Operator Terminal]
-```
-
-## Operator Flow
-
-### Product Framing
-
-1. Connect account.
-2. Pick market.
-3. Configure strategy and limits.
-4. Let the engine manage entry, scaling, monitoring, and exit.
-5. Auto-sell on target, stop, or rule trigger.
-6. Manual exit always available.
-
-The intended operating model is constrained automation, not open-ended autonomous trading. The user defines what the system is allowed to do, and the engine executes only within those permissions and limits.
-
-```mermaid
-sequenceDiagram
-	participant U as Operator
-	participant T as React Terminal
-	participant A as FastAPI Backend
-	participant P as Polymarket
-
-	U->>T: Select market and thresholds
-	T->>A: Start monitor session
-	A->>P: Subscribe to live quotes (Polymarket US)
-	P-->>A: Best bid / ask / trade updates
-	A->>A: Compute model probability and edge
-	A-->>T: Stream terminal updates
-	U->>T: Abort session if needed
-	T->>A: Abort request
-	A-->>T: Session stopped
-```
-
-### Intended Execution Model
-
-- The operator authorizes strategies, markets, and limits.
-- The backend owns account connectivity and execution.
-- The strategy engine monitors entry, add, hold, and exit conditions.
-- Positions close automatically on rule satisfaction or manually on command.
-- LLM outputs inform signals, but deterministic trading rules make execution decisions.
-
-## Architecture
+## Current Product Surface
 
 ### Frontend
 
-The frontend is a React operator terminal focused on clarity under live conditions. It presents the active Polymarket board, session controls, live quote context, and operator tape in a single workflow.
+The React UI is now a single operator terminal with:
 
-Key responsibilities:
-
-- Display live market catalog and quote context.
-- Let the operator choose a market and configure thresholds.
-- Start and abort monitoring sessions.
-- Stream fills, logs, session state, and model-vs-market edge.
+- Account mode, book size, and risk caps
+- URL-driven bet lookup
+- Market summary and outcome tape
+- Deterministic trade plan panel
+- AI synthesis panel
+- Raw Polymarket market and event JSON
 
 ### Backend
 
-The backend is a FastAPI service with asyncio workers and an in-memory state core.
+The FastAPI service now exposes a smaller contract:
 
-Key responsibilities:
+- `GET /api/health`
+- `GET /api/account`
+- `POST /api/analyze`
 
-- Discover active Polymarket US markets.
-- Subscribe to the Polymarket US market websocket.
-- Maintain live market state in memory.
-- Run deterministic processing and decision logic.
-- Manage monitor sessions and stream terminal updates.
-- Place real signed orders via the Polymarket US API.
+`/api/analyze` accepts a Polymarket URL, resolves it against the public Gamma API, normalizes the response, and returns:
 
-### Data Sources
+- account summary
+- market snapshot
+- external-signal placeholders
+- AI synthesis text
+- deterministic trade plan
 
-Current live inputs:
+## Design Direction
 
-- Polymarket US API for market discovery (`polymarket-us` SDK).
-- Polymarket US market websocket for real-time best bid, best ask, and trade-driven price updates.
-- Authenticated Polymarket US account refresh for server-side balance, open orders, and position visibility.
+- Deterministic pricing and risk logic stay on the hot path.
+- AI remains advisory.
+- Operator visibility comes before automation.
+- Raw source payloads stay exposed in the terminal.
+- The codebase is intentionally small so the next iteration can be built deliberately.
 
-Current optional input:
+## Environment
 
-- Ollama/Gemma signal extraction layer, kept off the critical path.
+Your real backend environment file is preserved at `backend/.env`.
 
-## Codebase Structure
+The example contract lives in `backend/.env.example`. Trading credentials remain optional. Without them, the UI runs in paper mode.
 
-- `dev.sh` : one-command local launcher for the full stack.
-- `backend/src/probis/main.py` : backend startup and worker orchestration.
-- `backend/src/probis/api.py` : REST and websocket API surface for the terminal.
-- `backend/src/probis/controller.py` : live market catalog management and session lifecycle.
-- `backend/src/probis/services/polymarket.py` : Polymarket US discovery and websocket ingestion.
-- `backend/src/probis/workers.py` : processing, decision, execution, and signal workers.
-- `backend/src/probis/state.py` : shared in-memory state used across the backend runtime.
-- `frontend/src/App.tsx` : primary operator terminal UI.
-- `frontend/src/lib/api.ts` : frontend API and websocket client bindings.
-- `frontend/src/lib/types.ts` : shared frontend data contracts.
+## Next Build Targets
 
-## Runtime Model
-
-### Live Today
-
-- Market discovery is live via the Polymarket US API.
-- Quote display is live via the Polymarket US websocket.
-- Session control is live.
-- Edge computation is deterministic.
-- Terminal updates stream in real time.
-- Real signed order placement is live via the Polymarket US API.
-
-### Account Connection
-
-- The backend exposes a server-side Polymarket US account status path at the terminal level.
-- Account refresh uses `POLYMARKET_KEY_ID` and `POLYMARKET_SECRET_KEY` (Ed25519 API keys generated at polymarket.us/developer).
-- The frontend never receives credentials; it only triggers a backend refresh and renders the resulting status snapshot.
-- Execution is gated on `trading_ready`; the backend blocks order placement until account credentials are configured and the connection is confirmed.
-
-## Roadmap / Upcoming Features
-
-### Account & Trading
-
-#### Polymarket Account Integration
-
-- ✅ Securely connect a Polymarket US account via API key.
-- ✅ Surface account state, balances, open orders, and positions inside the terminal.
-- ✅ Authenticated trading via the official `polymarket-us` SDK.
-
-#### Automated Trade Execution
-
-- ✅ Real signed order placement via the Polymarket US API.
-- Track open orders and positions in real time.
-- Add order amendment and cancellation flows.
-
-### Data & Signals
-
-#### Live News & Chatter Feed
-
-- Aggregate real-time news and social chatter.
-- Surface relevant signals for active markets.
-- Tie external events to currently monitored strategies.
-
-#### Statistical / Probability Model
-
-- Convert raw market and signal data into calibrated probabilities.
-- Detect mispriced markets through edge estimation.
-- Improve decision quality with more robust statistical modeling.
-
-### AI Integration
-
-#### LLM Signal Extraction
-
-- Integrate a local LLM such as Gemma.
-- Use it for sentiment analysis, event interpretation, and structured signal generation.
-- Feed LLM outputs into probabilistic models rather than direct execution logic.
-
-### Trading Controls
-
-#### Custom Trading Settings
-
-- Define minimum and maximum price thresholds for trade entry.
-- Set capital allocation limits.
-- Control trade count, trade frequency, and position sizing.
-- Add user-configurable money limits and per-strategy guardrails.
-
-#### Strategy Authorization System
-
-- Let users select which trade types and strategies are allowed to run.
-- Run each approved strategy independently under its own constraints.
-- Keep each strategy active until it exits, sells, or the user ends it manually.
-- Bound model behavior to approved trade types, capital limits, and exit rules.
-
-### Strategy Engine
-
-#### Persistent Trade Lifecycle
-
-- Support a full lifecycle of `entry -> monitoring -> exit`.
-- Add persistent tracking for strategy state across sessions.
-- Make strategy-level overrides and stop controls first-class features.
-
-#### Manual Intervention Support
-
-- Stop any active strategy at any time.
-- Allow operator intervention without breaking system state.
-- Keep the operator terminal as the primary control surface for risk management.
-
-## Design Principles
-
-- Event-driven over polling.
-- Deterministic logic over LLM decision-making.
-- In-memory state over repeated storage reads.
-- Clear operator control over opaque automation.
-- Small hot path over broad system complexity.
-
-## Stack
-
-- Backend: Python 3.11+, FastAPI, asyncio, NumPy
-- Frontend: React, TypeScript, Vite
-- Live Market Data: Polymarket US API and websocket (`polymarket-us` SDK)
+- Real account hydration from Polymarket authenticated APIs
+- External news or event feeds
+- Richer probability modeling
+- Optional local or hosted LLM synthesis plugged into the existing API shape
+- Execution workflows with explicit risk gates
 - Local Infra: Redis and PostgreSQL ready for expansion
 - Signal Layer: Ollama / Gemma, isolated from the execution path
 
