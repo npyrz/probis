@@ -498,6 +498,13 @@ h3 {
   gap: 6px;
 }
 
+.trade-heading-chips {
+  display: inline-flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  justify-content: flex-end;
+}
+
 .market-chip {
   width: fit-content;
   padding: 4px 6px;
@@ -516,6 +523,12 @@ h3 {
   border-color: rgba(255, 102, 102, 0.55);
   background: rgba(120, 32, 32, 0.3);
   color: #ffb3b3;
+}
+
+.market-chip-verified {
+  border-color: rgba(95, 240, 165, 0.55);
+  background: rgba(24, 92, 63, 0.34);
+  color: #8de8c0;
 }
 
 .market-chip-muted {

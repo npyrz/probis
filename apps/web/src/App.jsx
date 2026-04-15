@@ -177,6 +177,19 @@ function getMonitoringStateChipClass(state) {
   return 'market-chip';
 }
 
+function hasVerifiedFilledPosition(intent) {
+  const sharesFilled = Number.parseFloat(intent?.position?.sharesFilled ?? NaN);
+  const hasEntryOrderId = typeof intent?.executionRequest?.venueOrderId === 'string'
+    && intent.executionRequest.venueOrderId.trim().length > 0;
+  const monitoringState = String(intent?.monitoring?.state ?? '').trim().toLowerCase();
+  const isSyncRemoved = monitoringState.startsWith('sync-removed');
+
+  return Number.isFinite(sharesFilled)
+    && sharesFilled > 0
+    && hasEntryOrderId
+    && !isSyncRemoved;
+}
+
 function formatOrderId(value) {
   if (typeof value !== 'string' || value.length === 0) {
     return 'n/a';
@@ -1712,6 +1725,7 @@ export default function App() {
                 const currentProbability = intent.monitoring?.currentProbability ?? intent.recommendation?.currentProbability ?? null;
                 const entryProbability = getTrackedEntryProbability(intent);
                 const monitoringState = intent.monitoring?.state ?? 'active';
+                const isVerifiedFilledPosition = hasVerifiedFilledPosition(intent);
                 const driftDirection = intent?.position?.entryIntent === 'ORDER_INTENT_BUY_SHORT' ? -1 : 1;
                 const drift = typeof currentProbability === 'number' && typeof entryProbability === 'number'
                   ? (currentProbability - entryProbability) * driftDirection
@@ -1730,9 +1744,14 @@ export default function App() {
                         <p className="eyebrow">{intent.eventTitle ?? intent.eventSlug}</p>
                         <h2>{intent.outcomeLabel} in {intent.marketQuestion}</h2>
                       </div>
-                      <span className={isTracking ? getMonitoringStateChipClass(monitoringState) : 'market-chip'}>
-                        {isTracking ? formatMonitoringStateLabel(monitoringState) : formatIntentStatus(intent)}
-                      </span>
+                      <div className="trade-heading-chips">
+                        <span className={isTracking ? getMonitoringStateChipClass(monitoringState) : 'market-chip'}>
+                          {isTracking ? formatMonitoringStateLabel(monitoringState) : formatIntentStatus(intent)}
+                        </span>
+                        {isVerifiedFilledPosition ? (
+                          <span className="market-chip market-chip-verified">✓ Verified</span>
+                        ) : null}
+                      </div>
                     </div>
 
                     <div className="trade-preview-grid">
