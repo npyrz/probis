@@ -1246,7 +1246,7 @@ export default function App() {
                 </article>
               </div>
               {selectedEvent.usFiltered && visibleMarkets.length === 0 ? (
-                <p className="empty-state">No tradable markets are currently available on Polymarket US for this event.</p>
+                <p className="empty-state">No tradable markets are currently available for this event via your connected Polymarket US API key.</p>
               ) : null}
               {eventHeadline ? (
                 <div className="event-highlight compact-highlight">

@@ -3,6 +3,21 @@ import nacl from 'tweetnacl';
 
 const US_MARKETS_CACHE_TTL_MS = 60_000;
 const usMarketsCache = new Map();
+const MARKET_MATCH_STOP_WORDS = new Set([
+  'the',
+  'and',
+  'vs',
+  'will',
+  'there',
+  'be',
+  'a',
+  'an',
+  'in',
+  'on',
+  'of',
+  'for',
+  'to'
+]);
 
 function getErrorMessage(error) {
   if (axios.isAxiosError(error)) {
@@ -169,6 +184,66 @@ function getUsMarketsPageEof(payload) {
   return true;
 }
 
+function normalizeMatchText(value) {
+  return String(value ?? '')
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, ' ')
+    .trim();
+}
+
+function tokenizeMatchText(value) {
+  return normalizeMatchText(value)
+    .split(/\s+/)
+    .filter((token) => token.length > 2 && !MARKET_MATCH_STOP_WORDS.has(token));
+}
+
+function tokenOverlapCount(leftTokens, rightTokens) {
+  const rightSet = new Set(rightTokens);
+  let matches = 0;
+
+  for (const token of leftTokens) {
+    if (rightSet.has(token)) {
+      matches += 1;
+    }
+  }
+
+  return matches;
+}
+
+function hasStrongQuestionMatch(question, targetQuestions, titleTokens) {
+  const questionTokens = tokenizeMatchText(question);
+
+  if (questionTokens.length === 0) {
+    return false;
+  }
+
+  for (const target of targetQuestions) {
+    const targetTokens = tokenizeMatchText(target);
+
+    if (targetTokens.length === 0) {
+      continue;
+    }
+
+    const overlap = tokenOverlapCount(questionTokens, targetTokens);
+    const needed = Math.max(2, Math.ceil(Math.min(questionTokens.length, targetTokens.length) * 0.6));
+
+    if (overlap >= needed) {
+      return true;
+    }
+  }
+
+  if (titleTokens.length > 0) {
+    const overlapWithTitle = tokenOverlapCount(questionTokens, titleTokens);
+    const neededFromTitle = Math.max(2, Math.ceil(titleTokens.length * 0.6));
+
+    if (overlapWithTitle >= neededFromTitle) {
+      return true;
+    }
+  }
+
+  return false;
+}
+
 async function listUsMarkets(env, { limit = 200, maxPages = 20 } = {}) {
   const path = '/v1/markets';
   const cacheKey = `${env.polymarketUsBaseUrl}:${limit}:${maxPages}`;
@@ -246,6 +321,52 @@ export async function getUsMarketSlugsForEvent(env, eventSlug) {
   }
 
   return slugs;
+}
+
+export async function getUsMarketAvailabilityForEvent(env, event) {
+  const normalizedEventSlug = String(event?.slug ?? '').trim().toLowerCase();
+  const titleTokens = tokenizeMatchText(event?.title ?? '');
+  const targetQuestions = Array.isArray(event?.markets)
+    ? event.markets.map((market) => String(market?.question ?? '')).filter(Boolean)
+    : [];
+
+  if (!normalizedEventSlug) {
+    return {
+      slugs: new Set(),
+      questions: new Set()
+    };
+  }
+
+  const markets = await listUsMarkets(env);
+  const slugs = new Set();
+  const questions = new Set();
+
+  for (const market of markets) {
+    const slug = typeof market?.slug === 'string' ? market.slug.toLowerCase() : '';
+    const question = String(market?.question ?? '');
+
+    if (!slug && !question) {
+      continue;
+    }
+
+    const slugMatch = slug && (slug === normalizedEventSlug || slug.startsWith(`${normalizedEventSlug}-`));
+    const questionMatch = hasStrongQuestionMatch(question, targetQuestions, titleTokens);
+
+    if (slugMatch || questionMatch) {
+      if (slug) {
+        slugs.add(slug);
+      }
+
+      if (question) {
+        questions.add(normalizeMatchText(question));
+      }
+    }
+  }
+
+  return {
+    slugs,
+    questions
+  };
 }
 
 function getPositionMarketSlug(position) {

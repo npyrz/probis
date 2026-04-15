@@ -1,5 +1,5 @@
 import axios from 'axios';
-import { getUsMarketSlugsForEvent } from './us-orders.js';
+import { getUsMarketAvailabilityForEvent } from './us-orders.js';
 
 const TOKEN_ALIASES = {
   usho: ['house'],
@@ -86,9 +86,11 @@ function normalizeEvent(event) {
 }
 
 async function filterEventMarketsToUs(env, event) {
-  const slugs = await getUsMarketSlugsForEvent(env, event.slug);
+  const availability = await getUsMarketAvailabilityForEvent(env, event);
+  const slugs = availability.slugs;
+  const questions = availability.questions;
 
-  if (slugs.size === 0) {
+  if (slugs.size === 0 && questions.size === 0) {
     return {
       ...event,
       markets: [],
@@ -97,9 +99,21 @@ async function filterEventMarketsToUs(env, event) {
     };
   }
 
+  const normalizeQuestion = (value) => String(value ?? '').toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim();
+
   const markets = event.markets.filter((market) => {
     const slug = String(market.slug ?? '').toLowerCase();
-    return slug.length > 0 && slugs.has(slug);
+    const question = normalizeQuestion(market.question);
+
+    if (slug.length > 0 && slugs.has(slug)) {
+      return true;
+    }
+
+    if (question.length > 0 && questions.has(question)) {
+      return true;
+    }
+
+    return false;
   });
 
   return {
