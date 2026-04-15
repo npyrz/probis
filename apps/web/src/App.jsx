@@ -1305,6 +1305,14 @@ export default function App() {
             <strong>{activeTradeIntents.length}</strong>
           </article>
           <article>
+            <span>API Key</span>
+            <strong>{status?.accountIdentity?.keyIdSuffix ? `...${status.accountIdentity.keyIdSuffix}` : 'n/a'}</strong>
+          </article>
+          <article>
+            <span>Open Positions</span>
+            <strong>{status?.accountIdentity?.openPositionsCount ?? 0}</strong>
+          </article>
+          <article>
             <span>Last Market</span>
             <strong>{formatDateTime(lastMarketUpdate)}</strong>
           </article>
@@ -1335,6 +1343,14 @@ export default function App() {
         <div className="ticker-item">
           <span>REALTIME</span>
           <strong>{activeTradeIntents.length > 0 ? 'LIVE POLLING' : 'IDLE'}</strong>
+        </div>
+        <div className="ticker-item">
+          <span>API ACCOUNT</span>
+          <strong>{status?.accountIdentity?.authenticated ? 'AUTHENTICATED' : 'UNAUTHENTICATED'}</strong>
+        </div>
+        <div className="ticker-item">
+          <span>API POS</span>
+          <strong>{(status?.accountIdentity?.openPositions ?? []).slice(0, 2).map((position) => position.marketSlug).join(' | ') || 'NONE'}</strong>
         </div>
       </section>
 

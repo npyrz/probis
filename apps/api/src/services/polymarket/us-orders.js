@@ -180,6 +180,16 @@ function pickUsdBalance(balances) {
     ?? null;
 }
 
+function getPositionOutcome(position) {
+  return String(
+    position?.outcome
+    ?? position?.outcomeLabel
+    ?? position?.marketMetadata?.outcome
+    ?? position?.side
+    ?? ''
+  ).trim() || null;
+}
+
 function getUsMarketsFromPayload(payload) {
   if (Array.isArray(payload)) {
     return payload;
@@ -887,6 +897,73 @@ export async function getPolymarketUsTradingStatus(env) {
   }
 
   return status;
+}
+
+export async function getPolymarketUsAccountIdentity(env) {
+  const identity = {
+    configured: Boolean(env.polymarketUsKeyId && env.polymarketUsSecretKey),
+    endpoint: env.polymarketUsBaseUrl,
+    keyIdSuffix: env.polymarketUsKeyId ? String(env.polymarketUsKeyId).slice(-8) : null,
+    authenticated: false,
+    buyingPower: null,
+    budgetCurrency: 'USD',
+    openPositionsCount: 0,
+    openPositions: [],
+    error: null
+  };
+
+  if (!identity.configured) {
+    return identity;
+  }
+
+  try {
+    const [positions, balancesResponse] = await Promise.all([
+      fetchPortfolioPositions(env),
+      (async () => {
+        const path = '/v1/account/balances';
+        const client = createPolymarketUsClient(env);
+        return client.get(path, {
+          headers: getSignedHeaders(env, 'GET', path)
+        });
+      })()
+    ]);
+
+    identity.authenticated = true;
+
+    const balances = getAccountBalances(balancesResponse.data);
+    const usdBalance = pickUsdBalance(balances);
+
+    identity.buyingPower = parseNumber(
+      usdBalance?.buyingPower
+      ?? usdBalance?.availableBalance
+      ?? usdBalance?.available
+      ?? usdBalance?.available?.value
+    );
+    identity.budgetCurrency = String(usdBalance?.currency ?? 'USD').toUpperCase();
+
+    const summarizedPositions = positions
+      .map((position) => {
+        const quantity = extractNumericQuantity(position);
+
+        if (!Number.isFinite(quantity) || quantity <= 0) {
+          return null;
+        }
+
+        return {
+          marketSlug: getPositionMarketSlug(position),
+          outcome: getPositionOutcome(position),
+          quantity
+        };
+      })
+      .filter(Boolean);
+
+    identity.openPositionsCount = summarizedPositions.length;
+    identity.openPositions = summarizedPositions.slice(0, 10);
+  } catch (error) {
+    identity.error = getErrorMessage(error);
+  }
+
+  return identity;
 }
 
 export async function placeBuyOrderForIntent(env, intent) {

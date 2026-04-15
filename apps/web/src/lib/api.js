@@ -26,14 +26,16 @@ async function requestJson(path, options) {
 }
 
 export async function fetchStatus() {
-  const [polymarket, ai] = await Promise.all([
+  const [polymarket, ai, accountIdentity] = await Promise.all([
     requestJson('/api/polymarket/status'),
-    requestJson('/api/ai/status')
+    requestJson('/api/ai/status'),
+    requestJson('/api/polymarket/account-identity')
   ]);
 
   return {
     polymarket: polymarket.status,
-    ai: ai.status
+    ai: ai.status,
+    accountIdentity: accountIdentity.identity
   };
 }
 
