@@ -3,7 +3,6 @@ import { useEffect, useState, useTransition } from 'react';
 import {
   analyzeEvent,
   createTradeIntent,
-  closeTradeIntent as closeTradeIntentRequest,
   deleteTradeIntent as deleteTradeIntentRequest,
   executeTradeIntent as executeTradeIntentRequest,
   fetchActiveEvents,
@@ -1129,39 +1128,6 @@ export default function App() {
     }
   }
 
-  async function handleCloseTradeIntent(intent) {
-    setError('');
-    setNotice('');
-    setIsMutatingHistory(true);
-
-    try {
-      const nextIntent = await closeTradeIntentRequest(intent.id);
-      setTradeHistory((previous) => replaceIntentInList(previous, nextIntent));
-      setLastTradeUpdate(new Date().toISOString());
-
-      if (tradeDraft?.id === nextIntent.id) {
-        setTradeDraft(nextIntent);
-        saveStoredTradeDraft(nextIntent);
-      }
-
-      setNotice('Intent closed and moved out of active monitoring.');
-    } catch (closeError) {
-      if (isTradeIntentNotFoundError(closeError)) {
-        await refreshTradeHistory();
-
-        if (tradeDraft?.id === intent.id) {
-          handleClearTradeDraft();
-        }
-
-        setNotice('That trade intent no longer exists. Refreshed history.');
-      } else {
-        setError(closeError instanceof Error ? closeError.message : 'Unable to close trade intent');
-      }
-    } finally {
-      setIsMutatingHistory(false);
-    }
-  }
-
   async function handleExecuteTradeIntent(intent) {
     setError('');
     setNotice('');
@@ -1808,14 +1774,6 @@ export default function App() {
                           <button
                             type="button"
                             className="ghost-button"
-                            onClick={() => void handleCloseTradeIntent(intent)}
-                            disabled={isMutatingHistory}
-                          >
-                            Close Intent
-                          </button>
-                          <button
-                            type="button"
-                            className="ghost-button"
                             onClick={() => void handleRestoreTradeIntent(intent)}
                             disabled={isMutatingHistory}
                           >
@@ -1844,16 +1802,6 @@ export default function App() {
                           >
                             Delete
                           </button>
-                          {intent.status !== 'closed' ? (
-                            <button
-                              type="button"
-                              className="ghost-button"
-                              onClick={() => void handleCloseTradeIntent(intent)}
-                              disabled={isMutatingHistory}
-                            >
-                              Close Intent
-                            </button>
-                          ) : null}
                         </>
                       )}
                     </div>
