@@ -1,11 +1,14 @@
 import { mkdir, readFile, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { randomUUID } from 'node:crypto';
+import { fileURLToPath } from 'node:url';
 
 import { fetchEventByInput } from './polymarket/gamma.js';
 import { placeBuyOrderForIntent, placeSellOrderForIntent } from './polymarket/us-orders.js';
 
-const DATA_DIRECTORY = path.resolve(process.cwd(), 'data');
+const currentDirectory = path.dirname(fileURLToPath(import.meta.url));
+const repoRoot = path.resolve(currentDirectory, '../../../../');
+const DATA_DIRECTORY = path.join(repoRoot, 'data');
 const TRADE_INTENTS_FILE = path.join(DATA_DIRECTORY, 'trade-intents.json');
 
 async function ensureStore() {
