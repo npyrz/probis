@@ -1302,12 +1302,14 @@ export default function App() {
         <div className="terminal-brand-block">
           <div className="brand-row">
             <img src="/logo.png" alt="Probis logo" className="brand-logo" />
-            <p className="terminal-kicker">Operator Dashboard</p>
+            <h1>PROBIS</h1>
           </div>
-          <h1>PROBIS OPS</h1>
-          <p className="terminal-subtitle">Local-first prediction market console with live trade planning, monitoring, and operator controls.</p>
         </div>
         <div className="terminal-meta-grid">
+          <article>
+            <span>Account Total</span>
+            <strong>{formatCurrency(status?.polymarket?.usTrading?.totalAccountBudget)}</strong>
+          </article>
           <article>
             <span>Total Buying Power</span>
             <strong>{formatCurrency(status?.polymarket?.usTrading?.buyingPower)}</strong>

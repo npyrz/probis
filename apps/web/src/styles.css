@@ -37,14 +37,14 @@ select {
 }
 
 .app-shell {
-  width: min(1600px, calc(100% - 20px));
+  width: min(1600px, calc(100% - 28px));
   margin: 0 auto;
-  padding: 10px 0 20px;
+  padding: 14px 0 24px;
 }
 
 .terminal-shell {
   display: grid;
-  gap: 10px;
+  gap: 12px;
 }
 
 .terminal-topbar,
@@ -59,28 +59,28 @@ select {
 .terminal-topbar {
   display: grid;
   grid-template-columns: minmax(0, 1fr) auto;
-  gap: 14px;
-  padding: 14px 16px;
+  gap: 16px;
+  padding: 16px 18px;
   border-radius: 10px;
 }
 
 .terminal-brand-block h1 {
   margin: 0;
-  font-size: clamp(1.9rem, 3vw, 2.7rem);
+  font-size: clamp(1.45rem, 2.4vw, 2rem);
   letter-spacing: 0.12em;
   font-weight: 700;
   color: #f0f6ff;
 }
 
 .brand-row {
-  display: inline-flex;
+  display: flex;
   align-items: center;
-  gap: 8px;
+  gap: 10px;
 }
 
 .brand-logo {
-  width: 22px;
-  height: 22px;
+  width: 26px;
+  height: 26px;
   border-radius: 4px;
   border: 1px solid rgba(79, 93, 110, 0.45);
   background: rgba(7, 13, 19, 0.9);
@@ -125,7 +125,7 @@ select {
 .terminal-meta-grid {
   display: grid;
   grid-template-columns: repeat(5, minmax(110px, 1fr));
-  gap: 8px;
+  gap: 10px;
   min-width: 0;
 }
 
@@ -153,7 +153,7 @@ select {
 }
 
 .terminal-meta-grid article {
-  padding: 8px 10px;
+  padding: 10px 12px;
 }
 
 .terminal-meta-grid span,
@@ -271,7 +271,7 @@ select {
 }
 
 .ticker-item {
-  padding: 8px 10px;
+  padding: 9px 11px;
   border-radius: 0;
 }
 
@@ -302,7 +302,7 @@ select {
 .dashboard-grid {
   display: grid;
   grid-template-columns: 320px minmax(0, 1fr);
-  gap: 10px;
+  gap: 12px;
   align-items: start;
 }
 
@@ -313,7 +313,7 @@ select {
 .dashboard-sidebar,
 .dashboard-rail {
   display: grid;
-  gap: 10px;
+  gap: 12px;
   align-content: start;
 }
 
@@ -328,15 +328,15 @@ select {
 .dashboard-footer-grid {
   display: grid;
   grid-template-columns: 1fr;
-  gap: 10px;
+  gap: 12px;
 }
 
 .compact-card {
-  padding: 10px;
+  padding: 13px;
 }
 
 .panel-heading {
-  margin-bottom: 10px;
+  margin-bottom: 12px;
 }
 
 .panel-heading-inline {
@@ -419,7 +419,7 @@ h3 {
 .trade-history-list,
 .terminal-list {
   display: grid;
-  gap: 8px;
+  gap: 10px;
 }
 
 .event-list-item,
@@ -437,7 +437,7 @@ h3 {
   border: 1px solid rgba(79, 93, 110, 0.34);
   background: linear-gradient(180deg, rgba(12, 20, 29, 0.94), rgba(9, 15, 22, 0.94));
   color: inherit;
-  padding: 10px;
+  padding: 12px;
   border-radius: 8px;
 }
 
@@ -456,7 +456,7 @@ h3 {
 .trade-suggestion-card,
 .active-position-item,
 .trade-history-item {
-  padding: 10px;
+  padding: 12px;
 }
 
 .market-card {
@@ -610,7 +610,7 @@ h3 {
 .model-highlight,
 .event-highlight,
 .detail-callout {
-  padding: 10px;
+  padding: 12px;
 }
 
 .compact-highlight p,
@@ -624,9 +624,9 @@ h3 {
 .trade-input-row {
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(100px, 1fr));
-  gap: 8px;
+  gap: 10px;
   align-items: end;
-  margin-top: 8px;
+  margin-top: 10px;
 }
 
 .compact-input-grid {
@@ -641,7 +641,7 @@ h3 {
   border: 1px solid rgba(79, 93, 110, 0.34);
   background: rgba(4, 10, 15, 0.96);
   color: #eaf1fb;
-  padding: 8px 9px;
+  padding: 9px 10px;
 }
 
 .input-row input::placeholder {
@@ -697,16 +697,16 @@ textarea:focus-visible,
 .trade-history-card,
 .active-positions-card {
   display: grid;
-  gap: 10px;
+  gap: 12px;
 }
 
 .trade-center-list {
-  gap: 10px;
+  gap: 12px;
 }
 
 .trade-center-item {
   display: grid;
-  gap: 8px;
+  gap: 10px;
 }
 
 .trade-center-filter-row {
