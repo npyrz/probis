@@ -607,6 +607,129 @@ function normalizeLimitPrice(price) {
   return Number(numeric.toFixed(3));
 }
 
+function hasPositiveFill(orderResponse) {
+  const sharesFilled = parseNumber(getSharesFromOrder(orderResponse));
+  return typeof sharesFilled === 'number' && sharesFilled > 0;
+}
+
+function clampLimitPrice(value) {
+  const numeric = parseNumber(value);
+
+  if (typeof numeric !== 'number') {
+    return null;
+  }
+
+  // Binary outcome prices must remain within (0, 1).
+  const clamped = Math.min(0.999, Math.max(0.001, numeric));
+  return normalizeLimitPrice(clamped);
+}
+
+function computeAggressiveBuyLimitPrice(basePrice, maxSlippageBps, minimumStep = 0.01) {
+  const normalizedBasePrice = normalizeLimitPrice(basePrice);
+
+  if (!normalizedBasePrice) {
+    return null;
+  }
+
+  const slippageFactor = Number.isFinite(maxSlippageBps)
+    ? (1 + Math.max(0, maxSlippageBps) / 10000)
+    : 1.01;
+  const slippageAdjustedPrice = normalizedBasePrice * slippageFactor;
+  // Ensure a small minimum step-up to improve immediate fill probability on thin books.
+  const withMinimumBump = Math.max(slippageAdjustedPrice, normalizedBasePrice + minimumStep);
+
+  return clampLimitPrice(withMinimumBump);
+}
+
+function resolveBuyPriceCap(intent, basePrice) {
+  const normalizedBasePrice = normalizeLimitPrice(basePrice);
+
+  if (!normalizedBasePrice) {
+    return null;
+  }
+
+  const takeProfitProbability = parseNumber(intent?.tradeSuggestion?.takeProfitProbability);
+
+  if (typeof takeProfitProbability === 'number' && takeProfitProbability > 0) {
+    const cappedByTakeProfit = clampLimitPrice(takeProfitProbability - 0.005);
+
+    if (typeof cappedByTakeProfit === 'number' && cappedByTakeProfit > normalizedBasePrice) {
+      return cappedByTakeProfit;
+    }
+  }
+
+  // Fallback cap when take-profit is unavailable: allow a wider sweep but avoid near-1.0 bids.
+  const widenedCap = clampLimitPrice(normalizedBasePrice + 0.20);
+
+  if (typeof widenedCap === 'number' && widenedCap > normalizedBasePrice) {
+    return Math.min(widenedCap, 0.95);
+  }
+
+  return clampLimitPrice(Math.min(normalizedBasePrice + 0.05, 0.95));
+}
+
+function buildAggressiveBuyLimitLadder(basePrice, maxSlippageBps, maxPriceCap = null) {
+  const normalizedBasePrice = normalizeLimitPrice(basePrice);
+
+  if (!normalizedBasePrice) {
+    return [];
+  }
+
+  const primary = computeAggressiveBuyLimitPrice(normalizedBasePrice, maxSlippageBps, 0.01);
+  const secondary = computeAggressiveBuyLimitPrice(normalizedBasePrice, Math.max(maxSlippageBps * 2, 300), 0.02);
+  const tertiary = computeAggressiveBuyLimitPrice(normalizedBasePrice, Math.max(maxSlippageBps * 4, 800), 0.05);
+  const quaternary = clampLimitPrice(normalizedBasePrice + 0.08);
+  const quinary = clampLimitPrice(normalizedBasePrice + 0.15);
+  const values = [primary, secondary, tertiary, quaternary, quinary, maxPriceCap]
+    .filter((price) => typeof price === 'number');
+
+  const deduped = [...new Set(values)]
+    .filter((price) => {
+      if (typeof maxPriceCap !== 'number') {
+        return true;
+      }
+
+      return price <= maxPriceCap;
+    })
+    .sort((left, right) => left - right);
+
+  return deduped;
+}
+
+async function submitLimitBuyOrder(env, { marketSlug, orderIntent, amount, limitPrice }) {
+  const limitQuantity = Number((amount / limitPrice).toFixed(4));
+
+  if (!Number.isFinite(limitQuantity) || limitQuantity <= 0) {
+    throw new Error('Unable to derive a valid quantity for limit order fallback.');
+  }
+
+  const limitOrderBody = {
+    marketSlug,
+    intent: orderIntent,
+    type: 'ORDER_TYPE_LIMIT',
+    tif: 'TIME_IN_FORCE_IMMEDIATE_OR_CANCEL',
+    price: {
+      value: limitPrice.toFixed(3),
+      currency: 'USD'
+    },
+    quantity: limitQuantity,
+    manualOrderIndicator: 'MANUAL_ORDER_INDICATOR_AUTOMATIC',
+    synchronousExecution: true,
+    maxBlockTime: '10'
+  };
+
+  const orderResponse = await createPolymarketUsOrder(env, limitOrderBody);
+
+  return {
+    request: limitOrderBody,
+    response: orderResponse,
+    orderId: getOrderId(orderResponse),
+    sharesFilled: getSharesFromOrder(orderResponse),
+    notionalSpent: getSpentFromOrder(orderResponse),
+    entryIntent: orderIntent
+  };
+}
+
 async function resolveOutcomeMarketQuote(env, marketSlug, outcomeLabel) {
   const markets = await fetchUsMarketsBySlug(env, marketSlug, { includeClosed: true });
   const market = markets.find((candidate) => String(candidate?.slug ?? '').toLowerCase() === String(marketSlug).toLowerCase())
@@ -1002,56 +1125,72 @@ export async function placeBuyOrderForIntent(env, intent) {
   };
 
   let orderResponse;
+  let marketAttempt;
 
   try {
     orderResponse = await createPolymarketUsOrder(env, orderBody);
-  } catch (error) {
-    if (!isLimitPriceRequiredError(error)) {
-      throw error;
-    }
-
-    const quote = await resolveOutcomeMarketQuote(env, marketSlug, intent.outcomeLabel);
-    const limitPrice = quote.outcomePrice;
-    const limitQuantity = Number((amount / limitPrice).toFixed(4));
-
-    if (!Number.isFinite(limitQuantity) || limitQuantity <= 0) {
-      throw new Error('Unable to derive a valid quantity for limit order fallback.');
-    }
-
-    const limitOrderBody = {
-      marketSlug: quote.resolvedMarketSlug,
-      intent: orderIntent,
-      type: 'ORDER_TYPE_LIMIT',
-      tif: 'TIME_IN_FORCE_IMMEDIATE_OR_CANCEL',
-      price: {
-        value: limitPrice.toFixed(3),
-        currency: 'USD'
-      },
-      quantity: limitQuantity,
-      manualOrderIndicator: 'MANUAL_ORDER_INDICATOR_AUTOMATIC',
-      synchronousExecution: true,
-      maxBlockTime: '10'
-    };
-
-    orderResponse = await createPolymarketUsOrder(env, limitOrderBody);
-
-    return {
-      request: limitOrderBody,
+    marketAttempt = {
+      request: orderBody,
       response: orderResponse,
       orderId: getOrderId(orderResponse),
       sharesFilled: getSharesFromOrder(orderResponse),
       notionalSpent: getSpentFromOrder(orderResponse),
       entryIntent: orderIntent
     };
+
+    if (hasPositiveFill(orderResponse)) {
+      return marketAttempt;
+    }
+  } catch (error) {
+    if (!isLimitPriceRequiredError(error)) {
+      throw error;
+    }
+  }
+
+  const quote = await resolveOutcomeMarketQuote(env, marketSlug, intent.outcomeLabel);
+  const maxSlippageBpsForRetry = Number.isFinite(maxSlippageBps) ? maxSlippageBps : 100;
+  const buyPriceCap = resolveBuyPriceCap(intent, quote.outcomePrice);
+  const aggressiveLimitPrices = buildAggressiveBuyLimitLadder(quote.outcomePrice, maxSlippageBpsForRetry, buyPriceCap);
+
+  if (aggressiveLimitPrices.length === 0) {
+    throw new Error('Unable to derive a valid limit price for buy retry.');
+  }
+
+  const limitAttempts = [];
+
+  for (const limitPrice of aggressiveLimitPrices) {
+    const limitAttempt = await submitLimitBuyOrder(env, {
+      marketSlug: quote.resolvedMarketSlug,
+      orderIntent,
+      amount,
+      limitPrice
+    });
+
+    limitAttempts.push(limitAttempt);
+
+    if (hasPositiveFill(limitAttempt.response)) {
+      return {
+        ...limitAttempt,
+        attempts: {
+          market: marketAttempt ?? null,
+          aggressiveLimit: limitAttempts
+        }
+      };
+    }
+  }
+
+  const lastLimitAttempt = limitAttempts[limitAttempts.length - 1] ?? null;
+
+  if (!lastLimitAttempt) {
+    throw new Error('Unable to submit aggressive limit buy retry attempts.');
   }
 
   return {
-    request: orderBody,
-    response: orderResponse,
-    orderId: getOrderId(orderResponse),
-    sharesFilled: getSharesFromOrder(orderResponse),
-    notionalSpent: getSpentFromOrder(orderResponse),
-    entryIntent: orderIntent
+    ...lastLimitAttempt,
+    attempts: {
+      market: marketAttempt ?? null,
+      aggressiveLimit: limitAttempts
+    }
   };
 }
 

@@ -790,7 +790,34 @@ export async function executeTradeIntent(env, id) {
   const sharesFilled = Number.parseFloat(buyOrder?.sharesFilled ?? NaN);
 
   if (!Number.isFinite(sharesFilled) || sharesFilled <= 0) {
-    throw new Error('Order submitted but no shares were filled. Trade remains unstarted; adjust price/size and try again.');
+    const orderState = getOrderState(buyOrder?.response);
+    const orderId = buyOrder?.orderId ?? null;
+    const orderStateText = typeof orderState === 'string' && orderState.trim().length > 0
+      ? ` state=${orderState}`
+      : '';
+    const orderIdText = typeof orderId === 'string' && orderId.trim().length > 0
+      ? ` orderId=${orderId}`
+      : '';
+    const limitAttempts = Array.isArray(buyOrder?.attempts?.aggressiveLimit)
+      ? buyOrder.attempts.aggressiveLimit
+      : (buyOrder?.attempts?.aggressiveLimit ? [buyOrder.attempts.aggressiveLimit] : []);
+    const attemptSummary = limitAttempts
+      .map((attempt) => {
+        const attemptedPrice = attempt?.request?.price?.value;
+        const attemptedState = getOrderState(attempt?.response) ?? 'unknown';
+
+        if (typeof attemptedPrice === 'string' || typeof attemptedPrice === 'number') {
+          return `${attemptedPrice}:${attemptedState}`;
+        }
+
+        return attemptedState;
+      })
+      .filter(Boolean)
+      .join(', ');
+    const attemptsText = attemptSummary.length > 0
+      ? ` attempts=${attemptSummary}`
+      : '';
+    throw new Error(`Order submitted but no shares were filled.${orderStateText}${orderIdText}${attemptsText} Trade remains unstarted; adjust price/size and try again.`);
   }
 
   const nextIntent = withApiVerification({

@@ -394,7 +394,7 @@ function buildTradeSuggestion(decisionEngine, amount, riskInputs = {}) {
   const shares = typeof price === 'number' && price > 0 ? numericAmount / price : null;
   const grossPayout = typeof shares === 'number' ? shares : null;
   const profitIfCorrect = typeof grossPayout === 'number' ? grossPayout - numericAmount : null;
-  const expectedProfit = typeof recommendation.expectedValuePerDollar === 'number'
+  const fallbackExpectedProfit = typeof recommendation.expectedValuePerDollar === 'number'
     ? numericAmount * recommendation.expectedValuePerDollar
     : null;
   const weightedRisk = typeof recommendation.combinedConfidence === 'number'
@@ -411,6 +411,17 @@ function buildTradeSuggestion(decisionEngine, amount, riskInputs = {}) {
   const takeProfitGain = typeof shares === 'number' && typeof takeProfitProbability === 'number' && typeof price === 'number'
     ? shares * Math.max(0, takeProfitProbability - price)
     : null;
+  const dynamicRiskRewardRatio = typeof takeProfitGain === 'number'
+    && typeof stopLossLoss === 'number'
+    && stopLossLoss > 0
+    ? takeProfitGain / stopLossLoss
+    : null;
+  const dynamicExpectedProfit = typeof modelProbability === 'number'
+    && typeof takeProfitGain === 'number'
+    && typeof stopLossLoss === 'number'
+    ? (modelProbability * takeProfitGain) - ((1 - modelProbability) * stopLossLoss)
+    : null;
+  const expectedProfit = dynamicExpectedProfit ?? fallbackExpectedProfit;
   const hasValidRange = typeof stopLossProbability === 'number'
     && typeof takeProfitProbability === 'number'
     && stopLossProbability > 0
@@ -442,7 +453,7 @@ function buildTradeSuggestion(decisionEngine, amount, riskInputs = {}) {
     takeProfitProbability,
     stopLossLoss,
     takeProfitGain,
-    riskRewardRatio: recommendation.riskRewardRatio ?? null,
+    riskRewardRatio: dynamicRiskRewardRatio ?? recommendation.riskRewardRatio ?? null,
     isRiskValid,
     riskValidationMessage
   };
