@@ -1,5 +1,6 @@
 import { Wallet } from '@ethersproject/wallet';
 import { ClobClient } from '@polymarket/clob-client';
+import { getPolymarketUsTradingStatus } from './us-orders.js';
 
 const POLYMARKET_HOST = 'https://clob.polymarket.com';
 const POLYMARKET_CHAIN_ID = 137;
@@ -31,11 +32,13 @@ export function createPolymarketClient(env, signer = createPolymarketSigner(env)
 export async function getPolymarketStatus(env) {
   const signer = createPolymarketSigner(env);
   const publicClient = createPolymarketClient(env, null);
+  const usTrading = await getPolymarketUsTradingStatus(env);
 
   const status = {
     configured: env.hasTradingCredentials,
     host: POLYMARKET_HOST,
     chainId: POLYMARKET_CHAIN_ID,
+    usTrading,
     publicReadOk: false,
     auth: {
       privateKeyValid: Boolean(signer),

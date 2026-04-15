@@ -321,6 +321,7 @@ function buildTradeDraft(event, recommendedMarket, decisionEngine, tradeSuggesti
     input: event.slug,
     eventSlug: event.slug,
     eventTitle: event.title,
+    marketSlug: recommendedMarket.slug ?? null,
     conditionId: recommendedMarket.conditionId,
     marketQuestion: decisionEngine.recommendation.marketQuestion,
     outcomeLabel: decisionEngine.recommendation.outcomeLabel,
@@ -852,7 +853,7 @@ export default function App() {
         saveStoredTradeDraft(nextIntent);
       }
 
-      setNotice('Sell Now request prepared and position moved out of active tracking.');
+      setNotice('Sell order submitted to Polymarket US and position moved out of active tracking.');
     } catch (sellError) {
       setError(sellError instanceof Error ? sellError.message : 'Unable to sell tracked intent');
     } finally {
@@ -898,7 +899,7 @@ export default function App() {
         saveStoredTradeDraft(nextIntent);
       }
 
-      setNotice('Execution request prepared and monitoring state activated.');
+      setNotice('Buy order submitted to Polymarket US and monitoring state activated.');
     } catch (executeError) {
       setError(executeError instanceof Error ? executeError.message : 'Unable to start trade monitoring');
     } finally {

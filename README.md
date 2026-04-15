@@ -45,6 +45,16 @@ curl http://localhost:4000/health
 - API: `http://localhost:4000`
 - If you want full Polymarket auth checks, add `POLYMARKET_API_KEY` and `POLYMARKET_PRIVATE_KEY` to `.env`.
 
+### Polymarket US Live Trading Credentials
+
+To place live buy/sell orders through `/api/trades/intents/:id/execute` and `/api/trades/intents/:id/sell`, configure these environment variables:
+
+- `POLYMARKET_US_KEY_ID` (or fallback `POLYMARKET_API_KEY`)
+- `POLYMARKET_US_SECRET_KEY` (or fallback `POLYMARKET_PRIVATE_KEY`)
+- `POLYMARKET_US_BASE_URL` (default `https://api.polymarket.us`)
+
+The API signs requests using Ed25519 with the format described in Polymarket US docs: `timestamp + method + path`.
+
 ## What The Current Codebase Does
 
 - Resolves a Polymarket event from either a full URL or a slug.

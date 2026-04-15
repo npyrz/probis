@@ -3,6 +3,7 @@ import path from 'node:path';
 import { randomUUID } from 'node:crypto';
 
 import { fetchEventByInput } from './polymarket/gamma.js';
+import { placeBuyOrderForIntent, placeSellOrderForIntent } from './polymarket/us-orders.js';
 
 const DATA_DIRECTORY = path.resolve(process.cwd(), 'data');
 const TRADE_INTENTS_FILE = path.join(DATA_DIRECTORY, 'trade-intents.json');
@@ -45,6 +46,7 @@ function buildExecutionRequestShape(payload) {
   const tradeAmount = Number.parseFloat(payload?.tradeAmount ?? payload?.tradeSuggestion?.amount ?? NaN);
   const stopLossProbability = Number.parseFloat(payload?.tradeSuggestion?.stopLossProbability ?? NaN);
   const takeProfitProbability = Number.parseFloat(payload?.tradeSuggestion?.takeProfitProbability ?? NaN);
+  const marketSlug = payload.marketSlug ?? null;
 
   return {
     requestId: randomUUID(),
@@ -55,6 +57,7 @@ function buildExecutionRequestShape(payload) {
     readyForExecution: false,
     createdAt: new Date().toISOString(),
     eventSlug: payload.eventSlug,
+    marketSlug,
     conditionId: payload.conditionId ?? null,
     marketQuestion: payload.marketQuestion,
     outcomeLabel: payload.outcomeLabel,
@@ -65,8 +68,8 @@ function buildExecutionRequestShape(payload) {
     takeProfitProbability: Number.isFinite(takeProfitProbability) ? takeProfitProbability : null,
     maxSlippageBps: 100,
     constraints: {
-      requiresManualSubmission: true,
-      credentialsConfigured: false
+      requiresManualSubmission: false,
+      credentialsConfigured: true
     }
   };
 }
@@ -95,13 +98,41 @@ function buildExitRequestShape(intent, exitReason) {
     side: 'sell',
     orderType: 'market-intent',
     createdAt: new Date().toISOString(),
-    readyForExecution: false,
+    readyForExecution: true,
     eventSlug: intent.eventSlug,
+    marketSlug: intent.marketSlug ?? null,
     conditionId: intent.conditionId ?? null,
     marketQuestion: intent.marketQuestion,
     outcomeLabel: intent.outcomeLabel,
     sharesEstimate: intent.executionRequest?.sharesEstimate ?? null,
     exitReason
+  };
+}
+
+function findMatchingMarket(event, intent) {
+  return event.markets.find((candidate) => candidate.conditionId && candidate.conditionId === intent.conditionId)
+    ?? event.markets.find((candidate) => candidate.question === intent.marketQuestion)
+    ?? null;
+}
+
+async function resolveIntentMarketMetadata(env, intent) {
+  if (intent.marketSlug && intent.conditionId) {
+    return {
+      marketSlug: intent.marketSlug,
+      conditionId: intent.conditionId
+    };
+  }
+
+  const event = await fetchEventByInput(env, intent.input ?? intent.eventSlug);
+  const market = findMatchingMarket(event, intent);
+
+  if (!market?.slug) {
+    throw new Error('Unable to resolve market slug for this intent. Re-run event analysis and save a fresh intent.');
+  }
+
+  return {
+    marketSlug: market.slug,
+    conditionId: market.conditionId ?? intent.conditionId ?? null
   };
 }
 
@@ -114,6 +145,10 @@ function getEditablePatch(payload = {}) {
 
   if (payload.eventTitle !== undefined) {
     patch.eventTitle = payload.eventTitle;
+  }
+
+  if (payload.marketSlug !== undefined) {
+    patch.marketSlug = payload.marketSlug;
   }
 
   if (payload.tradeAmount !== undefined) {
@@ -235,6 +270,7 @@ export function buildTradeIntentPayload(payload) {
     eventSlug: payload.eventSlug,
     eventTitle: payload.eventTitle ?? null,
     input: payload.input ?? payload.eventSlug,
+    marketSlug: payload.marketSlug ?? null,
     conditionId: payload.conditionId ?? null,
     marketQuestion: payload.marketQuestion,
     outcomeLabel: payload.outcomeLabel,
@@ -336,18 +372,40 @@ export async function deleteTradeIntent(id) {
   return existing;
 }
 
-export async function executeTradeIntent(id) {
+export async function executeTradeIntent(env, id) {
   const intents = await readTradeIntents();
   const existing = findTradeIntentOrThrow(intents, id);
-  const nextIntent = {
+
+  const resolvedMarket = await resolveIntentMarketMetadata(env, existing);
+  const executableIntent = {
     ...existing,
+    marketSlug: resolvedMarket.marketSlug,
+    conditionId: resolvedMarket.conditionId
+  };
+  const buyOrder = await placeBuyOrderForIntent(env, executableIntent);
+
+  const nextIntent = {
+    ...executableIntent,
     status: 'tracking',
     executionRequest: {
-      ...existing.executionRequest,
+      ...executableIntent.executionRequest,
       readyForExecution: true,
-      preparedAt: new Date().toISOString()
+      marketSlug: resolvedMarket.marketSlug,
+      preparedAt: new Date().toISOString(),
+      executedAt: new Date().toISOString(),
+      venueOrderId: buyOrder.orderId,
+      venueOrder: buyOrder.response,
+      submission: buyOrder.request
     },
-    monitoring: buildMonitoringState(existing),
+    position: {
+      side: 'long',
+      entryIntent: buyOrder.entryIntent,
+      entryOrderId: buyOrder.orderId,
+      sharesFilled: buyOrder.sharesFilled,
+      notionalSpent: buyOrder.notionalSpent,
+      lastExecutionAt: new Date().toISOString()
+    },
+    monitoring: buildMonitoringState(executableIntent),
     updatedAt: new Date().toISOString()
   };
 
@@ -403,7 +461,7 @@ export async function pollTrackingTradeIntents(env) {
   return nextIntents.filter((intent) => intent.status === 'tracking');
 }
 
-export async function sellTradeIntent(id) {
+export async function sellTradeIntent(env, id) {
   const intents = await readTradeIntents();
   const existing = findTradeIntentOrThrow(intents, id);
 
@@ -411,13 +469,34 @@ export async function sellTradeIntent(id) {
     throw new Error('Sell Now is only available for tracked positions.');
   }
 
-  const nextIntent = finalizeTrackedIntent(existing, 'manual-sell', {
-    ...existing.monitoring,
+  const resolvedMarket = await resolveIntentMarketMetadata(env, existing);
+  const executableIntent = {
+    ...existing,
+    marketSlug: resolvedMarket.marketSlug,
+    conditionId: resolvedMarket.conditionId
+  };
+  const sellOrder = await placeSellOrderForIntent(env, executableIntent);
+
+  const nextIntent = finalizeTrackedIntent(executableIntent, 'manual-sell', {
+    ...executableIntent.monitoring,
     state: 'sold-manual',
     lastEvaluationAt: new Date().toISOString(),
     exitReason: 'manual-sell',
     notes: 'Manual sell requested from the dashboard.'
   });
+  nextIntent.exitRequest = {
+    ...nextIntent.exitRequest,
+    venueOrderId: sellOrder.orderId,
+    venueOrder: sellOrder.response,
+    submission: sellOrder.request,
+    executedAt: new Date().toISOString()
+  };
+  nextIntent.position = {
+    ...nextIntent.position,
+    exitOrderId: sellOrder.orderId,
+    exitSharesFilled: sellOrder.sharesFilled,
+    lastExecutionAt: new Date().toISOString()
+  };
 
   await writeTradeIntents(replaceTradeIntent(intents, nextIntent));
   return nextIntent;

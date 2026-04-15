@@ -55,6 +55,7 @@ function normalizeOutcomes(market) {
 function normalizeMarket(market) {
   return {
     id: market.id ?? null,
+    slug: market.slug ?? null,
     question: market.question ?? '',
     subtitle: market.subtitle ?? '',
     active: Boolean(market.active),

@@ -88,7 +88,8 @@ router.delete('/api/trades/intents/:id', async (request, response) => {
 
 router.post('/api/trades/intents/:id/execute', async (request, response) => {
   try {
-    const intent = await executeTradeIntent(request.params.id);
+    const env = getEnv();
+    const intent = await executeTradeIntent(env, request.params.id);
 
     response.json({
       ok: true,
@@ -144,7 +145,8 @@ router.post('/api/trades/intents/:id/poll', async (request, response) => {
 
 router.post('/api/trades/intents/:id/sell', async (request, response) => {
   try {
-    const intent = await sellTradeIntent(request.params.id);
+    const env = getEnv();
+    const intent = await sellTradeIntent(env, request.params.id);
 
     response.json({
       ok: true,
