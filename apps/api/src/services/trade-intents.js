@@ -202,7 +202,34 @@ function finalizeTrackedIntent(intent, exitReason, monitoringState) {
   };
 }
 
-function evaluateMonitoringState(intent, currentProbability) {
+async function executeTriggeredExit(env, intent, exitReason, monitoringState) {
+  const resolvedMarket = await resolveIntentMarketMetadata(env, intent);
+  const executableIntent = {
+    ...intent,
+    marketSlug: resolvedMarket.marketSlug,
+    conditionId: resolvedMarket.conditionId
+  };
+  const sellOrder = await placeSellOrderForIntent(env, executableIntent);
+  const closedIntent = finalizeTrackedIntent(executableIntent, exitReason, monitoringState);
+
+  closedIntent.exitRequest = {
+    ...closedIntent.exitRequest,
+    venueOrderId: sellOrder.orderId,
+    venueOrder: sellOrder.response,
+    submission: sellOrder.request,
+    executedAt: new Date().toISOString()
+  };
+  closedIntent.position = {
+    ...closedIntent.position,
+    exitOrderId: sellOrder.orderId,
+    exitSharesFilled: sellOrder.sharesFilled,
+    lastExecutionAt: new Date().toISOString()
+  };
+
+  return closedIntent;
+}
+
+async function evaluateMonitoringState(env, intent, currentProbability) {
   const baseMonitoring = {
     ...intent.monitoring,
     lastEvaluationAt: new Date().toISOString(),
@@ -214,23 +241,59 @@ function evaluateMonitoringState(intent, currentProbability) {
   const takeProfitProbability = baseMonitoring.takeProfitProbability;
 
   if (typeof currentProbability === 'number' && typeof stopLossProbability === 'number' && currentProbability <= stopLossProbability) {
-    return finalizeTrackedIntent(intent, 'stop-loss-hit', {
+    const nextMonitoring = {
       ...baseMonitoring,
       state: 'stop-loss-hit',
       stopTriggeredAt: new Date().toISOString(),
       exitReason: 'stop-loss-hit',
-      notes: 'Stop-loss threshold reached during monitoring.'
-    });
+      notes: 'Stop-loss threshold reached; submitting live sell order.'
+    };
+
+    try {
+      return await executeTriggeredExit(env, intent, 'stop-loss-hit', nextMonitoring);
+    } catch (error) {
+      return {
+        ...intent,
+        monitoring: {
+          ...baseMonitoring,
+          state: 'stop-loss-triggered-exit-failed',
+          stopTriggeredAt: new Date().toISOString(),
+          exitReason: 'stop-loss-hit',
+          notes: error instanceof Error
+            ? `Stop-loss triggered but sell order failed: ${error.message}`
+            : 'Stop-loss triggered but sell order failed.'
+        },
+        updatedAt: new Date().toISOString()
+      };
+    }
   }
 
   if (typeof currentProbability === 'number' && typeof takeProfitProbability === 'number' && currentProbability >= takeProfitProbability) {
-    return finalizeTrackedIntent(intent, 'take-profit-hit', {
+    const nextMonitoring = {
       ...baseMonitoring,
       state: 'take-profit-hit',
       takeProfitTriggeredAt: new Date().toISOString(),
       exitReason: 'take-profit-hit',
-      notes: 'Take-profit threshold reached during monitoring.'
-    });
+      notes: 'Take-profit threshold reached; submitting live sell order.'
+    };
+
+    try {
+      return await executeTriggeredExit(env, intent, 'take-profit-hit', nextMonitoring);
+    } catch (error) {
+      return {
+        ...intent,
+        monitoring: {
+          ...baseMonitoring,
+          state: 'take-profit-triggered-exit-failed',
+          takeProfitTriggeredAt: new Date().toISOString(),
+          exitReason: 'take-profit-hit',
+          notes: error instanceof Error
+            ? `Take-profit triggered but sell order failed: ${error.message}`
+            : 'Take-profit triggered but sell order failed.'
+        },
+        updatedAt: new Date().toISOString()
+      };
+    }
   }
 
   return {
@@ -427,7 +490,7 @@ export async function pollTradeIntent(env, id) {
   const event = await fetchEventByInput(env, existing.input ?? existing.eventSlug);
   const { outcome } = findTrackedMarketOutcome(event, existing);
   const currentProbability = outcome?.probability ?? null;
-  const nextIntent = evaluateMonitoringState(existing, currentProbability);
+  const nextIntent = await evaluateMonitoringState(env, existing, currentProbability);
 
   await writeTradeIntents(replaceTradeIntent(intents, nextIntent));
   return nextIntent;
@@ -446,7 +509,7 @@ export async function pollTrackingTradeIntents(env) {
     try {
       const event = await fetchEventByInput(env, intent.input ?? intent.eventSlug);
       const { outcome } = findTrackedMarketOutcome(event, intent);
-      nextIntents.push(evaluateMonitoringState(intent, outcome?.probability ?? null));
+      nextIntents.push(await evaluateMonitoringState(env, intent, outcome?.probability ?? null));
     } catch {
       nextIntents.push({
         ...intent,

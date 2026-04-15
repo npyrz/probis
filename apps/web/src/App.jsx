@@ -93,8 +93,12 @@ function formatClockTime(value) {
 }
 
 function formatIntentStatus(intent) {
+  if (intent.status === 'draft') {
+    return 'Draft';
+  }
+
   if (intent.status === 'tracking') {
-    return 'Tracking';
+    return 'Actively Trading';
   }
 
   if (intent.status === 'paused') {
@@ -106,6 +110,14 @@ function formatIntentStatus(intent) {
   }
 
   return 'Confirmed';
+}
+
+function formatOrderId(value) {
+  if (typeof value !== 'string' || value.length === 0) {
+    return 'n/a';
+  }
+
+  return value.length > 16 ? `${value.slice(0, 8)}...${value.slice(-6)}` : value;
 }
 
 function formatPercent(value) {
@@ -876,7 +888,7 @@ export default function App() {
         saveStoredTradeDraft(nextIntent);
       }
 
-      setNotice('Tracking paused for this position.');
+      setNotice('Trade stopped and moved out of active tracking.');
     } catch (stopError) {
       setError(stopError instanceof Error ? stopError.message : 'Unable to stop trade monitoring');
     } finally {
@@ -887,6 +899,17 @@ export default function App() {
   async function handleExecuteTradeIntent(intent) {
     setError('');
     setNotice('');
+
+    if (!intent.confirmedAt) {
+      setError('Confirm and save this trade intent before starting live trading.');
+      return;
+    }
+
+    if (!intent.marketSlug) {
+      setError('This intent is missing a market slug. Open Intent, save changes, and try again.');
+      return;
+    }
+
     setIsMutatingHistory(true);
 
     try {
@@ -899,7 +922,7 @@ export default function App() {
         saveStoredTradeDraft(nextIntent);
       }
 
-      setNotice('Buy order submitted to Polymarket US and monitoring state activated.');
+      setNotice('Buy order submitted to Polymarket US. Intent is now actively trading.');
     } catch (executeError) {
       setError(executeError instanceof Error ? executeError.message : 'Unable to start trade monitoring');
     } finally {
@@ -940,7 +963,8 @@ export default function App() {
           ? await updateTradeIntentRequest(tradeDraft.id, {
               tradeAmount: payload.tradeAmount,
               tradeSuggestion: payload.tradeSuggestion,
-              eventTitle: payload.eventTitle
+              eventTitle: payload.eventTitle,
+              marketSlug: payload.marketSlug
             })
           : await createTradeIntent(payload);
 
@@ -1387,6 +1411,14 @@ export default function App() {
                       <span>Last evaluation</span>
                       <strong>{formatDateTime(intent.monitoring?.lastEvaluationAt)}</strong>
                     </article>
+                    <article>
+                      <span>Entry order</span>
+                      <strong>{formatOrderId(intent.executionRequest?.venueOrderId)}</strong>
+                    </article>
+                    <article>
+                      <span>Shares filled</span>
+                      <strong>{typeof intent.position?.sharesFilled === 'number' ? intent.position.sharesFilled.toFixed(2) : 'n/a'}</strong>
+                    </article>
                   </div>
 
                   <p className="trade-status-copy">{intent.monitoring?.notes ?? 'Monitoring live price movement.'}</p>
@@ -1406,7 +1438,7 @@ export default function App() {
                       onClick={() => void handleStopTrackedIntent(intent)}
                       disabled={isMutatingHistory}
                     >
-                      Stop Bot
+                      Stop Trade
                     </button>
                     <button
                       type="button"
@@ -1452,6 +1484,16 @@ export default function App() {
                     <small>
                       {formatIntentStatus(intent)} · {formatDateTime(intent.confirmedAt)}
                     </small>
+                    {intent.executionRequest?.venueOrderId ? (
+                      <small>
+                        Entry order {formatOrderId(intent.executionRequest.venueOrderId)} · submitted {formatDateTime(intent.executionRequest.executedAt)}
+                      </small>
+                    ) : null}
+                    {intent.exitRequest?.venueOrderId ? (
+                      <small>
+                        Exit order {formatOrderId(intent.exitRequest.venueOrderId)} · submitted {formatDateTime(intent.exitRequest.executedAt)}
+                      </small>
+                    ) : null}
                     {intent.executionRequest?.readyForExecution ? (
                       <small>
                         Request ready · {intent.executionRequest.orderType} · {intent.executionRequest.side}
@@ -1471,9 +1513,9 @@ export default function App() {
                       type="button"
                       className="secondary-button secondary-button-muted"
                       onClick={() => void handleExecuteTradeIntent(intent)}
-                      disabled={isMutatingHistory || intent.status === 'tracking'}
+                      disabled={isMutatingHistory || intent.status === 'tracking' || !intent.marketSlug || !intent.confirmedAt}
                     >
-                      {intent.status === 'tracking' ? 'Tracking' : 'Start Tracking'}
+                      {intent.status === 'tracking' ? 'Actively Trading' : 'Start Trading'}
                     </button>
                     <button
                       type="button"

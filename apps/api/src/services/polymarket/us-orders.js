@@ -76,6 +76,106 @@ function parseNumber(value) {
   return Number.isFinite(next) ? next : null;
 }
 
+function extractNumericQuantity(candidate) {
+  if (!candidate || typeof candidate !== 'object') {
+    return null;
+  }
+
+  const directKeys = [
+    'quantity',
+    'qty',
+    'size',
+    'shares',
+    'position',
+    'netQuantity',
+    'availableQuantity'
+  ];
+
+  for (const key of directKeys) {
+    const numeric = parseNumber(candidate[key]);
+    if (typeof numeric === 'number' && numeric > 0) {
+      return numeric;
+    }
+  }
+
+  const nestedKeys = ['quantity', 'qty', 'size', 'shares', 'position'];
+
+  for (const key of nestedKeys) {
+    const numeric = parseNumber(candidate[key]?.value);
+    if (typeof numeric === 'number' && numeric > 0) {
+      return numeric;
+    }
+  }
+
+  return null;
+}
+
+function getPortfolioPositions(payload) {
+  if (Array.isArray(payload)) {
+    return payload;
+  }
+
+  if (Array.isArray(payload?.positions)) {
+    return payload.positions;
+  }
+
+  if (Array.isArray(payload?.data?.positions)) {
+    return payload.data.positions;
+  }
+
+  return [];
+}
+
+function getPositionMarketSlug(position) {
+  if (!position || typeof position !== 'object') {
+    return null;
+  }
+
+  return position.marketSlug
+    ?? position.market?.slug
+    ?? position.marketMetadata?.slug
+    ?? null;
+}
+
+async function fetchPortfolioPositions(env) {
+  const path = '/v1/portfolio/positions';
+  const client = createPolymarketUsClient(env);
+  const response = await client.get(path, {
+    headers: getSignedHeaders(env, 'GET', path)
+  });
+
+  return getPortfolioPositions(response.data);
+}
+
+async function resolveLivePositionShares(env, intent) {
+  const marketSlug = intent.marketSlug;
+
+  if (!marketSlug) {
+    return null;
+  }
+
+  try {
+    const positions = await fetchPortfolioPositions(env);
+    const matches = positions.filter((position) => getPositionMarketSlug(position) === marketSlug);
+
+    if (matches.length === 0) {
+      return null;
+    }
+
+    const byOutcome = matches.find((position) => {
+      const outcome = String(
+        position.outcome ?? position.marketMetadata?.outcome ?? position.side ?? ''
+      ).trim().toLowerCase();
+      const desired = normalizeOutcomeLabel(intent.outcomeLabel);
+      return outcome === desired;
+    }) ?? matches[0];
+
+    return extractNumericQuantity(byOutcome);
+  } catch {
+    return null;
+  }
+}
+
 function normalizeOutcomeLabel(label) {
   return String(label ?? '').trim().toLowerCase();
 }
@@ -258,7 +358,9 @@ export async function placeSellOrderForIntent(env, intent) {
     throw new Error('Trade intent is missing marketSlug and cannot be sold automatically.');
   }
 
-  const shares = parseNumber(intent.position?.sharesFilled ?? intent.executionRequest?.sharesEstimate);
+  const localShares = parseNumber(intent.position?.sharesFilled ?? intent.executionRequest?.sharesEstimate);
+  const liveShares = localShares && localShares > 0 ? null : await resolveLivePositionShares(env, intent);
+  const shares = localShares && localShares > 0 ? localShares : liveShares;
 
   if (!shares || shares <= 0) {
     throw new Error('Trade intent does not have a valid filled share quantity for sell.');
