@@ -1,0 +1,72 @@
+function average(values) {
+  if (values.length === 0) {
+    return null;
+  }
+
+  return values.reduce((sum, value) => sum + value, 0) / values.length;
+}
+
+function clamp(value, min = 0, max = 1) {
+  return Math.min(max, Math.max(min, value));
+}
+
+function findModelOutcome(statisticalModel, marketQuestion, outcomeLabel) {
+  const market = statisticalModel.markets.find((candidate) => candidate.question === marketQuestion);
+  const outcome = market?.outcomes.find((candidate) => candidate.label === outcomeLabel) ?? null;
+
+  return {
+    market,
+    outcome
+  };
+}
+
+export function combineDecisionRecommendation(event, aggregation, statisticalModel, aiRecommendation, rawAnalysis) {
+  const bestOpportunity = statisticalModel.summary.bestOpportunity;
+  const recommendedMarketQuestion = aiRecommendation?.marketQuestion || bestOpportunity?.question || null;
+  const recommendedOutcomeLabel = aiRecommendation?.outcomeLabel || bestOpportunity?.label || null;
+  const modelMatch = recommendedMarketQuestion && recommendedOutcomeLabel
+    ? findModelOutcome(statisticalModel, recommendedMarketQuestion, recommendedOutcomeLabel)
+    : { market: null, outcome: null };
+  const chosenMarket = modelMatch.market ?? statisticalModel.markets.find((market) => market.question === bestOpportunity?.question) ?? null;
+  const chosenOutcome = modelMatch.outcome ?? bestOpportunity ?? null;
+  const llmConfidence = typeof aiRecommendation?.confidence === 'number' ? aiRecommendation.confidence : null;
+  const modelConfidence = chosenOutcome?.confidence ?? chosenMarket?.confidence ?? null;
+  const combinedConfidence = clamp(average([llmConfidence, modelConfidence].filter((value) => typeof value === 'number')) ?? 0.5);
+  const edge = chosenOutcome?.edge ?? 0;
+  const agreement = aiRecommendation?.agreeWithModel ?? Boolean(bestOpportunity && chosenOutcome?.label === bestOpportunity.label);
+
+  let action = 'watch';
+  if (edge > 0.01 && combinedConfidence >= 0.55 && agreement) {
+    action = 'buy';
+  } else if (edge < -0.01 || (llmConfidence !== null && llmConfidence < 0.4 && !agreement)) {
+    action = 'avoid';
+  }
+
+  return {
+    generatedAt: new Date().toISOString(),
+    action,
+    recommendation: {
+      marketQuestion: recommendedMarketQuestion,
+      outcomeLabel: recommendedOutcomeLabel,
+      currentProbability: chosenOutcome?.currentProbability ?? null,
+      modelProbability: chosenOutcome?.estimatedProbability ?? null,
+      edge,
+      combinedConfidence,
+      modelConfidence,
+      llmConfidence,
+      agreementWithModel: agreement,
+      thesis: aiRecommendation?.thesis ?? null,
+      keyRisk: aiRecommendation?.keyRisk ?? null,
+      reasons: Array.isArray(aiRecommendation?.reasons) ? aiRecommendation.reasons : []
+    },
+    modelSummary: {
+      bestOpportunity: statisticalModel.summary.bestOpportunity,
+      highestConfidenceMarket: statisticalModel.summary.highestConfidenceMarket
+    },
+    liquidityContext: {
+      eventLiquidity: aggregation.liquiditySnapshot.eventLiquidity,
+      eventVolume: aggregation.liquiditySnapshot.eventVolume
+    },
+    rawAnalysis
+  };
+}

@@ -49,17 +49,18 @@ export async function resolveEvent(input) {
   return data.event;
 }
 
-export async function resolveEventAggregation(input) {
-  return requestJson(`/api/polymarket/events/aggregation?input=${encodeURIComponent(input)}`);
+export async function resolveEventAggregation(input, options = {}) {
+  const refreshQuery = options.refresh ? '&refresh=true' : '';
+  return requestJson(`/api/polymarket/events/aggregation?input=${encodeURIComponent(input)}${refreshQuery}`);
 }
 
-export async function analyzeEvent(input) {
+export async function analyzeEvent(input, options = {}) {
   const data = await requestJson('/api/ai/analyze-event', {
     method: 'POST',
     headers: {
       'Content-Type': 'application/json'
     },
-    body: JSON.stringify({ input })
+    body: JSON.stringify({ input, refresh: options.refresh === true })
   });
 
   return data;

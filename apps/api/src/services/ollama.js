@@ -86,6 +86,27 @@ export async function runAiTest(env, prompt) {
   };
 }
 
+function extractFirstJsonObject(text) {
+  const start = text.indexOf('{');
+  const end = text.lastIndexOf('}');
+
+  if (start === -1 || end === -1 || end <= start) {
+    throw new Error('Model response did not contain a JSON object.');
+  }
+
+  return JSON.parse(text.slice(start, end + 1));
+}
+
+export async function runAiJson(env, prompt) {
+  const result = await runAiTest(env, prompt);
+  const parsed = extractFirstJsonObject(result.response);
+
+  return {
+    ...result,
+    parsed
+  };
+}
+
 export function buildEventAnalysisPrompt(event, aggregation, statisticalModel) {
   const marketLines = aggregation.historicalPrices.markets
     .map((market) => {
@@ -121,5 +142,31 @@ export function buildEventAnalysisPrompt(event, aggregation, statisticalModel) {
     `Model methodology: ${statisticalModel.methodology.description}`,
     'Live markets:',
     marketLines
+  ].join('\n');
+}
+
+export function buildDecisionEnginePrompt(event, aggregation, statisticalModel) {
+  const topMarkets = statisticalModel.markets
+    .filter((market) => market.opportunity)
+    .sort((left, right) => right.opportunity.score - left.opportunity.score)
+    .slice(0, 3)
+    .map((market) => {
+      const best = market.opportunity;
+      return `- ${market.question} | outcome=${best.label} | market=${best.currentProbability.toFixed(3)} | model=${best.estimatedProbability.toFixed(3)} | edge=${best.edge.toFixed(3)} | confidence=${best.confidence.toFixed(3)}`;
+    })
+    .join('\n');
+
+  return [
+    'You are a decision engine for a prediction-market trading assistant.',
+    'Return exactly one JSON object and no extra text.',
+    'The JSON schema is:',
+    '{"marketQuestion":"string","outcomeLabel":"string","confidence":0.0,"agreeWithModel":true,"thesis":"string","keyRisk":"string","reasons":["string","string","string"]}',
+    'Choose a recommendation from the provided model-ranked live markets only.',
+    `Event: ${event.title}`,
+    `Slug: ${event.slug}`,
+    `Event volume: ${aggregation.liquiditySnapshot.eventVolume ?? 'n/a'}`,
+    `Event liquidity: ${aggregation.liquiditySnapshot.eventLiquidity ?? 'n/a'}`,
+    'Top model-ranked markets:',
+    topMarkets
   ].join('\n');
 }

@@ -234,7 +234,10 @@ h2 {
 .event-summary-stats article,
 .derived-metrics-grid article,
 .event-highlight,
-.model-highlight {
+.model-highlight,
+.decision-highlight,
+.market-detail-card,
+.detail-callout {
   padding: 0.9rem 1rem;
   border-radius: 16px;
   background: rgba(255, 255, 255, 0.04);
@@ -245,6 +248,8 @@ h2 {
 .derived-metrics-grid span,
 .event-highlight span,
 .model-highlight span,
+.decision-highlight span,
+.detail-callout span,
 .market-chip {
   display: block;
   font-size: 0.78rem;
@@ -254,19 +259,27 @@ h2 {
 .event-summary-stats strong,
 .derived-metrics-grid strong,
 .event-highlight strong,
-.model-highlight strong {
+.model-highlight strong,
+.decision-highlight strong,
+.detail-callout strong {
   display: block;
   margin-top: 0.35rem;
 }
 
 .event-highlight p,
-.model-highlight p {
+.model-highlight p,
+.decision-highlight p,
+.detail-callout p {
   margin: 0.45rem 0 0;
   color: rgba(244, 239, 229, 0.78);
 }
 
 .model-highlight {
   background: linear-gradient(180deg, rgba(117, 176, 201, 0.12), rgba(239, 176, 93, 0.08));
+}
+
+.decision-highlight {
+  background: linear-gradient(180deg, rgba(123, 201, 126, 0.12), rgba(117, 176, 201, 0.08));
 }
 
 .panel-heading {
@@ -336,6 +349,11 @@ h2 {
   border: 1px solid rgba(255, 255, 255, 0.08);
 }
 
+.market-card-active {
+  border-color: rgba(117, 176, 201, 0.45);
+  box-shadow: inset 0 0 0 1px rgba(117, 176, 201, 0.18);
+}
+
 .market-card-header {
   display: grid;
   gap: 0.75rem;
@@ -389,6 +407,11 @@ h2 {
   margin-top: 0.3rem;
 }
 
+.sparkline-large {
+  height: 72px;
+  margin-top: 0.75rem;
+}
+
 .sparkline-line {
   fill: none;
   stroke: #75b0c9;
@@ -429,6 +452,46 @@ h2 {
 
 .analysis-card {
   padding: 1rem;
+}
+
+.market-detail-card {
+  display: grid;
+  gap: 1rem;
+}
+
+.detail-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
+  gap: 0.9rem;
+}
+
+.detail-outcome-card {
+  padding: 1rem;
+  border-radius: 18px;
+  background: linear-gradient(180deg, rgba(255, 255, 255, 0.09), rgba(255, 255, 255, 0.03));
+  border: 1px solid rgba(255, 255, 255, 0.08);
+}
+
+.detail-outcome-header {
+  display: flex;
+  justify-content: space-between;
+  gap: 1rem;
+  align-items: baseline;
+}
+
+.detail-metrics {
+  margin-top: 0.75rem;
+  display: grid;
+  grid-template-columns: 1fr auto;
+  gap: 0.35rem 0.75rem;
+}
+
+.detail-metrics span {
+  color: rgba(244, 239, 229, 0.62);
+}
+
+.detail-callout {
+  background: linear-gradient(180deg, rgba(239, 176, 93, 0.1), rgba(255, 255, 255, 0.04));
 }
 
 .analysis-card pre {

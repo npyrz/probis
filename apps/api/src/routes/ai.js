@@ -1,7 +1,8 @@
 import { Router } from 'express';
 
 import { getEnv } from '../config/env.js';
-import { buildEventAnalysisPrompt, getOllamaStatus, runAiTest } from '../services/ollama.js';
+import { combineDecisionRecommendation } from '../services/decision-engine.js';
+import { buildDecisionEnginePrompt, buildEventAnalysisPrompt, getOllamaStatus, runAiJson, runAiTest } from '../services/ollama.js';
 import { resolveEventAnalytics } from '../services/polymarket/event-data.js';
 
 const router = Router();
@@ -50,9 +51,19 @@ router.post('/api/ai/analyze-event', async (request, response) => {
       return;
     }
 
-    const analytics = await resolveEventAnalytics(env, input);
+    const forceRefresh = request.body?.refresh === true;
+    const analytics = await resolveEventAnalytics(env, input, { forceRefresh });
     const prompt = buildEventAnalysisPrompt(analytics.event, analytics.aggregation, analytics.statisticalModel);
     const result = await runAiTest(env, prompt);
+    const decisionPrompt = buildDecisionEnginePrompt(analytics.event, analytics.aggregation, analytics.statisticalModel);
+    const decisionResult = await runAiJson(env, decisionPrompt);
+    const decisionEngine = combineDecisionRecommendation(
+      analytics.event,
+      analytics.aggregation,
+      analytics.statisticalModel,
+      decisionResult.parsed,
+      decisionResult.response
+    );
 
     response.json({
       ok: true,
@@ -60,6 +71,7 @@ router.post('/api/ai/analyze-event', async (request, response) => {
       aggregation: analytics.aggregation,
       statisticalModel: analytics.statisticalModel,
       analysis: result.response,
+      decisionEngine,
       model: result.resolvedModel,
       requestedModel: result.requestedModel
     });

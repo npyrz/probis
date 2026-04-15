@@ -3,7 +3,7 @@ import { Router } from 'express';
 import { getEnv } from '../config/env.js';
 import { getPolymarketStatus } from '../services/polymarket/client.js';
 import { fetchActiveEvents, fetchEventByInput } from '../services/polymarket/gamma.js';
-import { resolveEventAnalytics } from '../services/polymarket/event-data.js';
+import { invalidateEventAnalyticsCache, resolveEventAnalytics } from '../services/polymarket/event-data.js';
 
 const router = Router();
 
@@ -75,6 +75,7 @@ router.get('/api/polymarket/events/aggregation', async (request, response) => {
   try {
     const env = getEnv();
     const input = request.query.input ?? request.query.url ?? request.query.slug;
+    const forceRefresh = request.query.refresh === 'true';
 
     if (typeof input !== 'string') {
       response.status(400).json({
@@ -84,7 +85,7 @@ router.get('/api/polymarket/events/aggregation', async (request, response) => {
       return;
     }
 
-    const analytics = await resolveEventAnalytics(env, input);
+    const analytics = await resolveEventAnalytics(env, input, { forceRefresh });
 
     response.json({
       ok: true,
@@ -96,6 +97,16 @@ router.get('/api/polymarket/events/aggregation', async (request, response) => {
       error: error instanceof Error ? error.message : 'Unable to resolve Polymarket analytics'
     });
   }
+});
+
+router.post('/api/polymarket/events/aggregation/invalidate', async (request, response) => {
+  const input = request.body?.input ?? request.body?.url ?? request.body?.slug ?? null;
+  invalidateEventAnalyticsCache(typeof input === 'string' ? input : undefined);
+
+  response.json({
+    ok: true,
+    invalidated: input ?? 'all'
+  });
 });
 
 export default router;

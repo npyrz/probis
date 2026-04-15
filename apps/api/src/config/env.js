@@ -14,6 +14,7 @@ const requiredKeys = ['POLYMARKET_API_KEY', 'POLYMARKET_PRIVATE_KEY'];
 export function getEnv() {
   const env = {
     port: Number.parseInt(process.env.PORT ?? '4000', 10),
+    analyticsCacheTtlMs: Number.parseInt(process.env.ANALYTICS_CACHE_TTL_MS ?? '300000', 10),
     polymarketApiKey: process.env.POLYMARKET_API_KEY ?? '',
     polymarketPrivateKey: process.env.POLYMARKET_PRIVATE_KEY ?? '',
     gammaBaseUrl: process.env.GAMMA_BASE_URL ?? 'https://gamma-api.polymarket.com',

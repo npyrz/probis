@@ -2,7 +2,6 @@ import { buildEventAggregation } from './aggregation.js';
 import { extractEventSlug, fetchEventByInput } from './gamma.js';
 import { buildStatisticalModel } from './statistical-model.js';
 
-const ANALYTICS_CACHE_TTL_MS = 5 * 60 * 1000;
 const analyticsCache = new Map();
 
 function getCacheKey(input) {
@@ -24,11 +23,20 @@ function getCachedAnalytics(cacheKey) {
   return entry.value;
 }
 
-function setCachedAnalytics(cacheKey, value) {
+function setCachedAnalytics(cacheKey, value, ttlMs) {
   analyticsCache.set(cacheKey, {
     value,
-    expiresAt: Date.now() + ANALYTICS_CACHE_TTL_MS
+    expiresAt: Date.now() + ttlMs
   });
+}
+
+export function invalidateEventAnalyticsCache(input) {
+  if (!input) {
+    analyticsCache.clear();
+    return;
+  }
+
+  analyticsCache.delete(getCacheKey(input));
 }
 
 export async function resolveEventWithAggregation(env, input) {
@@ -43,9 +51,10 @@ export async function resolveEventWithAggregation(env, input) {
   };
 }
 
-export async function resolveEventAnalytics(env, input) {
+export async function resolveEventAnalytics(env, input, options = {}) {
   const cacheKey = getCacheKey(input);
-  const cached = getCachedAnalytics(cacheKey);
+  const forceRefresh = options.forceRefresh === true;
+  const cached = forceRefresh ? null : getCachedAnalytics(cacheKey);
 
   if (cached) {
     return cached;
@@ -67,7 +76,7 @@ export async function resolveEventAnalytics(env, input) {
     statisticalModel
   };
 
-  setCachedAnalytics(cacheKey, result);
+  setCachedAnalytics(cacheKey, result, env.analyticsCacheTtlMs);
 
   return result;
 }

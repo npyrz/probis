@@ -172,7 +172,7 @@ function buildSparklinePath(history) {
     .join(' ');
 }
 
-function OutcomeSparkline({ history }) {
+function OutcomeSparkline({ history, className = 'sparkline' }) {
   const path = buildSparklinePath(history);
 
   if (!path) {
@@ -180,7 +180,7 @@ function OutcomeSparkline({ history }) {
   }
 
   return (
-    <svg className="sparkline" viewBox="0 0 100 100" preserveAspectRatio="none" aria-hidden="true">
+    <svg className={className} viewBox="0 0 100 100" preserveAspectRatio="none" aria-hidden="true">
       <polyline points={path} className="sparkline-line" />
     </svg>
   );
@@ -192,6 +192,8 @@ export default function App() {
   const [selectedEvent, setSelectedEvent] = useState(null);
   const [aggregation, setAggregation] = useState(null);
   const [statisticalModel, setStatisticalModel] = useState(null);
+  const [decisionEngine, setDecisionEngine] = useState(null);
+  const [selectedMarketId, setSelectedMarketId] = useState(null);
   const [eventInput, setEventInput] = useState('');
   const [sortBy, setSortBy] = useState('modelEdge');
   const [filterBy, setFilterBy] = useState('all');
@@ -201,6 +203,9 @@ export default function App() {
   const visibleMarkets = selectedEvent?.markets.filter(marketHasLivePrices) ?? [];
   const eventHeadline = selectedEvent ? getEventHeadline(selectedEvent, visibleMarkets) : null;
   const rankedMarkets = filterAndSortMarkets(visibleMarkets, aggregation, statisticalModel, sortBy, filterBy);
+  const selectedMarket = visibleMarkets.find((market) => market.conditionId === selectedMarketId) ?? rankedMarkets[0]?.market ?? null;
+  const selectedHistoricalMarket = selectedMarket ? findHistoricalMarket(aggregation, selectedMarket.conditionId) : null;
+  const selectedModelMarket = selectedMarket ? getModelMarket(statisticalModel, selectedMarket.conditionId) : null;
 
   useEffect(() => {
     let isCancelled = false;
@@ -232,6 +237,7 @@ export default function App() {
   async function handleResolveEvent(submittedInput) {
     setError('');
     setAnalysis('');
+    setDecisionEngine(null);
 
     try {
       const [event, analytics] = await Promise.all([
@@ -241,11 +247,14 @@ export default function App() {
       setSelectedEvent(event);
       setAggregation(analytics.aggregation ?? null);
       setStatisticalModel(analytics.statisticalModel ?? null);
+      const liveMarkets = event.markets.filter(marketHasLivePrices);
+      setSelectedMarketId(liveMarkets[0]?.conditionId ?? null);
       setEventInput(submittedInput);
     } catch (resolveError) {
       setSelectedEvent(null);
       setAggregation(null);
       setStatisticalModel(null);
+      setSelectedMarketId(null);
       setError(resolveError instanceof Error ? resolveError.message : 'Unable to resolve event');
     }
   }
@@ -280,6 +289,7 @@ export default function App() {
       try {
         const result = await analyzeEvent(selectedEvent.slug);
         setAnalysis(result.analysis);
+        setDecisionEngine(result.decisionEngine ?? null);
       } catch (analysisError) {
         setError(analysisError instanceof Error ? analysisError.message : 'Unable to run AI analysis');
       }
@@ -442,6 +452,21 @@ export default function App() {
                   </div>
                 ) : null}
 
+                {decisionEngine?.recommendation ? (
+                  <div className="decision-highlight">
+                    <span>Step 6.3 Decision Engine</span>
+                    <strong>
+                      {decisionEngine.action.toUpperCase()} {decisionEngine.recommendation.outcomeLabel} in{' '}
+                      {decisionEngine.recommendation.marketQuestion}
+                    </strong>
+                    <p>
+                      Combined confidence {formatPercent(decisionEngine.recommendation.combinedConfidence)} · edge{' '}
+                      {formatSignedPercent(decisionEngine.recommendation.edge)}
+                    </p>
+                    <p>{decisionEngine.recommendation.thesis}</p>
+                  </div>
+                ) : null}
+
                 {eventHeadline ? (
                   <div className="event-highlight">
                     <span>Highest-conviction live market</span>
@@ -478,7 +503,11 @@ export default function App() {
                   <p className="empty-state market-empty-state">No markets match the current filter.</p>
                 ) : null}
                 {rankedMarkets.map(({ market, metrics }) => (
-                  <section key={market.conditionId ?? market.question} className="market-card">
+                  <section
+                    key={market.conditionId ?? market.question}
+                    className={`market-card ${selectedMarket?.conditionId === market.conditionId ? 'market-card-active' : ''}`}
+                    onClick={() => setSelectedMarketId(market.conditionId)}
+                  >
                     <div className="market-card-header">
                       <h3>{market.question}</h3>
                       <div className="market-chip-row">
@@ -532,6 +561,62 @@ export default function App() {
                   </section>
                 ))}
               </div>
+
+              {selectedMarket ? (
+                <section className="market-detail-card">
+                  <div className="panel-heading panel-heading-inline">
+                    <div>
+                      <p className="eyebrow">Market Drilldown</p>
+                      <h2>{selectedMarket.question}</h2>
+                    </div>
+                    <div className="market-chip-row">
+                      <span className="market-chip">Liq {formatCompactNumber(selectedMarket.liquidity)}</span>
+                      <span className="market-chip">Vol {formatCompactNumber(selectedMarket.volume)}</span>
+                      <span className="market-chip">Conf {formatPercent(selectedModelMarket?.confidence)}</span>
+                    </div>
+                  </div>
+
+                  <div className="detail-grid">
+                    {sortOutcomes(selectedMarket.outcomes).map((outcome) => {
+                      const historicalOutcome = selectedHistoricalMarket?.outcomes?.find(
+                        (candidate) => candidate.label === outcome.label
+                      );
+                      const modelOutcome = selectedModelMarket?.outcomes?.find(
+                        (candidate) => candidate.label === outcome.label
+                      );
+
+                      return (
+                        <article key={`${selectedMarket.conditionId}-${outcome.label}`} className="detail-outcome-card">
+                          <div className="detail-outcome-header">
+                            <strong>{outcome.label}</strong>
+                            <span>{formatPercent(outcome.probability)}</span>
+                          </div>
+                          <OutcomeSparkline history={historicalOutcome?.history ?? []} className="sparkline sparkline-large" />
+                          <div className="detail-metrics">
+                            <span>Model probability</span>
+                            <strong>{formatPercent(modelOutcome?.estimatedProbability)}</strong>
+                            <span>Edge</span>
+                            <strong>{formatSignedPercent(modelOutcome?.edge)}</strong>
+                            <span>7d move</span>
+                            <strong>{formatSignedPercent(historicalOutcome?.historySummary?.percentChange)}</strong>
+                            <span>Point count</span>
+                            <strong>{historicalOutcome?.historySummary?.pointCount ?? 'n/a'}</strong>
+                          </div>
+                        </article>
+                      );
+                    })}
+                  </div>
+
+                  {decisionEngine?.recommendation?.marketQuestion === selectedMarket.question ? (
+                    <div className="detail-callout">
+                      <span>Decision engine rationale</span>
+                      <strong>{decisionEngine.recommendation.outcomeLabel}</strong>
+                      <p>{decisionEngine.recommendation.thesis}</p>
+                      <p>Risk: {decisionEngine.recommendation.keyRisk}</p>
+                    </div>
+                  ) : null}
+                </section>
+              ) : null}
             </>
           ) : (
             <p className="empty-state">No event loaded yet.</p>
