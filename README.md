@@ -1,8 +1,10 @@
+![Probis Logo](apps/web/public/logo.png)
+
 # Probis
 
 Probis is a local-first Polymarket analysis and trade-planning system. The current codebase is built around a deterministic market-scoring pipeline, a constrained LLM recommendation layer, and a lightweight operator UI for reviewing opportunities, sizing trades, and storing execution intents.
 
-The hot path in this repo is not autonomous execution. It is event resolution, market normalization, historical aggregation, statistical scoring, recommendation synthesis, and manual trade preparation.
+The hot path in this repo is deterministic event resolution, market normalization, historical aggregation, statistical scoring, recommendation synthesis, and operator-controlled execution. Live order submission and monitoring are supported, while strategy selection remains model-guided and user-supervised.
 
 ## Quick Start
 
@@ -39,11 +41,11 @@ npm run dev
 curl http://localhost:4000/health
 ```
 
-6. Open the web app, resolve a Polymarket event, and run the decision engine.
+6. Open the web app, resolve a Polymarket event, run the decision engine, and manage intents in the Trade Center.
 
 - Web UI: `http://localhost:5173`
 - API: `http://localhost:4000`
-- If you want full Polymarket auth checks, add `POLYMARKET_API_KEY` and `POLYMARKET_PRIVATE_KEY` to `.env`.
+- If you want full Polymarket auth and live trading, add `POLYMARKET_US_KEY_ID` and `POLYMARKET_US_SECRET_KEY` to `.env`.
 
 ### Polymarket US Live Trading Credentials
 
@@ -67,10 +69,11 @@ The API signs requests using Ed25519 with the format described in Polymarket US 
 - Lets the user preview stake, expected value, break-even, stop-loss, take-profit, and risk/reward.
 - Persists trade intents to a local JSON store.
 - Converts a saved intent into a tracking scaffold and execution-request shape.
-- Polls tracked positions against current market probability and evaluates stop-loss and take-profit triggers.
-- Exposes operator controls for Sell Now and Stop Trade on tracked positions.
+- Polls tracked positions against current market probability, updates unrealized P/L, and evaluates stop-loss and take-profit triggers.
+- Exposes operator controls for Sell Now, Stop Trade, and Close Intent on tracked positions.
 - Surfaces total account buying power in the top header from authenticated Polymarket US account balances.
 - Shows unrealized P/L (dollars and percent) for active tracked positions with frequent auto-refresh.
+- Uses a monitor-first Trade Center workflow with filters for all, tracking, and closed intents.
 
 ## Workspace Layout
 
@@ -98,7 +101,8 @@ The API signs requests using Ed25519 with the format described in Polymarket US 
 │   │               ├── client.js
 │   │               ├── event-data.js
 │   │               ├── gamma.js
-│   │               └── statistical-model.js
+│   │               ├── statistical-model.js
+│   │               └── us-orders.js
 │   └── web/
 │       ├── package.json
 │       └── src/
@@ -120,6 +124,7 @@ flowchart LR
 		UI[React Web App] --> API[Express API]
 		API --> Gamma[Gamma Events API]
 		API --> CLOB[Polymarket CLOB Client]
+		API --> PMUS[Polymarket US Orders API]
 		API --> Ollama[Local Ollama]
 		API --> Store[Local JSON Trade Store]
 
@@ -151,12 +156,14 @@ The API is a single Express service in `apps/api`. It exposes four route groups:
 
 ### 2. Data Providers
 
-There are two external data sources and one local persistence layer:
+There are three external data sources and one local persistence layer:
 
 - Gamma API
 	Used for active event discovery and detailed event lookup by slug.
 - Polymarket CLOB client
 	Used for price-history retrieval and auth/readiness checks.
+- Polymarket US API
+	Used for signed account/balance calls and live buy/sell order submission.
 - Local JSON store
 	Used for saved trade intents in `data/trade-intents.json`.
 
@@ -479,9 +486,9 @@ The UI is organized around one analyst workflow:
 4. Rank markets by model edge, confidence, liquidity, or momentum.
 5. Run the decision engine.
 6. Preview the recommended trade with current price, sizing, editable risk inputs, and hover explanations.
-7. Save, restore, edit, delete, or start tracking a trade intent.
+7. Save, restore, edit, delete, start tracking, or close a trade intent.
 
-The frontend keeps a local draft in browser storage so an in-progress recommendation survives refresh.
+The frontend keeps a local draft in browser storage so an in-progress recommendation survives refresh, while preventing restoration of tracking or closed intents.
 
 ## Configuration
 
@@ -564,6 +571,7 @@ curl http://localhost:4000/health
 - `POST /api/trades/intents/:id/poll`
 - `POST /api/trades/intents/:id/sell`
 - `POST /api/trades/intents/:id/stop`
+- `POST /api/trades/intents/:id/close`
 
 ## API Examples
 
@@ -904,7 +912,7 @@ Response:
 			"entryProbability": 0.42,
 			"stopLossProbability": 0.39,
 			"takeProfitProbability": 0.48,
-			"notes": "Monitoring scaffold only. Live polling and exit automation are not wired yet."
+			"notes": "Monitoring live probability against configured stop-loss and take-profit levels."
 		}
 	}
 }
@@ -921,16 +929,17 @@ What this repo does today:
 - local LLM-assisted explanation and recommendation
 - risk-target generation
 - trade intent persistence
-- monitoring-state scaffolding
+- live buy/sell execution through Polymarket US
+- active intent polling with stop-loss/take-profit evaluation
+- manual overrides for sell, stop, and close actions
+- Trade Center monitoring with unrealized P/L display
 
 What this repo does not do yet:
 
-- live automated order placement
-- live position polling
-- live exit automation
 - portfolio accounting
 - backtesting and model-evaluation infrastructure
 - multi-venue routing
+- fully autonomous strategy deployment without operator review
 
 ## Practical Summary
 
@@ -941,6 +950,6 @@ The current system design is a layered decision-support stack:
 3. Score each outcome with deterministic logic.
 4. Let the LLM explain and select only within constrained candidates.
 5. Combine both views into an operator-facing recommendation.
-6. Store the result as a trade intent for manual execution and later monitoring.
+6. Execute, track, and manage intents in the Trade Center with live polling and risk triggers.
 
-That makes the codebase suitable for research, triage, and trade planning, while keeping the core recommendation path anchored in observable market features rather than unconstrained model output.
+That makes the codebase suitable for research, triage, live supervised execution, and trade management while keeping the core recommendation path anchored in observable market features rather than unconstrained model output.
