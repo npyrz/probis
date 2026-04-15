@@ -264,7 +264,7 @@ function getTerminalOrderStateFromVenueOrder(venueOrder) {
 }
 
 function buildVenueSyncClosedIntent(intent, nextState, notes) {
-  return {
+  return withApiVerification({
     ...intent,
     status: 'closed',
     monitoring: {
@@ -275,7 +275,52 @@ function buildVenueSyncClosedIntent(intent, nextState, notes) {
       notes
     },
     updatedAt: new Date().toISOString()
+  }, {
+    apiVerifiedFilledPosition: false,
+    method: 'order-by-id',
+    reason: nextState,
+    orderId: intent.executionRequest?.venueOrderId ?? intent.position?.entryOrderId ?? null
+  });
+}
+
+function withApiVerification(intent, {
+  apiVerifiedFilledPosition,
+  method,
+  reason,
+  orderId,
+  verifiedAt = null,
+  checkedAt = new Date().toISOString()
+}) {
+  const isVerified = apiVerifiedFilledPosition === true;
+
+  return {
+    ...intent,
+    verification: {
+      source: 'polymarket-us',
+      apiVerifiedFilledPosition: isVerified,
+      method: method ?? null,
+      reason: reason ?? (isVerified ? 'verified' : 'not-verified'),
+      orderId: orderId ?? null,
+      checkedAt,
+      verifiedAt: isVerified
+        ? (verifiedAt ?? checkedAt)
+        : null
+    }
   };
+}
+
+function ensureApiVerificationField(intent) {
+  if (intent?.verification?.source === 'polymarket-us'
+    && typeof intent?.verification?.apiVerifiedFilledPosition === 'boolean') {
+    return intent;
+  }
+
+  return withApiVerification(intent, {
+    apiVerifiedFilledPosition: false,
+    method: 'not-checked',
+    reason: 'not-verified',
+    orderId: intent?.executionRequest?.venueOrderId ?? intent?.position?.entryOrderId ?? null
+  });
 }
 
 async function reconcileTrackingIntentWithVenue(env, intent) {
@@ -329,7 +374,7 @@ async function reconcileTrackingIntentWithVenue(env, intent) {
   }
 
   if (hasNoShares) {
-    return {
+    return withApiVerification({
       ...intent,
       executionRequest: {
         ...intent.executionRequest,
@@ -341,10 +386,15 @@ async function reconcileTrackingIntentWithVenue(env, intent) {
         notes: `Venue sync warning: no live position shares found yet for order ${orderId}.`
       },
       updatedAt: new Date().toISOString()
-    };
+    }, {
+      apiVerifiedFilledPosition: false,
+      method: 'order-by-id-plus-live-position',
+      reason: 'no-live-shares-detected',
+      orderId
+    });
   }
 
-  return {
+  return withApiVerification({
     ...intent,
     executionRequest: {
       ...intent.executionRequest,
@@ -363,7 +413,12 @@ async function reconcileTrackingIntentWithVenue(env, intent) {
       lastExecutionAt: new Date().toISOString()
     },
     updatedAt: new Date().toISOString()
-  };
+  }, {
+    apiVerifiedFilledPosition: true,
+    method: 'order-by-id-plus-live-position',
+    reason: 'order-and-position-verified',
+    orderId
+  });
 }
 
 async function reconcileSyncRemovedIntentWithVenue(env, intent) {
@@ -401,7 +456,7 @@ async function reconcileSyncRemovedIntentWithVenue(env, intent) {
     return intent;
   }
 
-  return {
+  return withApiVerification({
     ...intent,
     status: 'tracking',
     executionRequest: {
@@ -428,7 +483,12 @@ async function reconcileSyncRemovedIntentWithVenue(env, intent) {
       notes: `Recovered from venue sync for order ${orderId}; active position shares detected.`
     },
     updatedAt: new Date().toISOString()
-  };
+  }, {
+    apiVerifiedFilledPosition: true,
+    method: 'order-by-id-plus-live-position',
+    reason: 'recovered-live-shares-detected',
+    orderId
+  });
 }
 
 async function syncTrackingIntentsWithVenue(env, intents) {
@@ -613,6 +673,15 @@ export function buildTradeIntentPayload(payload) {
       }
     }),
     monitoring: payload.monitoring ?? null,
+    verification: {
+      source: 'polymarket-us',
+      apiVerifiedFilledPosition: false,
+      method: 'not-checked',
+      reason: 'intent-created-unverified',
+      orderId: null,
+      checkedAt: new Date().toISOString(),
+      verifiedAt: null
+    },
     analysis: payload.analysis ?? null,
     generatedAt: payload.generatedAt ?? new Date().toISOString()
   };
@@ -630,12 +699,22 @@ export async function createTradeIntent(payload) {
 export async function listTradeIntents(limit = 10, env = null) {
   const intents = await readTradeIntents();
   const syncedIntents = env ? await syncTrackingIntentsWithVenue(env, intents) : intents;
+  let verificationBackfilled = false;
+  const verifiedIntents = syncedIntents.map((intent) => {
+    const nextIntent = ensureApiVerificationField(intent);
 
-  if (syncedIntents !== intents) {
-    await writeTradeIntents(syncedIntents);
+    if (nextIntent !== intent) {
+      verificationBackfilled = true;
+    }
+
+    return nextIntent;
+  });
+
+  if (syncedIntents !== intents || verificationBackfilled) {
+    await writeTradeIntents(verifiedIntents);
   }
 
-  return syncedIntents.slice(0, Math.max(1, limit));
+  return verifiedIntents.slice(0, Math.max(1, limit));
 }
 
 export async function updateTradeIntent(id, payload) {
@@ -714,7 +793,7 @@ export async function executeTradeIntent(env, id) {
     throw new Error('Order submitted but no shares were filled. Trade remains unstarted; adjust price/size and try again.');
   }
 
-  const nextIntent = {
+  const nextIntent = withApiVerification({
     ...executableIntent,
     status: 'tracking',
     executionRequest: {
@@ -737,7 +816,12 @@ export async function executeTradeIntent(env, id) {
     },
     monitoring: buildMonitoringState(executableIntent),
     updatedAt: new Date().toISOString()
-  };
+  }, {
+    apiVerifiedFilledPosition: true,
+    method: 'place-buy-order-response',
+    reason: 'entry-fill-confirmed-at-order-placement',
+    orderId: buyOrder.orderId
+  });
 
   nextIntent.monitoring = {
     ...nextIntent.monitoring,
@@ -819,12 +903,20 @@ export async function sellTradeIntent(env, id) {
   };
   const sellOrder = await placeSellOrderForIntent(env, executableIntent);
 
-  const nextIntent = finalizeTrackedIntent(executableIntent, 'manual-sell', {
+  let nextIntent = finalizeTrackedIntent(executableIntent, 'manual-sell', {
     ...executableIntent.monitoring,
     state: 'sold-manual',
     lastEvaluationAt: new Date().toISOString(),
     exitReason: 'manual-sell',
     notes: 'Manual sell requested from the dashboard.'
+  });
+  const previouslyVerified = existing?.verification?.apiVerifiedFilledPosition === true;
+  nextIntent = withApiVerification(nextIntent, {
+    apiVerifiedFilledPosition: previouslyVerified,
+    method: previouslyVerified ? 'inherited' : 'order-by-id-plus-live-position',
+    reason: previouslyVerified ? 'entry-verification-retained-after-sell' : 'not-verified',
+    orderId: existing.executionRequest?.venueOrderId ?? existing.position?.entryOrderId ?? null,
+    verifiedAt: previouslyVerified ? existing?.verification?.verifiedAt ?? null : null
   });
   nextIntent.exitRequest = {
     ...nextIntent.exitRequest,

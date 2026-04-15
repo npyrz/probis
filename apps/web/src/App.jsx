@@ -177,17 +177,9 @@ function getMonitoringStateChipClass(state) {
   return 'market-chip';
 }
 
-function hasVerifiedFilledPosition(intent) {
-  const sharesFilled = Number.parseFloat(intent?.position?.sharesFilled ?? NaN);
-  const hasEntryOrderId = typeof intent?.executionRequest?.venueOrderId === 'string'
-    && intent.executionRequest.venueOrderId.trim().length > 0;
-  const monitoringState = String(intent?.monitoring?.state ?? '').trim().toLowerCase();
-  const isSyncRemoved = monitoringState.startsWith('sync-removed');
-
-  return Number.isFinite(sharesFilled)
-    && sharesFilled > 0
-    && hasEntryOrderId
-    && !isSyncRemoved;
+function hasApiVerifiedFilledPosition(intent) {
+  return intent?.verification?.source === 'polymarket-us'
+    && intent?.verification?.apiVerifiedFilledPosition === true;
 }
 
 function formatOrderId(value) {
@@ -1725,7 +1717,7 @@ export default function App() {
                 const currentProbability = intent.monitoring?.currentProbability ?? intent.recommendation?.currentProbability ?? null;
                 const entryProbability = getTrackedEntryProbability(intent);
                 const monitoringState = intent.monitoring?.state ?? 'active';
-                const isVerifiedFilledPosition = hasVerifiedFilledPosition(intent);
+                const isVerifiedFilledPosition = hasApiVerifiedFilledPosition(intent);
                 const driftDirection = intent?.position?.entryIntent === 'ORDER_INTENT_BUY_SHORT' ? -1 : 1;
                 const drift = typeof currentProbability === 'number' && typeof entryProbability === 'number'
                   ? (currentProbability - entryProbability) * driftDirection
@@ -1749,7 +1741,7 @@ export default function App() {
                           {isTracking ? formatMonitoringStateLabel(monitoringState) : formatIntentStatus(intent)}
                         </span>
                         {isVerifiedFilledPosition ? (
-                          <span className="market-chip market-chip-verified">✓ Verified</span>
+                          <span className="market-chip market-chip-verified">✓ API Verified</span>
                         ) : null}
                       </div>
                     </div>
