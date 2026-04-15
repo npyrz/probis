@@ -239,21 +239,6 @@ h2 {
   border: 1px solid rgba(255, 255, 255, 0.08);
 }
 
-.market-status {
-  display: inline-flex;
-  margin: 0 0 0.75rem;
-  padding: 0.25rem 0.6rem;
-  border-radius: 999px;
-  font-size: 0.74rem;
-  letter-spacing: 0.03em;
-}
-
-.market-status-unavailable {
-  background: rgba(255, 196, 87, 0.12);
-  color: #f2bb88;
-  border: 1px solid rgba(242, 187, 136, 0.2);
-}
-
 .outcome-list {
   display: grid;
   gap: 0.6rem;
