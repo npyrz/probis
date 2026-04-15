@@ -329,17 +329,19 @@ async function reconcileTrackingIntentWithVenue(env, intent) {
   }
 
   if (hasNoShares) {
-    return buildVenueSyncClosedIntent(
-      {
-        ...intent,
-        executionRequest: {
-          ...intent.executionRequest,
-          venueOrder: venueOrder
-        }
+    return {
+      ...intent,
+      executionRequest: {
+        ...intent.executionRequest,
+        venueOrder: venueOrder
       },
-      'sync-removed-no-live-position',
-      `Removed from tracking because no live position shares were found on account for order ${orderId}.`
-    );
+      monitoring: {
+        ...intent.monitoring,
+        lastEvaluationAt: new Date().toISOString(),
+        notes: `Venue sync warning: no live position shares found yet for order ${orderId}.`
+      },
+      updatedAt: new Date().toISOString()
+    };
   }
 
   return {
@@ -364,6 +366,71 @@ async function reconcileTrackingIntentWithVenue(env, intent) {
   };
 }
 
+async function reconcileSyncRemovedIntentWithVenue(env, intent) {
+  if (intent.status !== 'closed') {
+    return intent;
+  }
+
+  const monitoringState = String(intent.monitoring?.state ?? '');
+
+  if (!monitoringState.startsWith('sync-removed')) {
+    return intent;
+  }
+
+  const orderId = intent.executionRequest?.venueOrderId ?? intent.position?.entryOrderId ?? null;
+
+  if (!orderId) {
+    return intent;
+  }
+
+  let venueOrder;
+
+  try {
+    venueOrder = await getPolymarketUsOrderById(env, orderId);
+  } catch {
+    return intent;
+  }
+
+  const sharesFilled = Number.parseFloat(getSharesFromOrder(venueOrder) ?? NaN);
+  const notionalSpent = Number.parseFloat(getSpentFromOrder(venueOrder) ?? NaN);
+  const liveShares = Number.parseFloat(await resolveLivePositionShares(env, intent) ?? NaN);
+  const hasLiveShares = (Number.isFinite(sharesFilled) && sharesFilled > 0)
+    || (Number.isFinite(liveShares) && liveShares > 0);
+
+  if (!hasLiveShares) {
+    return intent;
+  }
+
+  return {
+    ...intent,
+    status: 'tracking',
+    executionRequest: {
+      ...intent.executionRequest,
+      venueOrderId: orderId,
+      venueOrder
+    },
+    position: {
+      ...intent.position,
+      entryOrderId: orderId,
+      sharesFilled: Number.isFinite(sharesFilled) && sharesFilled > 0
+        ? sharesFilled
+        : (Number.isFinite(liveShares) && liveShares > 0 ? liveShares : intent.position?.sharesFilled ?? null),
+      notionalSpent: Number.isFinite(notionalSpent) && notionalSpent > 0
+        ? notionalSpent
+        : (intent.position?.notionalSpent ?? null),
+      lastExecutionAt: new Date().toISOString()
+    },
+    monitoring: {
+      ...intent.monitoring,
+      state: 'active',
+      exitReason: null,
+      lastEvaluationAt: new Date().toISOString(),
+      notes: `Recovered from venue sync for order ${orderId}; active position shares detected.`
+    },
+    updatedAt: new Date().toISOString()
+  };
+}
+
 async function syncTrackingIntentsWithVenue(env, intents) {
   if (!env?.hasUsTradingCredentials) {
     return intents;
@@ -372,12 +439,17 @@ async function syncTrackingIntentsWithVenue(env, intents) {
   const nextIntents = [];
 
   for (const intent of intents) {
-    if (intent.status !== 'tracking') {
-      nextIntents.push(intent);
+    if (intent.status === 'tracking') {
+      nextIntents.push(await reconcileTrackingIntentWithVenue(env, intent));
       continue;
     }
 
-    nextIntents.push(await reconcileTrackingIntentWithVenue(env, intent));
+    if (intent.status === 'closed') {
+      nextIntents.push(await reconcileSyncRemovedIntentWithVenue(env, intent));
+      continue;
+    }
+
+    nextIntents.push(intent);
   }
 
   return nextIntents;

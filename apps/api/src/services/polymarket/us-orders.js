@@ -129,19 +129,29 @@ function extractNumericQuantity(candidate) {
 }
 
 function getPortfolioPositions(payload) {
+  const positions = [];
+
   if (Array.isArray(payload)) {
-    return payload;
+    positions.push(...payload);
   }
 
   if (Array.isArray(payload?.positions)) {
-    return payload.positions;
+    positions.push(...payload.positions);
+  }
+
+  if (Array.isArray(payload?.availablePositions)) {
+    positions.push(...payload.availablePositions);
   }
 
   if (Array.isArray(payload?.data?.positions)) {
-    return payload.data.positions;
+    positions.push(...payload.data.positions);
   }
 
-  return [];
+  if (Array.isArray(payload?.data?.availablePositions)) {
+    positions.push(...payload.data.availablePositions);
+  }
+
+  return positions;
 }
 
 function getAccountBalances(payload) {
@@ -472,6 +482,17 @@ function getPositionMarketSlug(position) {
     ?? null;
 }
 
+function normalizeMarketSlugValue(value) {
+  return String(value ?? '').trim().toLowerCase().replace(/^aec-/, '');
+}
+
+function marketSlugsMatch(left, right) {
+  const normalizedLeft = normalizeMarketSlugValue(left);
+  const normalizedRight = normalizeMarketSlugValue(right);
+
+  return normalizedLeft.length > 0 && normalizedLeft === normalizedRight;
+}
+
 async function fetchPortfolioPositions(env) {
   const path = '/v1/portfolio/positions';
   const client = createPolymarketUsClient(env);
@@ -491,7 +512,7 @@ export async function resolveLivePositionShares(env, intent) {
 
   try {
     const positions = await fetchPortfolioPositions(env);
-    const matches = positions.filter((position) => getPositionMarketSlug(position) === marketSlug);
+    const matches = positions.filter((position) => marketSlugsMatch(getPositionMarketSlug(position), marketSlug));
 
     if (matches.length === 0) {
       return null;
@@ -697,11 +718,13 @@ function sellIntentForEntryIntent(entryIntent, outcomeLabel) {
 }
 
 function getOrderId(orderResponse) {
-  return orderResponse?.id ?? null;
+  const order = orderResponse?.order ?? orderResponse;
+  return order?.id ?? null;
 }
 
 export function getOrderState(orderResponse) {
-  const directState = String(orderResponse?.state ?? '').trim();
+  const order = orderResponse?.order ?? orderResponse;
+  const directState = String(order?.state ?? '').trim();
 
   if (directState.length > 0) {
     return directState;
@@ -715,7 +738,10 @@ export function getOrderState(orderResponse) {
 }
 
 export function getSharesFromOrder(orderResponse) {
-  const executions = Array.isArray(orderResponse?.executions) ? orderResponse.executions : [];
+  const order = orderResponse?.order ?? orderResponse;
+  const executions = Array.isArray(orderResponse?.executions)
+    ? orderResponse.executions
+    : (Array.isArray(order?.executions) ? order.executions : []);
   const fromExecutions = executions.reduce((sum, execution) => {
     const filled = parseNumber(execution?.lastShares);
     return filled ? sum + filled : sum;
@@ -725,8 +751,8 @@ export function getSharesFromOrder(orderResponse) {
     return fromExecutions;
   }
 
-  const firstOrder = executions[0]?.order;
-  const fromCumQuantity = parseNumber(firstOrder?.cumQuantity);
+  const firstOrder = executions[0]?.order ?? order;
+  const fromCumQuantity = parseNumber(firstOrder?.cumQuantity ?? order?.cumQuantity);
 
   if (typeof fromCumQuantity === 'number' && fromCumQuantity > 0) {
     return fromCumQuantity;
@@ -736,7 +762,10 @@ export function getSharesFromOrder(orderResponse) {
 }
 
 export function getSpentFromOrder(orderResponse) {
-  const executions = Array.isArray(orderResponse?.executions) ? orderResponse.executions : [];
+  const order = orderResponse?.order ?? orderResponse;
+  const executions = Array.isArray(orderResponse?.executions)
+    ? orderResponse.executions
+    : (Array.isArray(order?.executions) ? order.executions : []);
 
   const spent = executions.reduce((sum, execution) => {
     const qty = parseNumber(execution?.lastShares);
@@ -749,7 +778,18 @@ export function getSpentFromOrder(orderResponse) {
     return sum;
   }, 0);
 
-  return spent > 0 ? spent : null;
+  if (spent > 0) {
+    return spent;
+  }
+
+  const cumQuantity = parseNumber(order?.cumQuantity);
+  const avgPx = parseNumber(order?.avgPx?.value);
+
+  if (typeof cumQuantity === 'number' && cumQuantity > 0 && typeof avgPx === 'number' && avgPx > 0) {
+    return cumQuantity * avgPx;
+  }
+
+  return null;
 }
 
 export async function getPolymarketUsOrderById(env, orderId) {
@@ -768,7 +808,7 @@ export async function getPolymarketUsOrderById(env, orderId) {
       headers: getSignedHeaders(env, 'GET', path)
     });
 
-    return response.data;
+    return response.data?.order ?? response.data;
   } catch (error) {
     throw new Error(getErrorMessage(error));
   }

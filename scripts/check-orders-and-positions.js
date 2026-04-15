@@ -47,21 +47,26 @@ async function getOrder(baseUrl, keyId, secret, orderId) {
     timeout: 30000
   });
 
-  const d = response.data || {};
-  const executions = Array.isArray(d.executions) ? d.executions : [];
+  const payload = response.data || {};
+  const d = payload?.order ?? payload;
+  const executions = Array.isArray(payload?.executions)
+    ? payload.executions
+    : (Array.isArray(d?.executions) ? d.executions : []);
   const filledShares = executions.reduce((sum, execution) => {
     const value = Number.parseFloat(execution?.lastShares ?? Number.NaN);
     return Number.isFinite(value) ? sum + value : sum;
   }, 0);
-  const states = [...new Set([d.state, ...executions.map((execution) => execution?.order?.state)].filter(Boolean))];
+  const states = [...new Set([d?.state, ...executions.map((execution) => execution?.order?.state)].filter(Boolean))];
 
   return {
     id: orderId,
     ok: true,
-    state: d.state ?? null,
+    state: d?.state ?? null,
     states,
     executionCount: executions.length,
-    filledShares
+    filledShares,
+    cumQuantity: Number.parseFloat(d?.cumQuantity ?? Number.NaN),
+    avgPx: Number.parseFloat(d?.avgPx?.value ?? Number.NaN)
   };
 }
 
@@ -74,6 +79,7 @@ async function getPositions(baseUrl, keyId, secret) {
 
   const raw = response.data;
   let positions = [];
+  let availablePositions = [];
 
   if (Array.isArray(raw)) {
     positions = raw;
@@ -85,12 +91,26 @@ async function getPositions(baseUrl, keyId, secret) {
     positions = raw.data;
   }
 
+  if (Array.isArray(raw?.availablePositions)) {
+    availablePositions = raw.availablePositions;
+  } else if (Array.isArray(raw?.data?.availablePositions)) {
+    availablePositions = raw.data.availablePositions;
+  }
+
   return {
     ok: true,
     topLevelType: Array.isArray(raw) ? 'array' : typeof raw,
     topLevelKeys: raw && typeof raw === 'object' && !Array.isArray(raw) ? Object.keys(raw).slice(0, 20) : [],
     parsedCount: positions.length,
+    availableParsedCount: availablePositions.length,
     sample: positions.slice(0, 10).map((position) => ({
+      marketSlug: position.marketSlug || position.slug || position.market?.slug || position.marketMetadata?.slug || null,
+      outcome: position.outcome || position.outcomeLabel || position.marketMetadata?.outcome || position.side || null,
+      quantity: position.quantity ?? position.position ?? position.size ?? position.netQuantity ?? null,
+      available: position.availableQuantity ?? position.available ?? null,
+      avgPrice: position.avgPrice?.value ?? position.averagePrice?.value ?? position.avgPx?.value ?? position.price?.value ?? null
+    })),
+    sampleAvailable: availablePositions.slice(0, 10).map((position) => ({
       marketSlug: position.marketSlug || position.slug || position.market?.slug || position.marketMetadata?.slug || null,
       outcome: position.outcome || position.outcomeLabel || position.marketMetadata?.outcome || position.side || null,
       quantity: position.quantity ?? position.position ?? position.size ?? position.netQuantity ?? null,
