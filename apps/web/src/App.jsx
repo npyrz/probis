@@ -253,8 +253,22 @@ function loadStoredTradeDraft() {
   }
 }
 
+function isRestorableDraft(candidate) {
+  if (!candidate || typeof candidate !== 'object') {
+    return false;
+  }
+
+  const status = String(candidate.status ?? '').trim().toLowerCase();
+  return status !== 'tracking' && status !== 'closed';
+}
+
 function saveStoredTradeDraft(draft) {
   if (typeof window === 'undefined') {
+    return;
+  }
+
+  if (!isRestorableDraft(draft)) {
+    window.localStorage.removeItem(TRADE_DRAFT_STORAGE_KEY);
     return;
   }
 
@@ -631,7 +645,7 @@ export default function App() {
 
     const matchingIntent = intents.find((intent) => intent.id === tradeDraft.id) ?? null;
 
-    if (matchingIntent) {
+    if (matchingIntent && isRestorableDraft(matchingIntent)) {
       setTradeDraft(matchingIntent);
       saveStoredTradeDraft(matchingIntent);
       return;
@@ -688,7 +702,10 @@ export default function App() {
   useEffect(() => {
     const storedDraft = loadStoredTradeDraft();
 
-    if (!storedDraft?.input) {
+    if (!storedDraft?.input || !isRestorableDraft(storedDraft)) {
+      if (storedDraft) {
+        clearStoredTradeDraft();
+      }
       return;
     }
 
@@ -1106,11 +1123,8 @@ export default function App() {
       const nextStatus = await fetchStatus();
       setStatus(nextStatus);
       setLastTradeUpdate(new Date().toISOString());
-
-      if (tradeDraft?.id === nextIntent.id) {
-        setTradeDraft(nextIntent);
-        saveStoredTradeDraft(nextIntent);
-      }
+      clearStoredTradeDraft();
+      setTradeDraft(null);
 
       if (selectedEvent?.slug && nextIntent.eventSlug === selectedEvent.slug) {
         clearSelectedEventContext();
