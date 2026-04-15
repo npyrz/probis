@@ -570,6 +570,21 @@ h2 {
   background: linear-gradient(180deg, rgba(212, 108, 47, 0.1), rgba(117, 176, 201, 0.08));
 }
 
+.trade-actions,
+.modal-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.75rem;
+  align-items: center;
+  margin-top: 1rem;
+}
+
+.trade-status-copy,
+.modal-copy {
+  margin: 0;
+  color: rgba(244, 239, 229, 0.74);
+}
+
 .trade-input-row {
   display: grid;
   grid-template-columns: minmax(220px, 280px) minmax(0, 1fr);
@@ -586,6 +601,28 @@ h2 {
   border: 1px solid rgba(255, 255, 255, 0.12);
   background: rgba(255, 255, 255, 0.05);
   color: inherit;
+}
+
+.modal-backdrop {
+  position: fixed;
+  inset: 0;
+  display: grid;
+  place-items: center;
+  padding: 1rem;
+  background: rgba(8, 11, 14, 0.7);
+  backdrop-filter: blur(10px);
+  z-index: 20;
+}
+
+.modal-card {
+  width: min(760px, 100%);
+  max-height: min(90vh, 860px);
+  overflow: auto;
+  padding: 1.5rem;
+  border-radius: 24px;
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  background: linear-gradient(180deg, rgba(20, 24, 28, 0.96), rgba(27, 21, 17, 0.96));
+  box-shadow: 0 24px 80px rgba(0, 0, 0, 0.45);
 }
 
 .analysis-card pre {
@@ -644,6 +681,11 @@ button {
 
   .action-row {
     justify-content: flex-start;
+  }
+
+  .modal-card {
+    padding: 1.1rem;
+    border-radius: 20px;
   }
 
   .outcome-row {

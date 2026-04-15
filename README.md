@@ -63,6 +63,8 @@ Probis is a low-latency, AI-assisted trading system for Polymarket US. This repo
 - Historical aggregation layer for 7-day price series, liquidity snapshots, and event-level derived metrics
 - First-pass statistical model for model probability, edge, confidence, and best-opportunity ranking
 - Local Ollama smoke-test endpoint, analytics-aware event analysis endpoint, and combined decision-engine recommendation
+- Step 7 trade suggestion flow with draft persistence, review modal, and amount-based trade preview
+- Step 8 starter defaults for stop-loss and take-profit levels derived from current probability and model edge
 - In-memory analytics caching with TTL and manual invalidation support
 - `.env` and `.env.example` templates with Polymarket and Ollama settings
 
@@ -87,8 +89,8 @@ Probis is a low-latency, AI-assisted trading system for Polymarket US. This repo
 
 ## Progress
 
-Steps 2 through 6.3 are implemented through the backend analytics pipeline and the frontend market analysis workflow.
+Steps 2 through 8 are started through the backend analytics pipeline and the frontend market analysis workflow.
 
 ## Next Step
 
-The next plan items can build on the existing event resolution, aggregation, model scoring, and decision-engine layers.
+The next plan items can build on the existing event resolution, aggregation, model scoring, decision-engine layers, and persisted trade drafts for execution wiring.

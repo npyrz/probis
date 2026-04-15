@@ -9,6 +9,8 @@ import {
   resolveEventAggregation
 } from './lib/api.js';
 
+const TRADE_DRAFT_STORAGE_KEY = 'probis.tradeDraft';
+
 function formatCompactNumber(value) {
   if (typeof value !== 'number' || Number.isNaN(value)) {
     return 'n/a';
@@ -65,6 +67,35 @@ function formatCurrency(value) {
     currency: 'USD',
     maximumFractionDigits: 2
   }).format(value);
+}
+
+function loadStoredTradeDraft() {
+  if (typeof window === 'undefined') {
+    return null;
+  }
+
+  try {
+    const value = window.localStorage.getItem(TRADE_DRAFT_STORAGE_KEY);
+    return value ? JSON.parse(value) : null;
+  } catch {
+    return null;
+  }
+}
+
+function saveStoredTradeDraft(draft) {
+  if (typeof window === 'undefined') {
+    return;
+  }
+
+  window.localStorage.setItem(TRADE_DRAFT_STORAGE_KEY, JSON.stringify(draft));
+}
+
+function clearStoredTradeDraft() {
+  if (typeof window === 'undefined') {
+    return;
+  }
+
+  window.localStorage.removeItem(TRADE_DRAFT_STORAGE_KEY);
 }
 
 function marketHasLivePrices(market) {
@@ -170,6 +201,14 @@ function buildTradeSuggestion(decisionEngine, amount) {
   const bankrollHint = typeof recommendation.suggestedStakeFraction === 'number' && recommendation.suggestedStakeFraction > 0
     ? `${(recommendation.suggestedStakeFraction * 100).toFixed(1)}% of bankroll`
     : 'No stake size suggested';
+  const stopLossProbability = recommendation.stopLossProbability ?? null;
+  const takeProfitProbability = recommendation.takeProfitProbability ?? null;
+  const stopLossLoss = typeof shares === 'number' && typeof stopLossProbability === 'number' && typeof price === 'number'
+    ? shares * Math.max(0, price - stopLossProbability)
+    : null;
+  const takeProfitGain = typeof shares === 'number' && typeof takeProfitProbability === 'number' && typeof price === 'number'
+    ? shares * Math.max(0, takeProfitProbability - price)
+    : null;
 
   return {
     amount: numericAmount,
@@ -180,7 +219,34 @@ function buildTradeSuggestion(decisionEngine, amount) {
     weightedRisk,
     bankrollHint,
     modelProbability,
-    breakEvenProbability: recommendation.breakEvenProbability ?? null
+    breakEvenProbability: recommendation.breakEvenProbability ?? null,
+    stopLossProbability,
+    takeProfitProbability,
+    stopLossLoss,
+    takeProfitGain,
+    riskRewardRatio: recommendation.riskRewardRatio ?? null
+  };
+}
+
+function buildTradeDraft(event, recommendedMarket, decisionEngine, tradeSuggestion, tradeAmount, existingDraft = null) {
+  if (!event?.slug || !recommendedMarket?.conditionId || !decisionEngine?.recommendation || !tradeSuggestion) {
+    return null;
+  }
+
+  return {
+    input: event.slug,
+    eventSlug: event.slug,
+    eventTitle: event.title,
+    conditionId: recommendedMarket.conditionId,
+    marketQuestion: decisionEngine.recommendation.marketQuestion,
+    outcomeLabel: decisionEngine.recommendation.outcomeLabel,
+    action: decisionEngine.action,
+    tradeAmount,
+    recommendation: decisionEngine.recommendation,
+    tradeSuggestion,
+    analysis: decisionEngine.rawAnalysis ?? null,
+    generatedAt: decisionEngine.generatedAt,
+    confirmedAt: existingDraft?.confirmedAt ?? null
   };
 }
 
@@ -263,6 +329,8 @@ export default function App() {
   const [sortBy, setSortBy] = useState('modelEdge');
   const [filterBy, setFilterBy] = useState('all');
   const [tradeAmount, setTradeAmount] = useState('100');
+  const [tradeDraft, setTradeDraft] = useState(null);
+  const [isTradeModalOpen, setIsTradeModalOpen] = useState(false);
   const [analysis, setAnalysis] = useState('');
   const [error, setError] = useState('');
   const [notice, setNotice] = useState('');
@@ -278,6 +346,75 @@ export default function App() {
   const selectedModelMarket = selectedMarket ? getModelMarket(statisticalModel, selectedMarket.conditionId) : null;
   const recommendedMarket = getRecommendedMarket(selectedEvent, decisionEngine);
   const tradeSuggestion = buildTradeSuggestion(decisionEngine, tradeAmount);
+
+  useEffect(() => {
+    const storedDraft = loadStoredTradeDraft();
+
+    if (!storedDraft?.input) {
+      return;
+    }
+
+    let isCancelled = false;
+
+    async function restoreDraft() {
+      try {
+        const [event, analytics] = await Promise.all([
+          resolveEvent(storedDraft.input),
+          resolveEventAggregation(storedDraft.input)
+        ]);
+
+        if (isCancelled) {
+          return;
+        }
+
+        setEventInput(storedDraft.input);
+        setSelectedEvent(event);
+        setAggregation(analytics.aggregation ?? null);
+        setStatisticalModel(analytics.statisticalModel ?? null);
+        setDecisionEngine(storedDraft.action && storedDraft.recommendation
+          ? {
+              action: storedDraft.action,
+              recommendation: storedDraft.recommendation,
+              rawAnalysis: storedDraft.analysis,
+              generatedAt: storedDraft.generatedAt
+            }
+          : null);
+        setTradeAmount(storedDraft.tradeAmount ?? '100');
+        setTradeDraft(storedDraft);
+
+        const matchingMarket = event.markets.find((market) => market.conditionId === storedDraft.conditionId);
+        const fallbackMarket = event.markets.filter(marketHasLivePrices)[0] ?? null;
+        setSelectedMarketId(matchingMarket?.conditionId ?? fallbackMarket?.conditionId ?? null);
+        setNotice('Restored saved trade draft.');
+      } catch {
+        clearStoredTradeDraft();
+      }
+    }
+
+    void restoreDraft();
+
+    return () => {
+      isCancelled = true;
+    };
+  }, []);
+
+  useEffect(() => {
+    const nextDraft = buildTradeDraft(
+      selectedEvent,
+      recommendedMarket,
+      decisionEngine,
+      tradeSuggestion,
+      tradeAmount,
+      tradeDraft
+    );
+
+    if (!nextDraft) {
+      return;
+    }
+
+    setTradeDraft(nextDraft);
+    saveStoredTradeDraft(nextDraft);
+  }, [selectedEvent, recommendedMarket, decisionEngine, tradeSuggestion, tradeAmount]);
 
   useEffect(() => {
     let isCancelled = false;
@@ -312,6 +449,8 @@ export default function App() {
     setNotice('');
     setAnalysis('');
     setDecisionEngine(null);
+    setTradeDraft(null);
+    setIsTradeModalOpen(false);
 
     try {
       const [event, analytics] = await Promise.all([
@@ -427,6 +566,42 @@ export default function App() {
     } finally {
       setIsInvalidating(false);
     }
+  }
+
+  function handleOpenTradeModal() {
+    if (!tradeSuggestion || !decisionEngine?.recommendation) {
+      return;
+    }
+
+    setIsTradeModalOpen(true);
+  }
+
+  function handleCloseTradeModal() {
+    setIsTradeModalOpen(false);
+  }
+
+  function handleConfirmTradeDraft() {
+    if (!tradeDraft) {
+      return;
+    }
+
+    const confirmedDraft = {
+      ...tradeDraft,
+      confirmedAt: new Date().toISOString()
+    };
+
+    setTradeDraft(confirmedDraft);
+    saveStoredTradeDraft(confirmedDraft);
+    setNotice('Trade draft confirmed and saved for execution wiring.');
+    setIsTradeModalOpen(false);
+  }
+
+  function handleClearTradeDraft() {
+    clearStoredTradeDraft();
+    setTradeDraft(null);
+    setTradeAmount('100');
+    setIsTradeModalOpen(false);
+    setNotice('Cleared the saved trade draft.');
   }
 
   return (
@@ -853,6 +1028,8 @@ export default function App() {
                           <span className="market-chip">Model {formatPercent(decisionEngine.recommendation.modelProbability)}</span>
                           <span className="market-chip">EV {formatSignedPercent(decisionEngine.recommendation.expectedValuePerDollar)}</span>
                           <span className="market-chip">Stake {formatPercent(decisionEngine.recommendation.suggestedStakeFraction)}</span>
+                          <span className="market-chip">Stop {formatPercent(decisionEngine.recommendation.stopLossProbability)}</span>
+                          <span className="market-chip">Take {formatPercent(decisionEngine.recommendation.takeProfitProbability)}</span>
                         </div>
                       </div>
 
@@ -882,10 +1059,44 @@ export default function App() {
                             <span>Sizing hint</span>
                             <strong>{tradeSuggestion.bankrollHint}</strong>
                           </article>
+                          <article>
+                            <span>Default stop-loss</span>
+                            <strong>{formatPercent(tradeSuggestion.stopLossProbability)}</strong>
+                          </article>
+                          <article>
+                            <span>Default take-profit</span>
+                            <strong>{formatPercent(tradeSuggestion.takeProfitProbability)}</strong>
+                          </article>
+                          <article>
+                            <span>Loss at stop</span>
+                            <strong>{formatCurrency(tradeSuggestion.stopLossLoss)}</strong>
+                          </article>
+                          <article>
+                            <span>Gain at take-profit</span>
+                            <strong>{formatCurrency(tradeSuggestion.takeProfitGain)}</strong>
+                          </article>
+                          <article>
+                            <span>Risk / reward</span>
+                            <strong>{tradeSuggestion.riskRewardRatio ? `${tradeSuggestion.riskRewardRatio.toFixed(2)}x` : 'n/a'}</strong>
+                          </article>
                         </div>
                       ) : (
                         <p className="empty-state">Enter a positive dollar amount to preview the trade suggestion.</p>
                       )}
+
+                      <div className="trade-actions">
+                        <button type="button" className="secondary-button" onClick={handleOpenTradeModal} disabled={!tradeSuggestion}>
+                          Review Recommendation
+                        </button>
+                        <button type="button" className="ghost-button" onClick={handleClearTradeDraft}>
+                          Clear Draft
+                        </button>
+                        {tradeDraft?.confirmedAt ? (
+                          <p className="trade-status-copy">Confirmed {formatDate(tradeDraft.confirmedAt)}</p>
+                        ) : (
+                          <p className="trade-status-copy">Draft autosaves and survives refresh.</p>
+                        )}
+                      </div>
                     </section>
                   ) : null}
                 </section>
@@ -903,6 +1114,82 @@ export default function App() {
           ) : null}
         </article>
       </section>
+
+      {isTradeModalOpen && tradeSuggestion && decisionEngine?.recommendation ? (
+        <div className="modal-backdrop" role="presentation" onClick={handleCloseTradeModal}>
+          <section
+            className="modal-card"
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="trade-review-title"
+            onClick={(event) => event.stopPropagation()}
+          >
+            <div className="panel-heading panel-heading-inline">
+              <div>
+                <p className="eyebrow">Trade Review</p>
+                <h2 id="trade-review-title">
+                  {decisionEngine.action.toUpperCase()} {decisionEngine.recommendation.outcomeLabel} in{' '}
+                  {decisionEngine.recommendation.marketQuestion}
+                </h2>
+              </div>
+              <button type="button" className="ghost-button" onClick={handleCloseTradeModal}>
+                Close
+              </button>
+            </div>
+
+            <p className="modal-copy">Review the Step 7 draft before Step 8 risk controls and Step 9 execution wiring.</p>
+
+            <div className="trade-preview-grid">
+              <article>
+                <span>Amount</span>
+                <strong>{formatCurrency(tradeSuggestion.amount)}</strong>
+              </article>
+              <article>
+                <span>Expected profit</span>
+                <strong>{formatCurrency(tradeSuggestion.expectedProfit)}</strong>
+              </article>
+              <article>
+                <span>Default stop-loss</span>
+                <strong>{formatPercent(tradeSuggestion.stopLossProbability)}</strong>
+              </article>
+              <article>
+                <span>Default take-profit</span>
+                <strong>{formatPercent(tradeSuggestion.takeProfitProbability)}</strong>
+              </article>
+              <article>
+                <span>Risk / reward</span>
+                <strong>{tradeSuggestion.riskRewardRatio ? `${tradeSuggestion.riskRewardRatio.toFixed(2)}x` : 'n/a'}</strong>
+              </article>
+              <article>
+                <span>Sizing hint</span>
+                <strong>{tradeSuggestion.bankrollHint}</strong>
+              </article>
+            </div>
+
+            <div className="detail-callout">
+              <span>Rationale</span>
+              <strong>{decisionEngine.recommendation.thesis}</strong>
+              <p>Risk: {decisionEngine.recommendation.keyRisk}</p>
+              {decisionEngine.recommendation.reasons.length > 0 ? (
+                <ul className="reason-list">
+                  {decisionEngine.recommendation.reasons.map((reason) => (
+                    <li key={reason}>{reason}</li>
+                  ))}
+                </ul>
+              ) : null}
+            </div>
+
+            <div className="modal-actions">
+              <button type="button" className="secondary-button" onClick={handleConfirmTradeDraft}>
+                Confirm Draft
+              </button>
+              <button type="button" className="ghost-button" onClick={handleCloseTradeModal}>
+                Keep Editing
+              </button>
+            </div>
+          </section>
+        </div>
+      ) : null}
     </main>
   );
 }

@@ -26,6 +26,30 @@ function getSuggestedStakeFraction(action, edge, combinedConfidence) {
   return clamp(edge * combinedConfidence * 4, 0.01, 0.2);
 }
 
+function getDefaultRiskTargets(currentProbability, edge) {
+  if (typeof currentProbability !== 'number' || currentProbability <= 0 || currentProbability >= 1) {
+    return {
+      stopLossProbability: null,
+      takeProfitProbability: null,
+      riskRewardRatio: null
+    };
+  }
+
+  const edgeMagnitude = Math.max(0.02, Math.abs(edge || 0));
+  const stopLossDistance = Math.max(0.03, edgeMagnitude * 0.6);
+  const takeProfitDistance = Math.max(0.04, edgeMagnitude * 1.25);
+  const stopLossProbability = clamp(currentProbability - stopLossDistance, 0.02, 0.97);
+  const takeProfitProbability = clamp(currentProbability + takeProfitDistance, 0.03, 0.98);
+  const downside = currentProbability - stopLossProbability;
+  const upside = takeProfitProbability - currentProbability;
+
+  return {
+    stopLossProbability,
+    takeProfitProbability,
+    riskRewardRatio: downside > 0 ? upside / downside : null
+  };
+}
+
 function findModelOutcome(statisticalModel, marketQuestion, outcomeLabel) {
   const market = statisticalModel.markets.find((candidate) => candidate.question === marketQuestion);
   const outcome = market?.outcomes.find((candidate) => candidate.label === outcomeLabel) ?? null;
@@ -90,6 +114,7 @@ export function combineDecisionRecommendation(event, aggregation, statisticalMod
     chosenOutcome?.estimatedProbability ?? null
   );
   const suggestedStakeFraction = getSuggestedStakeFraction(action, edge, combinedConfidence);
+  const riskTargets = getDefaultRiskTargets(chosenOutcome?.currentProbability ?? null, edge);
 
   return {
     generatedAt: new Date().toISOString(),
@@ -110,6 +135,9 @@ export function combineDecisionRecommendation(event, aggregation, statisticalMod
         ? 1 / chosenOutcome.currentProbability
         : null,
       suggestedStakeFraction,
+      stopLossProbability: riskTargets.stopLossProbability,
+      takeProfitProbability: riskTargets.takeProfitProbability,
+      riskRewardRatio: riskTargets.riskRewardRatio,
       thesis: aiRecommendation?.thesis ?? null,
       keyRisk: aiRecommendation?.keyRisk ?? null,
       reasons: Array.isArray(aiRecommendation?.reasons) ? aiRecommendation.reasons : []
