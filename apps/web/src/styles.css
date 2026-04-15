@@ -200,6 +200,58 @@ h2 {
   gap: 1rem;
 }
 
+.event-summary-card {
+  display: grid;
+  gap: 1rem;
+  padding: 1.1rem;
+  border-radius: 22px;
+  background: linear-gradient(180deg, rgba(255, 255, 255, 0.08), rgba(255, 255, 255, 0.03));
+  border: 1px solid rgba(255, 255, 255, 0.08);
+}
+
+.event-summary-copy {
+  display: grid;
+  gap: 0.75rem;
+}
+
+.event-description {
+  margin-bottom: 0;
+  color: rgba(244, 239, 229, 0.84);
+}
+
+.event-summary-stats {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
+  gap: 0.75rem;
+}
+
+.event-summary-stats article,
+.event-highlight {
+  padding: 0.9rem 1rem;
+  border-radius: 16px;
+  background: rgba(255, 255, 255, 0.04);
+  border: 1px solid rgba(255, 255, 255, 0.06);
+}
+
+.event-summary-stats span,
+.event-highlight span,
+.market-chip {
+  display: block;
+  font-size: 0.78rem;
+  color: rgba(244, 239, 229, 0.62);
+}
+
+.event-summary-stats strong,
+.event-highlight strong {
+  display: block;
+  margin-top: 0.35rem;
+}
+
+.event-highlight p {
+  margin: 0.45rem 0 0;
+  color: rgba(244, 239, 229, 0.78);
+}
+
 .panel-heading {
   margin-bottom: 1rem;
 }
@@ -239,6 +291,30 @@ h2 {
   border: 1px solid rgba(255, 255, 255, 0.08);
 }
 
+.market-card-header {
+  display: grid;
+  gap: 0.75rem;
+  margin-bottom: 1rem;
+}
+
+.market-card h3 {
+  margin: 0;
+}
+
+.market-chip-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+}
+
+.market-chip {
+  width: fit-content;
+  padding: 0.3rem 0.55rem;
+  border-radius: 999px;
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  background: rgba(255, 255, 255, 0.03);
+}
+
 .outcome-list {
   display: grid;
   gap: 0.6rem;
@@ -251,6 +327,36 @@ h2 {
   padding: 0.75rem 0.85rem;
   border-radius: 14px;
   background: rgba(255, 255, 255, 0.04);
+}
+
+.outcome-copy {
+  display: grid;
+  gap: 0.2rem;
+}
+
+.outcome-copy small {
+  color: rgba(244, 239, 229, 0.54);
+}
+
+.outcome-value {
+  min-width: 120px;
+  display: grid;
+  justify-items: end;
+  gap: 0.35rem;
+}
+
+.outcome-bar-track {
+  width: 100%;
+  height: 7px;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.08);
+  overflow: hidden;
+}
+
+.outcome-bar-fill {
+  height: 100%;
+  border-radius: 999px;
+  background: linear-gradient(90deg, #efb05d, #75b0c9);
 }
 
 .analysis-card {
@@ -300,5 +406,14 @@ button {
   .content-grid {
     display: grid;
     grid-template-columns: 1fr;
+  }
+
+  .outcome-row {
+    grid-template-columns: 1fr;
+  }
+
+  .outcome-value {
+    justify-items: start;
+    min-width: 0;
   }
 }

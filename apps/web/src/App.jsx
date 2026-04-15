@@ -2,12 +2,71 @@ import { useEffect, useState, useTransition } from 'react';
 
 import { analyzeEvent, fetchActiveEvents, fetchStatus, resolveEvent } from './lib/api.js';
 
+function formatCompactNumber(value) {
+  if (typeof value !== 'number' || Number.isNaN(value)) {
+    return 'n/a';
+  }
+
+  return new Intl.NumberFormat('en-US', {
+    notation: 'compact',
+    maximumFractionDigits: 1
+  }).format(value);
+}
+
+function formatDate(value) {
+  if (!value) {
+    return 'n/a';
+  }
+
+  const parsed = new Date(value);
+
+  if (Number.isNaN(parsed.getTime())) {
+    return 'n/a';
+  }
+
+  return new Intl.DateTimeFormat('en-US', {
+    month: 'short',
+    day: 'numeric',
+    year: 'numeric'
+  }).format(parsed);
+}
+
 function formatPercent(value) {
   if (typeof value !== 'number' || Number.isNaN(value)) {
     return 'n/a';
   }
 
   return `${(value * 100).toFixed(1)}%`;
+}
+
+function marketHasLivePrices(market) {
+  return market.outcomes.some((outcome) => typeof outcome.probability === 'number');
+}
+
+function sortOutcomes(outcomes) {
+  return [...outcomes].sort((left, right) => {
+    const leftValue = typeof left.probability === 'number' ? left.probability : -1;
+    const rightValue = typeof right.probability === 'number' ? right.probability : -1;
+
+    return rightValue - leftValue;
+  });
+}
+
+function getMarketLeader(market) {
+  const rankedOutcomes = sortOutcomes(market.outcomes);
+  return rankedOutcomes[0] ?? null;
+}
+
+function getEventHeadline(event, visibleMarkets) {
+  const leaders = visibleMarkets
+    .map((market) => ({
+      market,
+      leader: getMarketLeader(market)
+    }))
+    .filter((candidate) => typeof candidate.leader?.probability === 'number')
+    .sort((left, right) => right.leader.probability - left.leader.probability);
+
+  return leaders[0] ?? null;
 }
 
 export default function App() {
@@ -18,6 +77,8 @@ export default function App() {
   const [analysis, setAnalysis] = useState('');
   const [error, setError] = useState('');
   const [isPending, startTransition] = useTransition();
+  const visibleMarkets = selectedEvent?.markets.filter(marketHasLivePrices) ?? [];
+  const eventHeadline = selectedEvent ? getEventHeadline(selectedEvent, visibleMarkets) : null;
 
   useEffect(() => {
     let isCancelled = false;
@@ -100,11 +161,11 @@ export default function App() {
     <main className="app-shell">
       <section className="hero-card">
         <div className="hero-copy">
-          <p className="eyebrow">Steps 2 and 3 live</p>
-          <h1>Resolve a Polymarket event URL and inspect every outcome.</h1>
+          <p className="eyebrow">Step 4 live</p>
+          <h1>Resolve an event and inspect its live market board.</h1>
           <p className="lede">
-            The app now loads active Polymarket events from Gamma, resolves a specific event by URL or slug,
-            and can run a local Ollama smoke test against the selected event.
+            The app now resolves a Polymarket event, surfaces event-level context, and displays live quoted
+            outcomes in a market board that stays readable for both binary and multi-outcome structures.
           </p>
         </div>
 
@@ -171,7 +232,7 @@ export default function App() {
         <article className="panel-card panel-card-wide">
           <div className="panel-heading panel-heading-inline">
             <div>
-              <p className="eyebrow">Step 3</p>
+              <p className="eyebrow">Step 4</p>
               <h2>{selectedEvent ? selectedEvent.title : 'Resolve an event to inspect its markets'}</h2>
             </div>
             <button type="button" className="secondary-button" onClick={handleAnalyze} disabled={!selectedEvent || isPending}>
@@ -181,18 +242,73 @@ export default function App() {
 
           {selectedEvent ? (
             <>
-              <p className="event-meta">
-                slug: {selectedEvent.slug} · {selectedEvent.markets.length} markets
-              </p>
+              <section className="event-summary-card">
+                <div className="event-summary-copy">
+                  <p className="event-meta">
+                    slug: {selectedEvent.slug}
+                    {selectedEvent.resolvedFromFallback ? ` · matched from ${selectedEvent.requestedSlug}` : ''}
+                  </p>
+                  <p className="event-description">
+                    {selectedEvent.description || 'No event description is available for this market.'}
+                  </p>
+                </div>
+
+                <div className="event-summary-stats">
+                  <article>
+                    <span>Live Markets</span>
+                    <strong>{visibleMarkets.length}</strong>
+                  </article>
+                  <article>
+                    <span>Volume</span>
+                    <strong>{formatCompactNumber(selectedEvent.volume)}</strong>
+                  </article>
+                  <article>
+                    <span>Liquidity</span>
+                    <strong>{formatCompactNumber(selectedEvent.liquidity)}</strong>
+                  </article>
+                  <article>
+                    <span>End Date</span>
+                    <strong>{formatDate(selectedEvent.endDate)}</strong>
+                  </article>
+                </div>
+
+                {eventHeadline ? (
+                  <div className="event-highlight">
+                    <span>Highest-conviction live market</span>
+                    <strong>{eventHeadline.market.question}</strong>
+                    <p>
+                      {eventHeadline.leader.label} leads at {formatPercent(eventHeadline.leader.probability)}.
+                    </p>
+                  </div>
+                ) : null}
+              </section>
+
               <div className="market-grid">
-                {selectedEvent.markets.map((market) => (
+                {visibleMarkets.map((market) => (
                   <section key={market.conditionId ?? market.question} className="market-card">
-                    <h3>{market.question}</h3>
+                    <div className="market-card-header">
+                      <h3>{market.question}</h3>
+                      <div className="market-chip-row">
+                        <span className="market-chip">{market.outcomes.length} outcomes</span>
+                        <span className="market-chip">Vol {formatCompactNumber(market.volume)}</span>
+                      </div>
+                    </div>
                     <div className="outcome-list">
-                      {market.outcomes.map((outcome) => (
+                      {sortOutcomes(market.outcomes).map((outcome) => (
                         <div key={`${market.conditionId}-${outcome.label}`} className="outcome-row">
-                          <span>{outcome.label}</span>
-                          <strong>{formatPercent(outcome.probability)}</strong>
+                          <div className="outcome-copy">
+                            <span>{outcome.label}</span>
+                            <small>{outcome.tokenId ? `Token ${outcome.tokenId.slice(0, 8)}...` : 'No token id'}</small>
+                          </div>
+                          <div className="outcome-value">
+                            <strong>{formatPercent(outcome.probability)}</strong>
+                            <div className="outcome-bar-track" aria-hidden="true">
+                              <div
+                                className="outcome-bar-fill"
+                                style={{ width: `${Math.max(0, Math.min(100, (outcome.probability ?? 0) * 100))}%` }}
+                              />
+                            </div>
+                          </div>
                         </div>
                       ))}
                     </div>
