@@ -807,6 +807,19 @@ async function resolveOutcomeMarketQuote(env, marketSlug, outcomeLabel) {
   };
 }
 
+export async function getLiveOutcomeProbabilityFromUsMarket(env, marketSlug, outcomeLabel) {
+  if (!marketSlug) {
+    return null;
+  }
+
+  try {
+    const quote = await resolveOutcomeMarketQuote(env, marketSlug, outcomeLabel);
+    return typeof quote?.outcomePrice === 'number' ? quote.outcomePrice : null;
+  } catch {
+    return null;
+  }
+}
+
 async function resolveOrderIntentsForOutcome(env, marketSlug, outcomeLabel) {
   const normalized = normalizeOutcomeLabel(outcomeLabel);
 

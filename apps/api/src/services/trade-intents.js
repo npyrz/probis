@@ -5,6 +5,7 @@ import { fileURLToPath } from 'node:url';
 
 import { fetchEventByInput } from './polymarket/gamma.js';
 import {
+  getLiveOutcomeProbabilityFromUsMarket,
   getOrderState,
   getPolymarketUsOrderById,
   getSharesFromOrder,
@@ -90,6 +91,7 @@ function buildMonitoringState(intent) {
     state: 'active',
     activatedAt: new Date().toISOString(),
     lastEvaluationAt: null,
+    lastPolymarketQuoteAt: null,
     currentProbability: intent.recommendation?.currentProbability ?? null,
     entryProbability: intent.executionRequest?.entryProbability ?? intent.recommendation?.currentProbability ?? null,
     stopLossProbability: intent.tradeSuggestion?.stopLossProbability ?? null,
@@ -542,10 +544,13 @@ async function executeTriggeredExit(env, intent, exitReason, monitoringState) {
   return closedIntent;
 }
 
-async function evaluateMonitoringState(env, intent, currentProbability) {
+async function evaluateMonitoringState(env, intent, trackedQuote) {
+  const currentProbability = trackedQuote?.currentProbability ?? null;
+  const lastPolymarketQuoteAt = trackedQuote?.lastPolymarketQuoteAt ?? null;
   const baseMonitoring = {
     ...intent.monitoring,
     lastEvaluationAt: new Date().toISOString(),
+    lastPolymarketQuoteAt,
     currentProbability,
     stopLossProbability: intent.tradeSuggestion?.stopLossProbability ?? intent.monitoring?.stopLossProbability ?? null,
     takeProfitProbability: intent.tradeSuggestion?.takeProfitProbability ?? intent.monitoring?.takeProfitProbability ?? null
@@ -617,6 +622,28 @@ async function evaluateMonitoringState(env, intent, currentProbability) {
       notes: 'Monitoring live probability against configured stop-loss and take-profit levels.'
     },
     updatedAt: new Date().toISOString()
+  };
+}
+
+async function resolveTrackedProbability(env, intent) {
+  const liveOutcomeProbability = await getLiveOutcomeProbabilityFromUsMarket(
+    env,
+    intent.marketSlug,
+    intent.outcomeLabel
+  );
+
+  if (typeof liveOutcomeProbability === 'number') {
+    return {
+      currentProbability: toTrackedProbability(intent?.position?.entryIntent, liveOutcomeProbability),
+      lastPolymarketQuoteAt: new Date().toISOString()
+    };
+  }
+
+  const event = await fetchEventByInput(env, intent.input ?? intent.eventSlug);
+  const { outcome } = findTrackedMarketOutcome(event, intent);
+  return {
+    currentProbability: toTrackedProbability(intent?.position?.entryIntent, outcome?.probability ?? null),
+    lastPolymarketQuoteAt: null
   };
 }
 
@@ -875,9 +902,7 @@ export async function pollTradeIntent(env, id) {
     return existing;
   }
 
-  const event = await fetchEventByInput(env, existing.input ?? existing.eventSlug);
-  const { outcome } = findTrackedMarketOutcome(event, existing);
-  const currentProbability = toTrackedProbability(existing?.position?.entryIntent, outcome?.probability ?? null);
+  const currentProbability = await resolveTrackedProbability(env, existing);
   const nextIntent = await evaluateMonitoringState(env, existing, currentProbability);
 
   await writeTradeIntents(replaceTradeIntent(syncedIntents, nextIntent));
@@ -896,9 +921,7 @@ export async function pollTrackingTradeIntents(env) {
     }
 
     try {
-      const event = await fetchEventByInput(env, intent.input ?? intent.eventSlug);
-      const { outcome } = findTrackedMarketOutcome(event, intent);
-      const trackedProbability = toTrackedProbability(intent?.position?.entryIntent, outcome?.probability ?? null);
+      const trackedProbability = await resolveTrackedProbability(env, intent);
       nextIntents.push(await evaluateMonitoringState(env, intent, trackedProbability));
     } catch {
       nextIntents.push({

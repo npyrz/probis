@@ -878,14 +878,18 @@ export default function App() {
       void (async () => {
         try {
           await pollTrackedTradeIntents();
-          await refreshTradeHistory();
+          const [_, nextStatus] = await Promise.all([
+            refreshTradeHistory(),
+            fetchStatus()
+          ]);
+          setStatus(nextStatus);
           setLastMarketUpdate(new Date().toISOString());
           setLastTradeUpdate(new Date().toISOString());
         } catch {
           // Ignore background polling failures and keep the last known state in the UI.
         }
       })();
-    }, 5000);
+    }, 3000);
 
     return () => {
       window.clearInterval(intervalId);
@@ -1727,7 +1731,9 @@ export default function App() {
                 const isTracking = intent.status === 'tracking';
                 const isEditingActiveTrade = editingActiveTradeId === intent.id;
                 const activeTradeDraft = activeTradeRiskInputs[intent.id] ?? {};
-                const currentProbability = intent.monitoring?.currentProbability ?? intent.recommendation?.currentProbability ?? null;
+                const currentProbability = isTracking
+                  ? (intent.monitoring?.currentProbability ?? null)
+                  : (intent.recommendation?.currentProbability ?? null);
                 const entryProbability = getTrackedEntryProbability(intent);
                 const monitoringState = intent.monitoring?.state ?? 'active';
                 const isVerifiedFilledPosition = hasApiVerifiedFilledPosition(intent);
@@ -1792,6 +1798,10 @@ export default function App() {
                           <article>
                             <span>Last evaluation</span>
                             <strong>{formatDateTime(intent.monitoring?.lastEvaluationAt)}</strong>
+                          </article>
+                          <article>
+                            <span>Last Polymarket Quote</span>
+                            <strong>{formatDateTime(intent.monitoring?.lastPolymarketQuoteAt)}</strong>
                           </article>
                           <article>
                             <span>Entry order</span>
