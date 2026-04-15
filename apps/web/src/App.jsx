@@ -1188,35 +1188,6 @@ export default function App() {
             </div>
           </section>
 
-          <article className="panel-card terminal-card compact-card">
-            <div className="panel-heading">
-              <p className="eyebrow">Realtime Updates</p>
-              <h2>System Grid</h2>
-            </div>
-            <div className="status-grid compact-status-grid">
-              <article>
-                <span>Polymarket</span>
-                <strong>{status?.polymarket?.publicReadOk ? 'Reachable' : 'Checking...'}</strong>
-                <p>{status?.polymarket?.auth?.privateKeyValid ? 'Auth ready' : 'Read only'}</p>
-              </article>
-              <article>
-                <span>Ollama</span>
-                <strong>{status?.ai?.reachable ? 'Ready' : 'Unavailable'}</strong>
-                <p>{status?.ai?.requestedModel ?? 'n/a'}</p>
-              </article>
-              <article>
-                <span>Trades</span>
-                <strong>{tradeHistory.length}</strong>
-                <p>{activeTradeIntents.length} active tracking</p>
-              </article>
-              <article>
-                <span>Last Trade</span>
-                <strong>{formatDateTime(lastTradeUpdate)}</strong>
-                <p>Intent history sync</p>
-              </article>
-            </div>
-          </article>
-
           {selectedEvent ? (
             <article className="panel-card terminal-card compact-card">
               <div className="panel-heading">
