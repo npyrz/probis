@@ -68,7 +68,9 @@ The API signs requests using Ed25519 with the format described in Polymarket US 
 - Persists trade intents to a local JSON store.
 - Converts a saved intent into a tracking scaffold and execution-request shape.
 - Polls tracked positions against current market probability and evaluates stop-loss and take-profit triggers.
-- Exposes operator controls for Sell Now and Stop Bot on tracked positions.
+- Exposes operator controls for Sell Now and Stop Trade on tracked positions.
+- Surfaces total account buying power in the top header from authenticated Polymarket US account balances.
+- Shows unrealized P/L (dollars and percent) for active tracked positions with frequent auto-refresh.
 
 ## Workspace Layout
 
@@ -440,24 +442,30 @@ This cache covers the expensive analytics path: event fetch, history aggregation
 
 Implemented in `apps/api/src/services/trade-intents.js`.
 
-The backend does not place live orders yet. Instead, it manages an intent lifecycle:
+The backend manages an intent lifecycle and supports live Polymarket US execution:
 
 1. Build a validated intent payload.
 2. Persist it to local JSON.
 3. Rebuild an execution-request shape from edited values.
-4. Move the intent to `tracking` when execution is requested.
-5. Attach a monitoring scaffold with stop-loss and take-profit thresholds.
+4. Resolve market metadata and submit a live buy order on execute.
+5. Move the intent to `tracking` and attach a monitoring scaffold with stop-loss and take-profit thresholds.
+6. Trigger live sell orders for manual exits or threshold hits.
 
-Execution-request payloads currently include:
+Execution-request payloads include:
 
 - venue and side metadata
 - trade amount
 - entry probability
 - estimated shares
 - stop-loss and take-profit probabilities
-- manual-execution constraints
+- max slippage and venue submission metadata
 
-This is trade planning and monitoring preparation, not automated execution.
+Execution behavior:
+
+- Buy and sell requests are routed to Polymarket US `/v1/orders` with signed headers.
+- Outcome intent mapping supports both YES/NO and named outcomes (for example, sports teams).
+- Slug resolution handles common canonicalization differences (for example, prefixed `aec-` slugs).
+- If the venue requires limit pricing, order placement falls back to limit payloads with derived price/quantity.
 
 ## Frontend UX Architecture
 
@@ -465,12 +473,12 @@ Implemented primarily in `apps/web/src/App.jsx`.
 
 The UI is organized around one analyst workflow:
 
-1. Inspect backend connectivity and current Ollama model.
+1. Inspect live system/ticker state and account buying power.
 2. Pick a high-volume event or paste a direct event URL.
 3. Review market board, sparkline history, and event metrics.
 4. Rank markets by model edge, confidence, liquidity, or momentum.
 5. Run the decision engine.
-6. Preview the recommended trade with sizing and editable risk inputs.
+6. Preview the recommended trade with current price, sizing, editable risk inputs, and hover explanations.
 7. Save, restore, edit, delete, or start tracking a trade intent.
 
 The frontend keeps a local draft in browser storage so an in-progress recommendation survives refresh.
@@ -482,6 +490,9 @@ Environment variables currently used by the codebase:
 ```bash
 POLYMARKET_API_KEY=
 POLYMARKET_PRIVATE_KEY=
+POLYMARKET_US_KEY_ID=
+POLYMARKET_US_SECRET_KEY=
+POLYMARKET_US_BASE_URL=https://api.polymarket.us
 PORT=4000
 VITE_API_BASE_URL=http://localhost:4000
 OLLAMA_BASE_URL=http://localhost:11434
@@ -549,6 +560,10 @@ curl http://localhost:4000/health
 - `PATCH /api/trades/intents/:id`
 - `DELETE /api/trades/intents/:id`
 - `POST /api/trades/intents/:id/execute`
+- `POST /api/trades/intents/poll`
+- `POST /api/trades/intents/:id/poll`
+- `POST /api/trades/intents/:id/sell`
+- `POST /api/trades/intents/:id/stop`
 
 ## API Examples
 
