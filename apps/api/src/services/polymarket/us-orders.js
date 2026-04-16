@@ -869,6 +869,13 @@ function buildAggressiveBuyLimitLadder(basePrice, maxSlippageBps, { direction = 
     .sort((left, right) => left - right);
 }
 
+function buildAggressiveSellLimitLadder(basePrice, floor = 0.001) {
+  return buildAggressiveBuyLimitLadder(basePrice, 0, {
+    direction: 'down',
+    boundary: clampLimitPrice(floor)
+  });
+}
+
 async function submitLimitBuyOrder(env, { marketSlug, orderIntent, amount, limitPrice }) {
   const limitQuantity = Number((amount / limitPrice).toFixed(4));
 
@@ -899,6 +906,34 @@ async function submitLimitBuyOrder(env, { marketSlug, orderIntent, amount, limit
     orderId: getOrderId(orderResponse),
     sharesFilled: getSharesFromOrder(orderResponse),
     notionalSpent: getSpentFromOrder(orderResponse),
+    entryIntent: orderIntent
+  };
+}
+
+async function submitLimitSellOrder(env, { marketSlug, orderIntent, shares, limitPrice }) {
+  const limitOrderBody = {
+    marketSlug,
+    intent: orderIntent,
+    type: 'ORDER_TYPE_LIMIT',
+    tif: 'TIME_IN_FORCE_IMMEDIATE_OR_CANCEL',
+    price: {
+      value: limitPrice.toFixed(3),
+      currency: 'USD'
+    },
+    quantity: shares,
+    manualOrderIndicator: 'MANUAL_ORDER_INDICATOR_AUTOMATIC',
+    synchronousExecution: true,
+    maxBlockTime: '10'
+  };
+
+  const orderResponse = await createPolymarketUsOrder(env, limitOrderBody);
+
+  return {
+    request: limitOrderBody,
+    response: orderResponse,
+    orderId: getOrderId(orderResponse),
+    sharesFilled: getSharesFromOrder(orderResponse),
+    sharesRequested: shares,
     entryIntent: orderIntent
   };
 }
@@ -1512,7 +1547,7 @@ export async function placeSellOrderForIntent(env, intent) {
   }
 
   const maxSlippageBps = Number.parseInt(intent.executionRequest?.maxSlippageBps ?? '100', 10);
-  const orderBody = {
+  const closePositionOrderBody = {
     marketSlug,
     manualOrderIndicator: 'MANUAL_ORDER_INDICATOR_AUTOMATIC',
     synchronousExecution: true,
@@ -1522,17 +1557,84 @@ export async function placeSellOrderForIntent(env, intent) {
     }
   };
 
-  const orderResponse = await createPolymarketUsClosePositionOrder(env, orderBody);
-  const orderState = String(getOrderState(orderResponse) ?? '').trim().toUpperCase();
+  try {
+    const orderResponse = await createPolymarketUsClosePositionOrder(env, closePositionOrderBody);
+    const orderState = String(getOrderState(orderResponse) ?? '').trim().toUpperCase();
+
+    return {
+      request: closePositionOrderBody,
+      response: orderResponse,
+      orderId: getOrderId(orderResponse),
+      sharesFilled: getSharesFromOrder(orderResponse),
+      sharesRequested: shares,
+      fullyClosed: orderState === 'ORDER_STATE_FILLED',
+      orderState,
+      entryIntent: orderIntent,
+      exitMethod: 'close-position'
+    };
+  } catch (error) {
+    if (!isLimitPriceRequiredError(error)) {
+      throw error;
+    }
+  }
+
+  const quote = await resolveOutcomeMarketQuote(env, marketSlug, intent.outcomeLabel);
+  const aggressiveLimitPrices = buildAggressiveSellLimitLadder(quote.outcomePrice);
+
+  if (aggressiveLimitPrices.length === 0) {
+    throw new Error('Unable to derive a valid limit price for sell retry.');
+  }
+
+  const limitAttempts = [];
+
+  for (const limitPrice of aggressiveLimitPrices) {
+    const limitAttempt = await submitLimitSellOrder(env, {
+      marketSlug: quote.resolvedMarketSlug ?? marketSlug,
+      orderIntent,
+      shares,
+      limitPrice
+    });
+
+    limitAttempts.push(limitAttempt);
+
+    if (hasPositiveFill(limitAttempt.response)) {
+      const limitAttemptState = String(getOrderState(limitAttempt.response) ?? '').trim().toUpperCase();
+      const limitAttemptSharesFilled = Number.parseFloat(getSharesFromOrder(limitAttempt.response) ?? NaN);
+
+      return {
+        ...limitAttempt,
+        fullyClosed: limitAttemptState === 'ORDER_STATE_FILLED'
+          && Number.isFinite(limitAttemptSharesFilled)
+          && limitAttemptSharesFilled >= shares,
+        orderState: limitAttemptState,
+        exitMethod: 'limit-fallback',
+        attempts: {
+          aggressiveLimit: limitAttempts
+        }
+      };
+    }
+  }
+
+  const lastLimitAttempt = limitAttempts[limitAttempts.length - 1] ?? null;
+
+  if (!lastLimitAttempt) {
+    throw new Error('Unable to submit aggressive limit sell retry attempts.');
+  }
+
+  const fallbackState = String(getOrderState(lastLimitAttempt.response) ?? '').trim().toUpperCase();
+  const fallbackSharesFilled = Number.parseFloat(getSharesFromOrder(lastLimitAttempt.response) ?? NaN);
 
   return {
-    request: orderBody,
-    response: orderResponse,
-    orderId: getOrderId(orderResponse),
-    sharesFilled: getSharesFromOrder(orderResponse),
+    ...lastLimitAttempt,
     sharesRequested: shares,
-    fullyClosed: orderState === 'ORDER_STATE_FILLED',
-    orderState,
-    entryIntent: orderIntent
+    fullyClosed: fallbackState === 'ORDER_STATE_FILLED'
+      && Number.isFinite(fallbackSharesFilled)
+      && fallbackSharesFilled >= shares,
+    orderState: fallbackState,
+    entryIntent: orderIntent,
+    exitMethod: 'limit-fallback',
+    attempts: {
+      aggressiveLimit: limitAttempts
+    }
   };
 }

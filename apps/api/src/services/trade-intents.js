@@ -283,6 +283,33 @@ function getTerminalOrderStateFromVenueOrder(venueOrder) {
   return getOrderState(venueOrder);
 }
 
+function shouldKeepExitPending(sellOrder) {
+  if (sellOrder?.fullyClosed) {
+    return false;
+  }
+
+  const orderState = String(sellOrder?.orderState ?? '').trim().toUpperCase();
+
+  if (isTerminalUnfilledOrderState(orderState)) {
+    return false;
+  }
+
+  return true;
+}
+
+function describeExitFailure(sellOrder, reasonLabel = 'Exit') {
+  const orderId = sellOrder?.orderId ?? 'unknown';
+  const orderState = String(sellOrder?.orderState ?? 'unknown').trim() || 'unknown';
+  const exitMethod = String(sellOrder?.exitMethod ?? 'sell-order').trim() || 'sell-order';
+  const sharesFilled = Number.parseFloat(sellOrder?.sharesFilled ?? NaN);
+  const sharesRequested = Number.parseFloat(sellOrder?.sharesRequested ?? NaN);
+  const partialFillDetail = Number.isFinite(sharesFilled) && sharesFilled > 0
+    ? ` Filled ${sharesFilled}${Number.isFinite(sharesRequested) && sharesRequested > 0 ? ` of ${sharesRequested}` : ''} shares before the order became terminal.`
+    : ' No shares were filled.';
+
+  return `${reasonLabel} order ${orderId} via ${exitMethod} ended in ${orderState}.${partialFillDetail}`;
+}
+
 function buildVenueSyncClosedIntent(intent, nextState, notes, { exitReason } = {}) {
   return withApiVerification({
     ...intent,
@@ -714,6 +741,10 @@ async function executeTriggeredExit(env, intent, exitReason, monitoringState) {
   const sellOrder = await placeSellOrderForIntent(env, executableIntent);
 
   if (!sellOrder.fullyClosed) {
+    if (!shouldKeepExitPending(sellOrder)) {
+      throw new Error(describeExitFailure(sellOrder, 'Exit'));
+    }
+
     return {
       ...executableIntent,
       exitRequest: {
@@ -1215,6 +1246,31 @@ export async function sellTradeIntent(env, id) {
   const sellOrder = await placeSellOrderForIntent(env, executableIntent);
 
   if (!sellOrder.fullyClosed) {
+    if (!shouldKeepExitPending(sellOrder)) {
+      const nextIntent = {
+        ...executableIntent,
+        status: 'tracking',
+        monitoring: {
+          ...executableIntent.monitoring,
+          state: 'exit-failed-needs-manual-sell',
+          lastEvaluationAt: new Date().toISOString(),
+          exitReason: 'manual-sell',
+          notes: describeExitFailure(sellOrder, 'Cash Out')
+        },
+        exitRequest: {
+          ...executableIntent.exitRequest,
+          venueOrderId: sellOrder.orderId,
+          venueOrder: sellOrder.response,
+          submission: sellOrder.request,
+          executedAt: new Date().toISOString()
+        },
+        updatedAt: new Date().toISOString()
+      };
+
+      await writeTradeIntents(replaceTradeIntent(intents, nextIntent));
+      return nextIntent;
+    }
+
     const nextIntent = {
       ...executableIntent,
       status: 'tracking',

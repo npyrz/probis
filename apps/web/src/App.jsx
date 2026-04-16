@@ -150,6 +150,10 @@ function formatMonitoringStateLabel(state) {
     return 'Sync Warning';
   }
 
+  if (normalized === 'exit-submitted-awaiting-fill') {
+    return 'Closing Position';
+  }
+
   if (normalized === 'active') {
     return 'Actively Trading';
   }
@@ -176,6 +180,10 @@ function getMonitoringStateChipClass(state) {
   const normalized = String(state ?? 'active').trim();
 
   if (normalized === 'sync-warning') {
+    return 'market-chip market-chip-warning';
+  }
+
+  if (normalized === 'exit-submitted-awaiting-fill') {
     return 'market-chip market-chip-warning';
   }
 
@@ -640,6 +648,42 @@ function estimateTrackedPnl(intent, currentProbability, entryProbability) {
     dollars: pnlDollars,
     percent: pnlPercent
   };
+}
+
+function getSignedMetricTone(value, epsilon = 0.002) {
+  if (typeof value !== 'number') {
+    return 'ok';
+  }
+
+  if (value > epsilon) {
+    return 'good';
+  }
+
+  if (value < -epsilon) {
+    return 'bad';
+  }
+
+  return 'ok';
+}
+
+function getProbabilityMetricTone(currentProbability, stopLossProbability, takeProfitProbability) {
+  if (typeof currentProbability !== 'number') {
+    return 'ok';
+  }
+
+  if (typeof takeProfitProbability === 'number' && currentProbability >= takeProfitProbability) {
+    return 'good';
+  }
+
+  if (typeof stopLossProbability === 'number' && currentProbability <= stopLossProbability) {
+    return 'bad';
+  }
+
+  return 'ok';
+}
+
+function getTradeMetricClass(tone) {
+  return `trade-metric-card trade-metric-card-${tone}`;
 }
 
 function getTrackedEntryProbability(intent) {
@@ -1937,11 +1981,26 @@ export default function App() {
                   ? (currentProbability - entryProbability) * driftDirection
                   : null;
                 const unrealizedPnl = estimateTrackedPnl(intent, currentProbability, entryProbability);
+                const stopLossProbability = intent.monitoring?.stopLossProbability ?? null;
+                const takeProfitProbability = intent.monitoring?.takeProfitProbability ?? null;
+                const currentValue = typeof intent.position?.sharesFilled === 'number' && typeof currentProbability === 'number'
+                  ? intent.position.sharesFilled * currentProbability
+                  : null;
+                const costBasis = intent.position?.notionalSpent ?? intent.tradeAmount;
                 const pnlClassName = typeof unrealizedPnl.dollars === 'number'
                   ? unrealizedPnl.dollars >= 0
                     ? 'pnl-positive'
                     : 'pnl-negative'
                   : '';
+                const probabilityTone = getProbabilityMetricTone(currentProbability, stopLossProbability, takeProfitProbability);
+                const driftTone = getSignedMetricTone(drift);
+                const pnlTone = getSignedMetricTone(unrealizedPnl.dollars ?? null, 0.01);
+                const currentValueTone = getSignedMetricTone(
+                  typeof currentValue === 'number' && typeof costBasis === 'number'
+                    ? currentValue - costBasis
+                    : null,
+                  0.01
+                );
 
                 return (
                   <article key={intent.id} className="trade-history-item trade-center-item">
@@ -1963,57 +2022,57 @@ export default function App() {
                     <div className="trade-preview-grid">
                       {isTracking ? (
                         <>
-                          <article>
+                          <article className={getTradeMetricClass(probabilityTone)}>
                             <span>Current probability</span>
                             <strong>{formatPercent(currentProbability)}</strong>
                           </article>
-                          <article>
+                          <article className={getTradeMetricClass('ok')}>
                             <span>Entry probability</span>
                             <strong>{formatPercent(entryProbability)}</strong>
                           </article>
-                          <article>
+                          <article className={getTradeMetricClass(driftTone)}>
                             <span>Drift from entry</span>
                             <strong>{formatSignedPercent(drift)}</strong>
                           </article>
-                          <article>
+                          <article className={getTradeMetricClass(pnlTone)}>
                             <span>Unrealized P/L</span>
                             <strong className={pnlClassName}>
                               {formatSignedCurrency(unrealizedPnl.dollars)}
                               {typeof unrealizedPnl.percent === 'number' ? ` (${formatSignedPercent(unrealizedPnl.percent)})` : ''}
                             </strong>
                           </article>
-                          <article>
+                          <article className={getTradeMetricClass('bad')}>
                             <span>Stop-loss</span>
-                            <strong>{formatPercent(intent.monitoring?.stopLossProbability)}</strong>
+                            <strong>{formatPercent(stopLossProbability)}</strong>
                           </article>
-                          <article>
+                          <article className={getTradeMetricClass('good')}>
                             <span>Take-profit</span>
-                            <strong>{formatPercent(intent.monitoring?.takeProfitProbability)}</strong>
+                            <strong>{formatPercent(takeProfitProbability)}</strong>
                           </article>
-                          <article>
+                          <article className={getTradeMetricClass('ok')}>
                             <span>Last evaluation</span>
                             <strong>{formatDateTime(intent.monitoring?.lastEvaluationAt)}</strong>
                           </article>
-                          <article>
+                          <article className={getTradeMetricClass('ok')}>
                             <span>Last Polymarket Quote</span>
                             <strong>{formatDateTime(intent.monitoring?.lastPolymarketQuoteAt)}</strong>
                           </article>
-                          <article>
+                          <article className={getTradeMetricClass('ok')}>
                             <span>Entry order</span>
                             <strong>{formatOrderId(intent.executionRequest?.venueOrderId)}</strong>
                           </article>
-                          <article>
+                          <article className={getTradeMetricClass('good')}>
                             <span>Shares filled</span>
                             <strong>{typeof intent.position?.sharesFilled === 'number' ? intent.position.sharesFilled.toFixed(2) : 'n/a'}</strong>
                           </article>
-                          <article>
+                          <article className={getTradeMetricClass('ok')}>
                             <span>Cost basis</span>
-                            <strong>{formatCurrency(intent.position?.notionalSpent ?? intent.tradeAmount)}</strong>
+                            <strong>{formatCurrency(costBasis)}</strong>
                           </article>
-                          <article>
+                          <article className={getTradeMetricClass(currentValueTone)}>
                             <span>Current value</span>
-                            <strong>{typeof intent.position?.sharesFilled === 'number' && typeof currentProbability === 'number'
-                              ? formatCurrency(intent.position.sharesFilled * currentProbability)
+                            <strong>{typeof currentValue === 'number'
+                              ? formatCurrency(currentValue)
                               : 'n/a'}</strong>
                           </article>
                         </>

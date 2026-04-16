@@ -389,6 +389,57 @@ h3 {
   padding: 8px 10px;
 }
 
+.trade-metric-card {
+  position: relative;
+  overflow: hidden;
+}
+
+.trade-metric-card::before {
+  content: '';
+  position: absolute;
+  inset: 0;
+  opacity: 0.9;
+  pointer-events: none;
+}
+
+.trade-metric-card > * {
+  position: relative;
+  z-index: 1;
+}
+
+.trade-metric-card-good {
+  border-color: rgba(88, 214, 141, 0.38);
+  box-shadow: inset 0 1px 0 rgba(184, 255, 214, 0.08), 0 0 0 1px rgba(41, 120, 74, 0.14);
+}
+
+.trade-metric-card-good::before {
+  background:
+    radial-gradient(circle at top right, rgba(102, 255, 159, 0.18), transparent 48%),
+    linear-gradient(135deg, rgba(17, 56, 38, 0.94), rgba(10, 23, 18, 0.96));
+}
+
+.trade-metric-card-ok {
+  border-color: rgba(255, 205, 102, 0.34);
+  box-shadow: inset 0 1px 0 rgba(255, 238, 186, 0.06), 0 0 0 1px rgba(130, 98, 29, 0.12);
+}
+
+.trade-metric-card-ok::before {
+  background:
+    radial-gradient(circle at top right, rgba(255, 209, 102, 0.16), transparent 48%),
+    linear-gradient(135deg, rgba(58, 42, 18, 0.94), rgba(22, 18, 11, 0.96));
+}
+
+.trade-metric-card-bad {
+  border-color: rgba(255, 114, 114, 0.34);
+  box-shadow: inset 0 1px 0 rgba(255, 206, 206, 0.06), 0 0 0 1px rgba(124, 39, 39, 0.12);
+}
+
+.trade-metric-card-bad::before {
+  background:
+    radial-gradient(circle at top right, rgba(255, 113, 113, 0.16), transparent 48%),
+    linear-gradient(135deg, rgba(63, 21, 24, 0.94), rgba(23, 11, 14, 0.96));
+}
+
 .compact-status-grid,
 .event-summary-stats {
   grid-template-columns: repeat(2, minmax(0, 1fr));
