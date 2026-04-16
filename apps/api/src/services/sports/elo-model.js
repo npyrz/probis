@@ -54,7 +54,13 @@ function getLeagueConfig(league) {
     pitcherEraWeight: 10,
     pitcherRecordWeight: 12,
     pitcherFullWeightSample: 20,
-    pitcherEraFallbackSampleWeight: 0.2
+    pitcherEraFallbackSampleWeight: 0.2,
+    pitcherRecentStartsWindow: 8,
+    pitcherRecencyHalfLifeDays: 21,
+    pitcherRecentRunsWeight: 8,
+    pitcherRecentWinWeight: 10,
+    pitcherRecentScoreDiffWeight: 2,
+    pitcherRecentFormBlendCap: 0.75
   };
 
   const perLeague = {
@@ -65,7 +71,13 @@ function getLeagueConfig(league) {
       pitcherEraWeight: 6,
       pitcherRecordWeight: 8,
       pitcherFullWeightSample: 18,
-      pitcherEraFallbackSampleWeight: 0.15
+      pitcherEraFallbackSampleWeight: 0.15,
+      pitcherRecentStartsWindow: 7,
+      pitcherRecencyHalfLifeDays: 18,
+      pitcherRecentRunsWeight: 10,
+      pitcherRecentWinWeight: 10,
+      pitcherRecentScoreDiffWeight: 2,
+      pitcherRecentFormBlendCap: 0.8
     },
     NHL: { homeAdvantageElo: 30, pointDiffWeight: 10 },
     NBA: { homeAdvantageElo: 40, pointDiffWeight: 14 },
@@ -377,6 +389,89 @@ function getGamesForLeague(store, league, asOfDate, phase = 'all') {
   }).filter((game) => game.parsedDate.getTime() < (asOfDate?.getTime() ?? Date.now()));
 }
 
+function getRecentPitcherStarts(games, pitcherId, asOfDate, maxStarts = 8) {
+  if (!pitcherId) {
+    return [];
+  }
+
+  const starts = [];
+
+  for (let index = games.length - 1; index >= 0; index -= 1) {
+    const game = games[index];
+
+    if (!game?.parsedDate || game.parsedDate >= asOfDate) {
+      continue;
+    }
+
+    const homePitcherId = game?.metadata?.probablePitchers?.home?.playerId ? String(game.metadata.probablePitchers.home.playerId) : null;
+    const awayPitcherId = game?.metadata?.probablePitchers?.away?.playerId ? String(game.metadata.probablePitchers.away.playerId) : null;
+
+    if (homePitcherId !== pitcherId && awayPitcherId !== pitcherId) {
+      continue;
+    }
+
+    const startedAtHome = homePitcherId === pitcherId;
+
+    starts.push({
+      date: game.parsedDate,
+      runsAllowed: startedAtHome ? Number(game.awayScore) : Number(game.homeScore),
+      won: startedAtHome
+        ? Number(game.homeScore) > Number(game.awayScore)
+        : Number(game.awayScore) > Number(game.homeScore),
+      scoreDiff: startedAtHome
+        ? Number(game.homeScore) - Number(game.awayScore)
+        : Number(game.awayScore) - Number(game.homeScore)
+    });
+
+    if (starts.length >= maxStarts) {
+      break;
+    }
+  }
+
+  return starts;
+}
+
+function summarizeRecentPitcherForm(games, pitcher, asOfDate, config) {
+  const pitcherId = pitcher?.playerId ? String(pitcher.playerId) : null;
+
+  if (!pitcherId || !(asOfDate instanceof Date)) {
+    return null;
+  }
+
+  const starts = getRecentPitcherStarts(games, pitcherId, asOfDate, config.pitcherRecentStartsWindow);
+
+  if (starts.length === 0) {
+    return null;
+  }
+
+  let totalWeight = 0;
+  let weightedRunsAllowed = 0;
+  let weightedWinRate = 0;
+  let weightedScoreDiff = 0;
+
+  for (const start of starts) {
+    const daysAgo = Math.max(0, diffDays(asOfDate, start.date) ?? 0);
+    const weight = 0.5 ** (daysAgo / config.pitcherRecencyHalfLifeDays);
+
+    totalWeight += weight;
+    weightedRunsAllowed += (Number.isFinite(start.runsAllowed) ? start.runsAllowed : 4.5) * weight;
+    weightedWinRate += (start.won ? 1 : 0) * weight;
+    weightedScoreDiff += (Number.isFinite(start.scoreDiff) ? start.scoreDiff : 0) * weight;
+  }
+
+  if (totalWeight <= 0) {
+    return null;
+  }
+
+  return {
+    startCount: starts.length,
+    effectiveSampleWeight: totalWeight,
+    decayedRunsAllowed: weightedRunsAllowed / totalWeight,
+    decayedWinRate: weightedWinRate / totalWeight,
+    decayedScoreDiff: weightedScoreDiff / totalWeight
+  };
+}
+
 function initializeTeamState(baseElo) {
   return {
     elo: baseElo,
@@ -511,7 +606,7 @@ function getPitcherDecisionSample(pitcher) {
   return Math.max(0, wins + losses);
 }
 
-function getMlbPitcherScore(pitcher, config) {
+function getMlbPitcherScore(pitcher, recentForm, config) {
   if (!pitcher) {
     return 0;
   }
@@ -519,20 +614,35 @@ function getMlbPitcherScore(pitcher, config) {
   const era = Number.isFinite(Number(pitcher.era)) ? Number(pitcher.era) : null;
   const winRate = getPitcherWinRate(pitcher);
   const decisionSample = getPitcherDecisionSample(pitcher);
-  const sampleWeight = decisionSample > 0
+  const seasonSampleWeight = decisionSample > 0
     ? clamp(decisionSample / config.pitcherFullWeightSample, 0.1, 1)
     : config.pitcherEraFallbackSampleWeight;
-  const eraComponent = typeof era === 'number'
-    ? (4.2 - clamp(era, 2.2, 6.2)) * config.pitcherEraWeight * sampleWeight
+  const seasonEraComponent = typeof era === 'number'
+    ? (4.2 - clamp(era, 2.2, 6.2)) * config.pitcherEraWeight * seasonSampleWeight
     : 0;
-  const recordComponent = typeof winRate === 'number'
-    ? (winRate - 0.5) * config.pitcherRecordWeight * 2 * sampleWeight
+  const seasonRecordComponent = typeof winRate === 'number'
+    ? (winRate - 0.5) * config.pitcherRecordWeight * 2 * seasonSampleWeight
     : 0;
 
-  return eraComponent + recordComponent;
+  const recentSampleWeight = clamp(
+    (recentForm?.effectiveSampleWeight ?? 0) / Math.max(1, config.pitcherRecentStartsWindow * 0.75),
+    0,
+    config.pitcherRecentFormBlendCap
+  );
+  const recentRunsComponent = typeof recentForm?.decayedRunsAllowed === 'number'
+    ? (4.2 - clamp(recentForm.decayedRunsAllowed, 2.2, 7)) * config.pitcherRecentRunsWeight * recentSampleWeight
+    : 0;
+  const recentWinComponent = typeof recentForm?.decayedWinRate === 'number'
+    ? (recentForm.decayedWinRate - 0.5) * config.pitcherRecentWinWeight * 2 * recentSampleWeight
+    : 0;
+  const recentScoreDiffComponent = typeof recentForm?.decayedScoreDiff === 'number'
+    ? clamp(recentForm.decayedScoreDiff, -4, 4) * config.pitcherRecentScoreDiffWeight * recentSampleWeight
+    : 0;
+
+  return seasonEraComponent + seasonRecordComponent + recentRunsComponent + recentWinComponent + recentScoreDiffComponent;
 }
 
-function getPitcherAdjustment(league, probablePitchers, config) {
+function getPitcherAdjustment(league, probablePitchers, config, recentPitcherForm = null) {
   if (league !== 'MLB') {
     return {
       adjustment: 0,
@@ -540,14 +650,17 @@ function getPitcherAdjustment(league, probablePitchers, config) {
       awayScore: 0,
       homePitcher: null,
       awayPitcher: null,
-      source: null
+      source: null,
+      recentForm: null
     };
   }
 
   const homePitcher = probablePitchers?.home ?? null;
   const awayPitcher = probablePitchers?.away ?? null;
-  const homeScore = getMlbPitcherScore(homePitcher, config);
-  const awayScore = getMlbPitcherScore(awayPitcher, config);
+  const homeRecentForm = recentPitcherForm?.home ?? null;
+  const awayRecentForm = recentPitcherForm?.away ?? null;
+  const homeScore = getMlbPitcherScore(homePitcher, homeRecentForm, config);
+  const awayScore = getMlbPitcherScore(awayPitcher, awayRecentForm, config);
 
   return {
     adjustment: clamp(homeScore - awayScore, -config.pitcherAdjustmentCap, config.pitcherAdjustmentCap),
@@ -555,7 +668,11 @@ function getPitcherAdjustment(league, probablePitchers, config) {
     awayScore,
     homePitcher,
     awayPitcher,
-    source: homePitcher || awayPitcher ? 'espn-probable-starters' : null
+    source: homePitcher || awayPitcher ? 'espn-probable-starters-plus-recency' : null,
+    recentForm: {
+      home: homeRecentForm,
+      away: awayRecentForm
+    }
   };
 }
 
@@ -609,7 +726,13 @@ export async function buildTeamStrengthMarketContext({ event, market, historySto
         awayTeamId
       })
     : null;
-  const pitcherAdjustment = getPitcherAdjustment(market.league, probablePitcherMatchup?.probablePitchers, config);
+  const recentPitcherForm = market.league === 'MLB'
+    ? {
+        home: summarizeRecentPitcherForm(games, probablePitcherMatchup?.probablePitchers?.home, asOfDate, config),
+        away: summarizeRecentPitcherForm(games, probablePitcherMatchup?.probablePitchers?.away, asOfDate, config)
+      }
+    : null;
+  const pitcherAdjustment = getPitcherAdjustment(market.league, probablePitcherMatchup?.probablePitchers, config, recentPitcherForm);
   const adjustedDiff = (homeSummary.elo - awaySummary.elo)
     + homeAdvantageApplied
     + recentFormDiff * config.recentFormWeight
@@ -648,6 +771,7 @@ export async function buildTeamStrengthMarketContext({ event, market, historySto
       probablePitcherHomeScore: pitcherAdjustment.homeScore,
       probablePitcherAwayScore: pitcherAdjustment.awayScore,
       probablePitchers: probablePitcherMatchup?.probablePitchers ?? null,
+      probablePitcherRecentForm: pitcherAdjustment.recentForm,
       adjustedDiff,
       leagueGameSampleSize: games.length,
       competitionPhase: phase,
@@ -715,7 +839,13 @@ export function runTeamStrengthBacktest(
     const recentFormDiff = (homeSummary.recentWinRate ?? 0.5) - (awaySummary.recentWinRate ?? 0.5);
     const recentScoreDiff = (homeSummary.recentScoreDiff ?? 0) - (awaySummary.recentScoreDiff ?? 0);
     const restDiff = Math.max(-4, Math.min(4, (homeSummary.restDays ?? 0) - (awaySummary.restDays ?? 0)));
-    const pitcherAdjustment = getPitcherAdjustment(league, game?.metadata?.probablePitchers, config);
+    const recentPitcherForm = league === 'MLB'
+      ? {
+          home: summarizeRecentPitcherForm(games, game?.metadata?.probablePitchers?.home, game.parsedDate, config),
+          away: summarizeRecentPitcherForm(games, game?.metadata?.probablePitchers?.away, game.parsedDate, config)
+        }
+      : null;
+    const pitcherAdjustment = getPitcherAdjustment(league, game?.metadata?.probablePitchers, config, recentPitcherForm);
     const adjustedDiff = (homeSummary.elo - awaySummary.elo)
       + config.homeAdvantageElo
       + recentFormDiff * config.recentFormWeight
@@ -744,6 +874,7 @@ export function runTeamStrengthBacktest(
           recentScoreDiff,
           restDiff,
           probablePitcherDiff: pitcherAdjustment.adjustment,
+          probablePitcherRecentForm: pitcherAdjustment.recentForm,
           adjustedDiff,
           trainingSample
         }
