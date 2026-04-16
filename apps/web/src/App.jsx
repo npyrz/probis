@@ -820,16 +820,6 @@ function replaceIntentInList(intents, nextIntent) {
   return intents.map((intent) => (intent.id === nextIntent.id ? nextIntent : intent));
 }
 
-function mergeTrackingIntentsIntoHistory(previousIntents, polledTrackingIntents) {
-  if (!Array.isArray(polledTrackingIntents) || polledTrackingIntents.length === 0) {
-    return previousIntents;
-  }
-
-  const byId = new Map(polledTrackingIntents.map((intent) => [intent.id, intent]));
-
-  return previousIntents.map((intent) => byId.get(intent.id) ?? intent);
-}
-
 function filterAndSortMarkets(markets, aggregation, statisticalModel, sortBy, filterBy) {
   const enriched = markets.map((market) => ({
     market,
@@ -1269,6 +1259,13 @@ export default function App() {
     return intents;
   }
 
+  function applyAuthoritativeTradeHistory(intents) {
+    const nextIntents = Array.isArray(intents) ? intents.slice(0, 6) : [];
+    setTradeHistory(nextIntents);
+    syncTradeDraftFromHistory(nextIntents);
+    return nextIntents;
+  }
+
   async function applyStoredTradeDraft(storedDraft, successMessage = null) {
     const [event, analytics] = await Promise.all([
       resolveEvent(storedDraft.input),
@@ -1482,15 +1479,11 @@ export default function App() {
     const intervalId = window.setInterval(() => {
       void (async () => {
         try {
-          const [polledTrackingIntents, nextStatus] = await Promise.all([
+          const [polledTradeIntents, nextStatus] = await Promise.all([
             pollTrackedTradeIntents(),
             fetchStatus()
           ]);
-          setTradeHistory((previous) => {
-            const nextHistory = mergeTrackingIntentsIntoHistory(previous, polledTrackingIntents);
-            syncTradeDraftFromHistory(nextHistory);
-            return nextHistory;
-          });
+          applyAuthoritativeTradeHistory(polledTradeIntents);
           setStatus(nextStatus);
           setLastMarketUpdate(new Date().toISOString());
           setLastTradeUpdate(new Date().toISOString());
@@ -1735,17 +1728,13 @@ export default function App() {
     setIsPollingTracking(true);
 
     try {
-      const polledTrackingIntents = await pollTrackedTradeIntents();
-      setTradeHistory((previous) => {
-        const nextHistory = mergeTrackingIntentsIntoHistory(previous, polledTrackingIntents);
-        syncTradeDraftFromHistory(nextHistory);
-        return nextHistory;
-      });
+      const polledTradeIntents = await pollTrackedTradeIntents();
+      const nextHistory = applyAuthoritativeTradeHistory(polledTradeIntents);
       const nextStatus = await fetchStatus();
       setStatus(nextStatus);
       setLastMarketUpdate(new Date().toISOString());
-      setNotice(polledTrackingIntents.length > 0 ? 'Refreshed active trade monitoring from Polymarket US.' : 'No tracked trades to refresh.');
-      const stillTracking = intents.filter((intent) => intent.status === 'tracking').length;
+      setLastTradeUpdate(new Date().toISOString());
+      const stillTracking = nextHistory.filter((intent) => intent.status === 'tracking').length;
       setNotice(stillTracking > 0 ? 'Updated active positions from live market probabilities.' : 'Polling completed and no active tracked positions remain.');
     } catch (pollError) {
       setError(pollError instanceof Error ? pollError.message : 'Unable to poll active positions');

@@ -357,6 +357,35 @@ function buildVenueSyncClosedIntent(intent, nextState, notes, { exitReason } = {
   });
 }
 
+function isVenuePositionNotFoundError(error) {
+  const message = String(error instanceof Error ? error.message : error ?? '').trim().toLowerCase();
+  return message.includes('position not found');
+}
+
+function buildVenuePositionMissingClosedIntent(intent, { exitReason, notes, verificationReason }) {
+  const nextIntent = finalizeTrackedIntent(intent, exitReason, {
+    ...intent.monitoring,
+    state: 'venue-position-missing',
+    lastEvaluationAt: new Date().toISOString(),
+    exitReason,
+    notes
+  });
+
+  nextIntent.position = {
+    ...nextIntent.position,
+    sharesFilled: 0,
+    notionalSpent: 0,
+    lastExecutionAt: new Date().toISOString()
+  };
+
+  return withApiVerification(nextIntent, {
+    apiVerifiedFilledPosition: false,
+    method: 'close-position',
+    reason: verificationReason,
+    orderId: intent.executionRequest?.venueOrderId ?? intent.position?.entryOrderId ?? null
+  });
+}
+
 function withApiVerification(intent, {
   apiVerifiedFilledPosition,
   method,
@@ -785,7 +814,21 @@ async function executeTriggeredExit(env, intent, exitReason, monitoringState) {
     marketSlug: resolvedMarket.marketSlug,
     conditionId: resolvedMarket.conditionId
   };
-  const sellOrder = await placeSellOrderForIntent(env, executableIntent);
+  let sellOrder;
+
+  try {
+    sellOrder = await placeSellOrderForIntent(env, executableIntent);
+  } catch (error) {
+    if (isVenuePositionNotFoundError(error)) {
+      return buildVenuePositionMissingClosedIntent(executableIntent, {
+        exitReason,
+        notes: 'Polymarket US reported that no active position remains for this market during exit. Marking the trade closed.',
+        verificationReason: 'exit-position-missing'
+      });
+    }
+
+    throw error;
+  }
 
   if (!sellOrder.fullyClosed) {
     if (!shouldKeepExitPending(sellOrder)) {
@@ -1276,7 +1319,7 @@ export async function pollTrackingTradeIntents(env) {
   }));
 
   await writeTradeIntents(nextIntents);
-  return nextIntents.filter((intent) => intent.status === 'tracking');
+  return nextIntents;
 }
 
 export async function sellTradeIntent(env, id) {
@@ -1293,7 +1336,24 @@ export async function sellTradeIntent(env, id) {
     marketSlug: resolvedMarket.marketSlug,
     conditionId: resolvedMarket.conditionId
   };
-  const sellOrder = await placeSellOrderForIntent(env, executableIntent);
+  let sellOrder;
+
+  try {
+    sellOrder = await placeSellOrderForIntent(env, executableIntent);
+  } catch (error) {
+    if (isVenuePositionNotFoundError(error)) {
+      const nextIntent = buildVenuePositionMissingClosedIntent(executableIntent, {
+        exitReason: 'manual-sell',
+        notes: 'Polymarket US reported that this position no longer exists. Marking the trade closed and removing it from active monitoring.',
+        verificationReason: 'manual-sell-position-missing'
+      });
+
+      await writeTradeIntents(replaceTradeIntent(intents, nextIntent));
+      return nextIntent;
+    }
+
+    throw error;
+  }
 
   if (!sellOrder.fullyClosed) {
     if (!shouldKeepExitPending(sellOrder)) {
