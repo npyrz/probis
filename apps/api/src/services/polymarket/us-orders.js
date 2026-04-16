@@ -521,9 +521,18 @@ export async function resolveLivePositionShares(env, intent) {
   }
 
   const positions = await fetchPortfolioPositions(env);
+
+  if (positions.length === 0) {
+    console.log(`[resolveLivePositionShares] Portfolio returned 0 positions for slug "${marketSlug}".`);
+  }
+
   const matches = positions.filter((position) => marketSlugsMatch(getPositionMarketSlug(position), marketSlug));
 
   if (matches.length === 0) {
+    if (positions.length > 0) {
+      const slugs = positions.map((p) => getPositionMarketSlug(p)).filter(Boolean);
+      console.log(`[resolveLivePositionShares] No slug match for "${marketSlug}". Portfolio slugs: ${JSON.stringify(slugs)}`);
+    }
     return null;
   }
 
@@ -1350,54 +1359,27 @@ export async function placeSellOrderForIntent(env, intent) {
     orderIntent = orderIntents.sell;
   }
 
+  // Polymarket US does not support ORDER_TYPE_MARKET for sell — it requires cashOrderQty.
+  // Always use limit orders at the current BBO price with IOC to sell shares directly.
+  const quote = await resolveOutcomeMarketQuote(env, marketSlug, intent.outcomeLabel);
+  const limitPrice = quote.outcomePrice;
+
   const orderBody = {
-    marketSlug,
+    marketSlug: quote.resolvedMarketSlug ?? marketSlug,
     intent: orderIntent,
-    type: 'ORDER_TYPE_MARKET',
+    type: 'ORDER_TYPE_LIMIT',
     tif: 'TIME_IN_FORCE_IMMEDIATE_OR_CANCEL',
+    price: {
+      value: limitPrice.toFixed(3),
+      currency: 'USD'
+    },
     quantity: shares,
     manualOrderIndicator: 'MANUAL_ORDER_INDICATOR_AUTOMATIC',
     synchronousExecution: true,
     maxBlockTime: '10'
   };
 
-  let orderResponse;
-
-  try {
-    orderResponse = await createPolymarketUsOrder(env, orderBody);
-  } catch (error) {
-    if (!isLimitPriceRequiredError(error)) {
-      throw error;
-    }
-
-    const quote = await resolveOutcomeMarketQuote(env, marketSlug, intent.outcomeLabel);
-    const limitPrice = quote.outcomePrice;
-
-    const limitOrderBody = {
-      marketSlug: quote.resolvedMarketSlug,
-      intent: orderIntent,
-      type: 'ORDER_TYPE_LIMIT',
-      tif: 'TIME_IN_FORCE_IMMEDIATE_OR_CANCEL',
-      price: {
-        value: limitPrice.toFixed(3),
-        currency: 'USD'
-      },
-      quantity: shares,
-      manualOrderIndicator: 'MANUAL_ORDER_INDICATOR_AUTOMATIC',
-      synchronousExecution: true,
-      maxBlockTime: '10'
-    };
-
-    orderResponse = await createPolymarketUsOrder(env, limitOrderBody);
-
-    return {
-      request: limitOrderBody,
-      response: orderResponse,
-      orderId: getOrderId(orderResponse),
-      sharesFilled: getSharesFromOrder(orderResponse),
-      entryIntent: orderIntent
-    };
-  }
+  const orderResponse = await createPolymarketUsOrder(env, orderBody);
 
   return {
     request: orderBody,

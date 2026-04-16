@@ -162,6 +162,10 @@ function formatMonitoringStateLabel(state) {
     return 'Take-Profit Exit Failed';
   }
 
+  if (normalized === 'exit-failed-needs-manual-sell') {
+    return 'Exit Failed — Cash Out Manually';
+  }
+
   return normalized
     .split('-')
     .map((token) => token.charAt(0).toUpperCase() + token.slice(1))
@@ -175,7 +179,7 @@ function getMonitoringStateChipClass(state) {
     return 'market-chip market-chip-warning';
   }
 
-  if (normalized.endsWith('-failed')) {
+  if (normalized.endsWith('-failed') || normalized === 'exit-failed-needs-manual-sell') {
     return 'market-chip market-chip-alert';
   }
 

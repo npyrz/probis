@@ -265,7 +265,7 @@ function getTerminalOrderStateFromVenueOrder(venueOrder) {
   return getOrderState(venueOrder);
 }
 
-function buildVenueSyncClosedIntent(intent, nextState, notes) {
+function buildVenueSyncClosedIntent(intent, nextState, notes, { exitReason } = {}) {
   return withApiVerification({
     ...intent,
     status: 'closed',
@@ -273,7 +273,7 @@ function buildVenueSyncClosedIntent(intent, nextState, notes) {
       ...intent.monitoring,
       state: nextState,
       lastEvaluationAt: new Date().toISOString(),
-      exitReason: 'entry-order-unfilled',
+      exitReason: exitReason ?? 'entry-order-unfilled',
       notes
     },
     updatedAt: new Date().toISOString()
@@ -457,12 +457,51 @@ async function reconcileTrackingIntentWithVenue(env, intent) {
   }
 
   const hasNoLiveShares = !hasLiveShares;
+
+  // If the order has confirmed fills, the ORDER is the authoritative source — not the portfolio API.
+  // The portfolio endpoint may return empty for various reasons (propagation delay, API quirks, etc.).
+  // Never auto-close a position that the order API confirms was filled.
+  if (hasNoLiveShares && hasEntryFills) {
+    return withApiVerification({
+      ...intent,
+      executionRequest: {
+        ...intent.executionRequest,
+        venueOrderId: orderId,
+        venueOrder
+      },
+      position: {
+        ...intent.position,
+        entryOrderId: orderId,
+        sharesFilled: Number.isFinite(sharesFilled) && sharesFilled > 0
+          ? sharesFilled
+          : (intent.position?.sharesFilled ?? null),
+        notionalSpent: Number.isFinite(notionalSpent) && notionalSpent > 0
+          ? notionalSpent
+          : (intent.position?.notionalSpent ?? null),
+        lastExecutionAt: new Date().toISOString()
+      },
+      monitoring: {
+        ...intent.monitoring,
+        lastEvaluationAt: new Date().toISOString(),
+        syncNoLiveSharesCount: 0,
+        notes: `Order ${orderId} is ${orderState} with ${sharesFilled} shares filled. Portfolio API shows no live position — using order fills as authoritative source.`
+      },
+      updatedAt: new Date().toISOString()
+    }, {
+      apiVerifiedFilledPosition: true,
+      method: 'order-fills-authoritative',
+      reason: 'order-confirmed-filled',
+      orderId
+    });
+  }
+
+  // For orders WITHOUT confirmed fills: use threshold-based closure.
   const previousNoLiveSharesCount = Number.parseInt(String(intent?.monitoring?.syncNoLiveSharesCount ?? '0'), 10);
   const noLiveSharesCount = hasNoLiveShares
     ? (Number.isFinite(previousNoLiveSharesCount) ? previousNoLiveSharesCount + 1 : 1)
     : 0;
 
-  if (hasNoLiveShares && !hasEntryFills && isTerminalUnfilledOrderState(orderState)) {
+  if (hasNoLiveShares && isTerminalUnfilledOrderState(orderState)) {
     return buildVenueSyncClosedIntent(
       {
         ...intent,
@@ -686,8 +725,25 @@ async function evaluateMonitoringState(env, intent, trackedQuote) {
   };
   const stopLossProbability = baseMonitoring.stopLossProbability;
   const takeProfitProbability = baseMonitoring.takeProfitProbability;
+  const previousExitAttempts = Number.parseInt(String(intent.monitoring?.exitAttemptFailures ?? '0'), 10) || 0;
+  const MAX_EXIT_ATTEMPTS = 3;
+  const exitAttemptsExhausted = previousExitAttempts >= MAX_EXIT_ATTEMPTS;
 
   if (typeof currentProbability === 'number' && typeof stopLossProbability === 'number' && currentProbability <= stopLossProbability) {
+    if (exitAttemptsExhausted) {
+      return {
+        ...intent,
+        monitoring: {
+          ...baseMonitoring,
+          state: 'exit-failed-needs-manual-sell',
+          exitReason: 'stop-loss-hit',
+          exitAttemptFailures: previousExitAttempts,
+          notes: `Stop-loss triggered but sell has failed ${previousExitAttempts} times. Use Cash Out to sell manually.`
+        },
+        updatedAt: new Date().toISOString()
+      };
+    }
+
     const nextMonitoring = {
       ...baseMonitoring,
       state: 'stop-loss-hit',
@@ -706,8 +762,9 @@ async function evaluateMonitoringState(env, intent, trackedQuote) {
           state: 'stop-loss-triggered-exit-failed',
           stopTriggeredAt: new Date().toISOString(),
           exitReason: 'stop-loss-hit',
+          exitAttemptFailures: previousExitAttempts + 1,
           notes: error instanceof Error
-            ? `Stop-loss triggered but sell order failed: ${error.message}`
+            ? `Stop-loss triggered but sell order failed (attempt ${previousExitAttempts + 1}/${MAX_EXIT_ATTEMPTS}): ${error.message}`
             : 'Stop-loss triggered but sell order failed.'
         },
         updatedAt: new Date().toISOString()
@@ -716,6 +773,20 @@ async function evaluateMonitoringState(env, intent, trackedQuote) {
   }
 
   if (typeof currentProbability === 'number' && typeof takeProfitProbability === 'number' && currentProbability >= takeProfitProbability) {
+    if (exitAttemptsExhausted) {
+      return {
+        ...intent,
+        monitoring: {
+          ...baseMonitoring,
+          state: 'exit-failed-needs-manual-sell',
+          exitReason: 'take-profit-hit',
+          exitAttemptFailures: previousExitAttempts,
+          notes: `Take-profit triggered but sell has failed ${previousExitAttempts} times. Use Cash Out to sell manually.`
+        },
+        updatedAt: new Date().toISOString()
+      };
+    }
+
     const nextMonitoring = {
       ...baseMonitoring,
       state: 'take-profit-hit',
@@ -734,8 +805,9 @@ async function evaluateMonitoringState(env, intent, trackedQuote) {
           state: 'take-profit-triggered-exit-failed',
           takeProfitTriggeredAt: new Date().toISOString(),
           exitReason: 'take-profit-hit',
+          exitAttemptFailures: previousExitAttempts + 1,
           notes: error instanceof Error
-            ? `Take-profit triggered but sell order failed: ${error.message}`
+            ? `Take-profit triggered but sell order failed (attempt ${previousExitAttempts + 1}/${MAX_EXIT_ATTEMPTS}): ${error.message}`
             : 'Take-profit triggered but sell order failed.'
         },
         updatedAt: new Date().toISOString()
