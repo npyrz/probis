@@ -119,10 +119,21 @@ SOCIAL_X_RECENT_SEARCH_URL=https://api.x.com/2/tweets/search/recent
 │   │       │   ├── ai.js
 │   │       │   ├── health.js
 │   │       │   ├── polymarket.js
+│   │       │   ├── sports.js
 │   │       │   └── trades.js
 │   │       └── services/
 │   │           ├── decision-engine.js
 │   │           ├── ollama.js
+│   │           ├── sports/
+│   │           │   ├── aggregation.js
+│   │           │   ├── auto-sync.js
+│   │           │   ├── backtest.js
+│   │           │   ├── canonicalization.js
+│   │           │   ├── elo-model.js
+│   │           │   ├── event-intelligence.js
+│   │           │   ├── history-store.js
+│   │           │   ├── mlb-importer.js
+│   │           │   └── nba-importer.js
 │   │           ├── trade-intents.js
 │   │           └── polymarket/
 │   │               ├── aggregation.js
@@ -135,14 +146,20 @@ SOCIAL_X_RECENT_SEARCH_URL=https://api.x.com/2/tweets/search/recent
 │       ├── package.json
 │       └── src/
 │           ├── App.jsx
+│           ├── components/
+│           ├── features/
 │           ├── lib/
 │           │   └── api.js
+│           ├── main.jsx
 │           └── styles.css
 ├── data/
-│   └── trade-intents.json
+│   ├── trade-intents.json
 │   └── sports/
 │       ├── polymarket-us-teams.json
 │       └── team-history.json
+├── scripts/
+│   ├── check-orders-and-positions.js
+│   └── sync-polymarket-us-sports-universe.js
 ├── .env.example
 ├── package.json
 └── plan.md
@@ -156,11 +173,13 @@ flowchart LR
 		API --> Gamma[Gamma Events API]
 		API --> CLOB[Polymarket CLOB Client]
 		API --> PMUS[Polymarket US Orders API]
+    API --> ESPN[ESPN Site API]
 		API --> Ollama[Local Ollama]
 		API --> Store[Local JSON Trade Store]
 
 		Gamma --> Resolver[Event Resolution and Market Normalization]
 		CLOB --> Aggregation[7d Historical Aggregation]
+    ESPN --> Aggregation
 		Resolver --> Aggregation
 		Aggregation --> Stats[Deterministic Statistical Model]
 		Stats --> LLMDecision[LLM Candidate Selection]
@@ -174,12 +193,14 @@ flowchart LR
 
 ### 1. API Layer
 
-The API lives in `apps/api` and is split into four route groups.
+The API lives in `apps/api` and is split into five route groups.
 
 - `GET /health`
   Returns service timestamp plus Polymarket and Ollama status.
 - `GET /api/polymarket/*`
   Handles event discovery, event resolution, analytics resolution, cache invalidation, and account identity.
+- `GET|POST /api/sports/*`
+  Handles sports status, event inspection, NBA/MLB history imports, and backtesting.
 - `GET|POST /api/ai/*`
   Handles Ollama status, prompt smoke tests, and full event analysis plus decision output.
 - `GET|POST|PATCH|DELETE /api/trades/*`
@@ -187,13 +208,14 @@ The API lives in `apps/api` and is split into four route groups.
 
 ### 2. Data Providers
 
-The current system uses five external sources plus one local store.
+The current system uses six external sources plus one local store.
 
 - Gamma API for event and market discovery.
 - Polymarket CLOB client for public reads and history retrieval.
 - Polymarket US API for signed trading, balances, and account identity.
 - ESPN Site API for NBA/MLB scoreboards, rosters, and team or league news.
-- Optional Reddit and X recent-search inputs for extra live context when configured.
+- Optional Reddit recent-search inputs for extra live context when configured.
+- Optional X recent-search inputs for extra live context when configured.
 - Local JSON persistence in `data/trade-intents.json`.
 
 ### 3. Frontend Operator Console
@@ -496,11 +518,18 @@ POLYMARKET_PRIVATE_KEY=
 POLYMARKET_US_KEY_ID=
 POLYMARKET_US_SECRET_KEY=
 POLYMARKET_US_BASE_URL=https://api.polymarket.us
+POLYMARKET_US_GATEWAY_URL=https://gateway.polymarket.us
+GAMMA_BASE_URL=https://gamma-api.polymarket.com
 PORT=4000
 VITE_API_BASE_URL=http://localhost:4000
 OLLAMA_BASE_URL=http://localhost:11434
 OLLAMA_MODEL=gemma3:latest
 ANALYTICS_CACHE_TTL_MS=300000
+SOCIAL_REDDIT_ENABLED=true
+SOCIAL_REDDIT_SUBREDDITS=nba,mlb,sportsbook,polymarket
+SOCIAL_REDDIT_USER_AGENT=probis/0.1
+SOCIAL_X_BEARER_TOKEN=your_x_api_bearer_token
+SOCIAL_X_RECENT_SEARCH_URL=https://api.x.com/2/tweets/search/recent
 ```
 
 Notes:
@@ -551,6 +580,15 @@ curl http://localhost:4000/health
 - `GET /api/polymarket/events/aggregation?input=<url-or-slug>`
 - `GET /api/polymarket/events/aggregation?input=<url-or-slug>&refresh=true`
 - `POST /api/polymarket/events/aggregation/invalidate`
+
+### Sports data and calibration
+
+- `GET /api/sports/status`
+- `GET /api/sports/events/inspect?input=<url-or-slug>`
+- `GET /api/sports/events/inspect?input=<url-or-slug>&refresh=true`
+- `POST /api/sports/import/nba`
+- `POST /api/sports/import/mlb`
+- `POST /api/sports/backtest`
 
 ### AI and decision support
 
