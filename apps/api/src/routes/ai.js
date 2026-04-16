@@ -68,6 +68,7 @@ router.post('/api/ai/analyze-event', async (request, response) => {
     response.json({
       ok: true,
       event: analytics.event,
+      sportsSync: analytics.sportsSync ?? null,
       aggregation: analytics.aggregation,
       statisticalModel: analytics.statisticalModel,
       analysis: result.response,

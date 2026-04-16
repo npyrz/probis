@@ -7,6 +7,18 @@ const ESPN_NBA_SCOREBOARD_URL = 'https://site.api.espn.com/apis/site/v2/sports/b
 const DEFAULT_BATCH_SIZE = 7;
 
 const NBA_SEASON_RANGES = {
+  '2020-21': {
+    startDate: '2020-12-22',
+    endDate: '2021-07-20'
+  },
+  '2021-22': {
+    startDate: '2021-10-19',
+    endDate: '2022-06-16'
+  },
+  '2022-23': {
+    startDate: '2022-10-18',
+    endDate: '2023-06-12'
+  },
   '2023-24': {
     startDate: '2023-10-24',
     endDate: '2024-06-17'
@@ -181,6 +193,20 @@ function parseScore(value) {
   return Number.isFinite(parsed) ? parsed : null;
 }
 
+function getNbaSeasonPhase(event) {
+  const seasonType = Number(event?.season?.type ?? event?.competitions?.[0]?.season?.type ?? NaN);
+
+  if (seasonType === 2) {
+    return 'regular';
+  }
+
+  if (seasonType >= 3) {
+    return 'playoffs';
+  }
+
+  return 'other';
+}
+
 function normalizeEspnGame(event, teamLookup) {
   if (!isFinalEvent(event)) {
     return null;
@@ -220,6 +246,7 @@ function normalizeEspnGame(event, teamLookup) {
 
   return {
     league: 'NBA',
+    seasonPhase: getNbaSeasonPhase(event),
     source: 'espn-scoreboard',
     sourceId: String(event?.id ?? `${event?.date}:${awayTeam.id}:${homeTeam.id}`),
     date: event?.date ?? null,

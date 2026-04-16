@@ -1149,10 +1149,18 @@ export default function App() {
 
     try {
       const result = await analyzeEvent(selectedEvent.slug, options);
+      setSelectedEvent(result.event ?? selectedEvent);
+      setAggregation(result.aggregation ?? null);
+      setStatisticalModel(result.statisticalModel ?? null);
       setAnalysis(result.analysis);
       setDecisionEngine(result.decisionEngine ?? null);
       setLastAiUpdate(new Date().toISOString());
-      setNotice(options.refresh ? 'Refreshed analytics and reran the decision engine.' : 'AI analysis updated.');
+      const sportsNotice = result.sportsSync?.updated
+        ? ` Synced ${result.sportsSync.league} ${result.sportsSync.season ?? ''} history.`.trim()
+        : '';
+      setNotice(
+        `${options.refresh ? 'Refreshed analytics and reran the decision engine.' : 'AI analysis updated.'}${sportsNotice ? ` ${sportsNotice}` : ''}`
+      );
     } catch (analysisError) {
       setError(analysisError instanceof Error ? analysisError.message : 'Unable to run AI analysis');
     } finally {

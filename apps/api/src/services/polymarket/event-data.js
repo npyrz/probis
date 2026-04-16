@@ -1,6 +1,7 @@
 import { buildEventAggregation } from './aggregation.js';
 import { extractEventSlug, fetchEventByInput } from './gamma.js';
 import { buildStatisticalModel } from './statistical-model.js';
+import { ensureSportsHistoryForEvent } from '../sports/auto-sync.js';
 
 const analyticsCache = new Map();
 
@@ -41,11 +42,13 @@ export function invalidateEventAnalyticsCache(input) {
 
 export async function resolveEventWithAggregation(env, input) {
   const event = await fetchEventByInput(env, input);
+  const sportsSync = await ensureSportsHistoryForEvent(event);
   const aggregation = await buildEventAggregation(env, event);
   const statisticalModel = buildStatisticalModel(event, aggregation);
 
   return {
     ...event,
+    sportsSync,
     aggregation,
     statisticalModel
   };
@@ -54,13 +57,23 @@ export async function resolveEventWithAggregation(env, input) {
 export async function resolveEventAnalytics(env, input, options = {}) {
   const cacheKey = getCacheKey(input);
   const forceRefresh = options.forceRefresh === true;
+  const event = await fetchEventByInput(env, input);
+  const sportsSync = await ensureSportsHistoryForEvent(event, { forceRefresh });
   const cached = forceRefresh ? null : getCachedAnalytics(cacheKey);
 
   if (cached) {
-    return cached;
+    const recognizedMarketCount = cached.aggregation?.sportsContext?.recognizedMarketCount ?? 0;
+    const historyGameCount = cached.aggregation?.sportsContext?.historyGameCount ?? 0;
+    const sportsCacheStillValid = recognizedMarketCount === 0 || historyGameCount > 0 || !sportsSync.updated;
+
+    if (sportsCacheStillValid) {
+      return {
+        ...cached,
+        sportsSync
+      };
+    }
   }
 
-  const event = await fetchEventByInput(env, input);
   const aggregation = await buildEventAggregation(env, event);
   const statisticalModel = buildStatisticalModel(event, aggregation);
 
@@ -85,6 +98,7 @@ export async function resolveEventAnalytics(env, input, options = {}) {
       resolvedFromUsMarketSlug: event.resolvedFromUsMarketSlug ?? false,
       sourceMarketSlug: event.sourceMarketSlug ?? null
     },
+    sportsSync,
     aggregation,
     statisticalModel
   };

@@ -14,6 +14,15 @@ function sum(values) {
   return values.reduce((total, value) => total + value, 0);
 }
 
+function sigmoid(value) {
+  return 1 / (1 + Math.exp(-value));
+}
+
+function logit(value) {
+  const clipped = clamp(value, 0.001, 0.999);
+  return Math.log(clipped / (1 - clipped));
+}
+
 function clamp(value, min = 0, max = 1) {
   return Math.min(max, Math.max(min, value));
 }
@@ -94,7 +103,7 @@ function buildCalibrationBuckets(predictions, bucketSize = 0.1) {
     buckets.set(key, bucket);
   }
 
-  return [...buckets.values()]
+  const sorted = [...buckets.values()]
     .sort((left, right) => left.bucketStart - right.bucketStart)
     .map((bucket) => ({
       bucket: bucket.bucket,
@@ -107,6 +116,171 @@ function buildCalibrationBuckets(predictions, bucketSize = 0.1) {
       averageBrier: bucket.count ? bucket.brierSum / bucket.count : null,
       averageLogLoss: bucket.count ? bucket.logLossSum / bucket.count : null
     }));
+
+  let runningFloor = 0;
+
+  return sorted.map((bucket) => {
+    const empirical = typeof bucket.empiricalWinRate === 'number'
+      ? clamp(bucket.empiricalWinRate, runningFloor, 1)
+      : null;
+
+    if (typeof empirical === 'number') {
+      runningFloor = empirical;
+    }
+
+    return {
+      ...bucket,
+      isotonicWinRate: empirical
+    };
+  });
+}
+
+function getSeasonPhase(game) {
+  const explicitPhase = String(game?.seasonPhase ?? '').trim().toLowerCase();
+
+  if (explicitPhase === 'regular' || explicitPhase === 'playoffs') {
+    return explicitPhase;
+  }
+
+  const seasonType = Number(game?.metadata?.seasonType ?? NaN);
+
+  if (seasonType === 2) {
+    return 'regular';
+  }
+
+  if (seasonType >= 3) {
+    return 'playoffs';
+  }
+
+  return 'other';
+}
+
+function getFilteredGames(store, { league, startDate, endDate, phase = 'all', includeFuture = false } = {}) {
+  const start = startDate ? toDate(startDate) : null;
+  const end = endDate ? toDate(endDate) : null;
+  const endTimestamp = includeFuture ? Number.POSITIVE_INFINITY : (end?.getTime() ?? Date.now());
+
+  return (Array.isArray(store?.games) ? store.games : [])
+    .filter((game) => game?.league === league && isFinalGame(game))
+    .map((game) => ({
+      ...game,
+      parsedDate: toDate(game.date),
+      normalizedPhase: getSeasonPhase(game)
+    }))
+    .filter((game) => game.parsedDate)
+    .filter((game) => game.parsedDate.getTime() <= endTimestamp)
+    .filter((game) => (!start || game.parsedDate >= start) && (!end || game.parsedDate <= end))
+    .filter((game) => phase === 'all' || game.normalizedPhase === phase)
+    .sort((left, right) => left.parsedDate - right.parsedDate);
+}
+
+function buildCalibrationProfile(predictions, { bucketSize = 0.1, minBucketCount = 25, logisticScale = 0.72 } = {}) {
+  const buckets = buildCalibrationBuckets(predictions, bucketSize).map((bucket) => ({
+    ...bucket,
+    calibratedTarget: bucket.count >= minBucketCount && typeof bucket.isotonicWinRate === 'number'
+      ? bucket.isotonicWinRate
+      : bucket.averagePredictedProbability
+  }));
+
+  return {
+    method: 'logistic-compression-plus-isotonic-buckets',
+    logisticScale,
+    bucketSize,
+    minBucketCount,
+    sampleSize: predictions.length,
+    buckets
+  };
+}
+
+function getCalibrationBucket(profile, probability) {
+  if (!profile || !Array.isArray(profile.buckets)) {
+    return null;
+  }
+
+  return profile.buckets.find((bucket) => probability >= bucket.bucketStart && probability < bucket.bucketEnd)
+    ?? profile.buckets.at(-1)
+    ?? null;
+}
+
+function applyCalibrationProfile(probability, profile) {
+  if (!profile) {
+    return clamp(probability);
+  }
+
+  const compressed = sigmoid(logit(probability) * profile.logisticScale);
+  const bucket = getCalibrationBucket(profile, probability);
+
+  if (!bucket || bucket.count < profile.minBucketCount || typeof bucket.calibratedTarget !== 'number') {
+    return clamp(compressed);
+  }
+
+  const empiricalWeight = clamp(bucket.count / (profile.minBucketCount * 2), 0.15, 0.7);
+  return clamp(compressed * (1 - empiricalWeight) + bucket.calibratedTarget * empiricalWeight);
+}
+
+function summarizePredictions(predictions, calibrationBucketSize, phase = 'all') {
+  const rawBuckets = buildCalibrationBuckets(predictions, calibrationBucketSize);
+  const profile = buildCalibrationProfile(predictions, {
+    bucketSize: calibrationBucketSize
+  });
+  const calibratedPredictions = predictions.map((prediction) => {
+    const calibratedHomeProbability = applyCalibrationProfile(prediction.homeProbability, profile);
+
+    return {
+      ...prediction,
+      calibratedHomeProbability,
+      calibratedAwayProbability: 1 - calibratedHomeProbability,
+      calibratedBrier: (calibratedHomeProbability - prediction.actualHomeWin) ** 2,
+      calibratedLogLoss: logLoss(calibratedHomeProbability, prediction.actualHomeWin),
+      calibratedCorrect: (calibratedHomeProbability >= 0.5 ? 1 : 0) === prediction.actualHomeWin
+    };
+  });
+
+  return {
+    phase,
+    evaluationGameCount: predictions.length,
+    raw: {
+      averageBrier: average(predictions.map((prediction) => prediction.brier)),
+      averageLogLoss: average(predictions.map((prediction) => prediction.logLoss)),
+      accuracy: average(predictions.map((prediction) => (prediction.correct ? 1 : 0))),
+      meanPrediction: average(predictions.map((prediction) => prediction.homeProbability)),
+      meanActualHomeWinRate: average(predictions.map((prediction) => prediction.actualHomeWin)),
+      calibration: {
+        meanCalibrationGap: predictions.length
+          ? average(predictions.map((prediction) => prediction.actualHomeWin - prediction.homeProbability))
+          : null,
+        expectedWins: sum(predictions.map((prediction) => prediction.homeProbability)),
+        actualWins: sum(predictions.map((prediction) => prediction.actualHomeWin)),
+        buckets: rawBuckets
+      }
+    },
+    calibrated: {
+      method: profile.method,
+      averageBrier: average(calibratedPredictions.map((prediction) => prediction.calibratedBrier)),
+      averageLogLoss: average(calibratedPredictions.map((prediction) => prediction.calibratedLogLoss)),
+      accuracy: average(calibratedPredictions.map((prediction) => (prediction.calibratedCorrect ? 1 : 0))),
+      meanPrediction: average(calibratedPredictions.map((prediction) => prediction.calibratedHomeProbability)),
+      meanActualHomeWinRate: average(calibratedPredictions.map((prediction) => prediction.actualHomeWin)),
+      calibration: {
+        meanCalibrationGap: calibratedPredictions.length
+          ? average(calibratedPredictions.map((prediction) => prediction.actualHomeWin - prediction.calibratedHomeProbability))
+          : null,
+        expectedWins: sum(calibratedPredictions.map((prediction) => prediction.calibratedHomeProbability)),
+        actualWins: sum(calibratedPredictions.map((prediction) => prediction.actualHomeWin)),
+        profile,
+        buckets: buildCalibrationBuckets(
+          calibratedPredictions.map((prediction) => ({
+            ...prediction,
+            homeProbability: prediction.calibratedHomeProbability,
+            brier: prediction.calibratedBrier,
+            logLoss: prediction.calibratedLogLoss
+          })),
+          calibrationBucketSize
+        )
+      }
+    },
+    predictions: calibratedPredictions
+  };
 }
 
 function getMarginMultiplier(scoreDiff, eloDiff) {
@@ -125,17 +299,12 @@ function isFinalGame(game) {
   return Number.isFinite(homeScore) && Number.isFinite(awayScore);
 }
 
-function getGamesForLeague(store, league, asOfDate) {
-  const asOfTimestamp = asOfDate?.getTime() ?? Date.now();
-
-  return (Array.isArray(store?.games) ? store.games : [])
-    .filter((game) => game?.league === league && isFinalGame(game))
-    .map((game) => ({
-      ...game,
-      parsedDate: toDate(game.date)
-    }))
-    .filter((game) => game.parsedDate && game.parsedDate.getTime() < asOfTimestamp)
-    .sort((left, right) => left.parsedDate - right.parsedDate);
+function getGamesForLeague(store, league, asOfDate, phase = 'all') {
+  return getFilteredGames(store, {
+    league,
+    endDate: asOfDate,
+    phase
+  }).filter((game) => game.parsedDate.getTime() < (asOfDate?.getTime() ?? Date.now()));
 }
 
 function initializeTeamState(baseElo) {
@@ -250,10 +419,29 @@ function getTeamProbability({ teamId, homeTeamId, awayTeamId, homeProbability })
   return 0.5;
 }
 
-export function buildTeamStrengthMarketContext({ event, market, historyStore }) {
+export function buildHistoricalCalibrationContext(
+  historyStore,
+  { league, endDate, phase = 'all', minTrainingGames = 10, calibrationBucketSize = 0.1 } = {}
+) {
+  const summary = runTeamStrengthBacktest(historyStore, {
+    league,
+    endDate,
+    phase,
+    minTrainingGames,
+    calibrationBucketSize
+  });
+
+  return summary?.calibrated?.calibration?.profile ?? null;
+}
+
+export function applyPostModelCalibration(probability, calibrationProfile) {
+  return applyCalibrationProfile(probability, calibrationProfile);
+}
+
+export function buildTeamStrengthMarketContext({ event, market, historyStore, phase = 'all', calibrationProfile = null }) {
   const config = getLeagueConfig(market.league);
   const asOfDate = toDate(event?.startDate) ?? toDate(event?.endDate) ?? new Date();
-  const games = getGamesForLeague(historyStore, market.league, asOfDate);
+  const games = getGamesForLeague(historyStore, market.league, asOfDate, phase);
   const teamStates = new Map();
 
   for (const game of games) {
@@ -276,7 +464,8 @@ export function buildTeamStrengthMarketContext({ event, market, historyStore }) 
     + recentFormDiff * config.recentFormWeight
     + recentScoreDiff * config.pointDiffWeight
     + restDiff * config.restDayWeight;
-  const homeProbability = expectedScore(adjustedDiff, 0);
+  const rawHomeProbability = expectedScore(adjustedDiff, 0);
+  const calibratedHomeProbability = applyCalibrationProfile(rawHomeProbability, calibrationProfile);
   const marketSampleSize = Math.min(homeSummary.sampleSize, awaySummary.sampleSize);
   const marketConfidence = clamp(0.35 + Math.min(marketSampleSize, 30) / 60, 0.35, 0.85);
 
@@ -301,7 +490,11 @@ export function buildTeamStrengthMarketContext({ event, market, historyStore }) 
       recentScoreDiff,
       restDiff,
       adjustedDiff,
-      leagueGameSampleSize: games.length
+      leagueGameSampleSize: games.length,
+      competitionPhase: phase,
+      rawHomeProbability,
+      calibratedHomeProbability,
+      calibrationMethod: calibrationProfile?.method ?? null
     },
     teams: {
       [homeTeamId]: homeSummary,
@@ -314,7 +507,13 @@ export function buildTeamStrengthMarketContext({ event, market, historyStore }) 
         teamId: mapping.teamId,
         homeTeamId,
         awayTeamId,
-        homeProbability
+        homeProbability: calibratedHomeProbability
+      }),
+      rawFairProbability: getTeamProbability({
+        teamId: mapping.teamId,
+        homeTeamId,
+        awayTeamId,
+        homeProbability: rawHomeProbability
       }),
       modelConfidence: marketConfidence,
       features: mapping.teamId === homeTeamId ? homeSummary : awaySummary
@@ -324,24 +523,19 @@ export function buildTeamStrengthMarketContext({ event, market, historyStore }) 
 
 export function runTeamStrengthBacktest(
   historyStore,
-  { league, startDate, endDate, minTrainingGames = 10, calibrationBucketSize = 0.1 } = {}
+  { league, startDate, endDate, minTrainingGames = 10, calibrationBucketSize = 0.1, phase = 'all' } = {}
 ) {
   if (!league) {
     throw new Error('league is required for sports backtesting.');
   }
 
   const config = getLeagueConfig(league);
-  const start = startDate ? toDate(startDate) : null;
-  const end = endDate ? toDate(endDate) : null;
-  const games = (Array.isArray(historyStore?.games) ? historyStore.games : [])
-    .filter((game) => game?.league === league && isFinalGame(game))
-    .map((game) => ({
-      ...game,
-      parsedDate: toDate(game.date)
-    }))
-    .filter((game) => game.parsedDate)
-    .filter((game) => (!start || game.parsedDate >= start) && (!end || game.parsedDate <= end))
-    .sort((left, right) => left.parsedDate - right.parsedDate);
+  const games = getFilteredGames(historyStore, {
+    league,
+    startDate,
+    endDate,
+    phase
+  });
   const teamStates = new Map();
   const predictions = [];
 
@@ -365,6 +559,7 @@ export function runTeamStrengthBacktest(
     if (trainingSample >= minTrainingGames) {
       predictions.push({
         date: game.date,
+        seasonPhase: game.normalizedPhase,
         homeTeamId: game.homeTeamId,
         awayTeamId: game.awayTeamId,
         homeProbability,
@@ -388,25 +583,25 @@ export function runTeamStrengthBacktest(
     applyGame(teamStates, game, config);
   }
 
+  const overallSummary = summarizePredictions(predictions, calibrationBucketSize, phase);
+  const regularPredictions = predictions.filter((prediction) => prediction.seasonPhase === 'regular');
+  const playoffPredictions = predictions.filter((prediction) => prediction.seasonPhase === 'playoffs');
+
   return {
     league,
+    phase,
     minTrainingGames,
     calibrationBucketSize,
     totalLeagueGameCount: games.length,
-    evaluationGameCount: predictions.length,
-    averageBrier: average(predictions.map((prediction) => prediction.brier)),
-    averageLogLoss: average(predictions.map((prediction) => prediction.logLoss)),
-    accuracy: average(predictions.map((prediction) => (prediction.correct ? 1 : 0))),
-    meanPrediction: average(predictions.map((prediction) => prediction.homeProbability)),
-    meanActualHomeWinRate: average(predictions.map((prediction) => prediction.actualHomeWin)),
-    calibration: {
-      meanCalibrationGap: predictions.length
-        ? average(predictions.map((prediction) => prediction.actualHomeWin - prediction.homeProbability))
-        : null,
-      expectedWins: sum(predictions.map((prediction) => prediction.homeProbability)),
-      actualWins: sum(predictions.map((prediction) => prediction.actualHomeWin)),
-      buckets: buildCalibrationBuckets(predictions, calibrationBucketSize)
-    },
-    predictions: predictions.slice(-250)
+    evaluationGameCount: overallSummary.evaluationGameCount,
+    raw: overallSummary.raw,
+    calibrated: overallSummary.calibrated,
+    phaseBreakdown: phase === 'all'
+      ? {
+          regular: summarizePredictions(regularPredictions, calibrationBucketSize, 'regular'),
+          playoffs: summarizePredictions(playoffPredictions, calibrationBucketSize, 'playoffs')
+        }
+      : null,
+    predictions: overallSummary.predictions.slice(-250)
   };
 }

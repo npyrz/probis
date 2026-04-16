@@ -20,6 +20,53 @@ const LEAGUE_HINTS = [
   { league: 'UCL', tokens: [' champions league ', ' ucl ', 'uefa champions'] }
 ];
 
+const PLAYOFF_HINT_TOKENS = [
+  'playoff',
+  'playoffs',
+  'postseason',
+  'finals',
+  'conference finals',
+  'semifinals',
+  'quarterfinals',
+  'first round',
+  'second round',
+  'play in',
+  'play-in'
+];
+
+const NBA_TEAM_FALLBACKS = {
+  'atlanta hawks': ['hawks'],
+  'boston celtics': ['celtics'],
+  'brooklyn nets': ['nets'],
+  'charlotte hornets': ['hornets'],
+  'chicago bulls': ['bulls'],
+  'cleveland cavaliers': ['cavaliers', 'cavs'],
+  'dallas mavericks': ['mavericks', 'mavs'],
+  'denver nuggets': ['nuggets'],
+  'detroit pistons': ['pistons'],
+  'golden state warriors': ['warriors'],
+  'houston rockets': ['rockets'],
+  'indiana pacers': ['pacers'],
+  'los angeles clippers': ['clippers', 'la clippers'],
+  'los angeles lakers': ['lakers', 'la lakers'],
+  'memphis grizzlies': ['grizzlies'],
+  'miami heat': ['heat'],
+  'milwaukee bucks': ['bucks'],
+  'minnesota timberwolves': ['timberwolves', 'wolves'],
+  'new orleans pelicans': ['pelicans'],
+  'new york knicks': ['knicks'],
+  'oklahoma city thunder': ['thunder', 'okc thunder'],
+  'orlando magic': ['magic'],
+  'philadelphia 76ers': ['76ers', 'sixers', 'philadelphia sixers'],
+  'phoenix suns': ['suns'],
+  'portland trail blazers': ['trail blazers', 'blazers'],
+  'sacramento kings': ['kings'],
+  'san antonio spurs': ['spurs'],
+  'toronto raptors': ['raptors'],
+  'utah jazz': ['jazz'],
+  'washington wizards': ['wizards']
+};
+
 function normalizeText(value) {
   return ` ${String(value ?? '')
     .toLowerCase()
@@ -231,15 +278,36 @@ export function buildTeamUniverseIndex(snapshot) {
   };
 }
 
+function resolveFallbackTeam(label, leagueHint) {
+  if (leagueHint !== 'NBA') {
+    return null;
+  }
+
+  const normalized = normalizeTeamKey(label);
+
+  for (const [displayName, aliases] of Object.entries(NBA_TEAM_FALLBACKS)) {
+    const values = [displayName, ...aliases].map((value) => normalizeTeamKey(value));
+
+    if (!values.includes(normalized)) {
+      continue;
+    }
+
+    return {
+      id: `NBA:${displayName.replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '')}`,
+      league: 'NBA',
+      displayName: displayName.replace(/\b\w/g, (char) => char.toUpperCase()),
+      aliases: values
+    };
+  }
+
+  return null;
+}
+
 function resolveTeamFromLabel(label, leagueHint, teamUniverseIndex) {
   const normalized = normalizeTeamKey(label);
   const candidates = teamUniverseIndex.nameIndex.get(normalized) ?? [];
 
-  if (candidates.length === 0) {
-    return null;
-  }
-
-  if (leagueHint) {
+  if (leagueHint && candidates.length > 0) {
     const sameLeague = candidates.filter((candidate) => candidate.league === leagueHint);
 
     if (sameLeague.length === 1) {
@@ -247,7 +315,11 @@ function resolveTeamFromLabel(label, leagueHint, teamUniverseIndex) {
     }
   }
 
-  return candidates.length === 1 ? candidates[0] : null;
+  if (candidates.length === 1) {
+    return candidates[0];
+  }
+
+  return resolveFallbackTeam(label, leagueHint);
 }
 
 function detectHomeAwayTeams(text, teams) {
@@ -345,4 +417,10 @@ export function inferLeagueFromEventText(...values) {
 
 export function normalizeSportsTeamKey(value) {
   return normalizeTeamKey(value);
+}
+
+export function inferCompetitionPhaseFromEventText(...values) {
+  const normalized = normalizeText(values.filter(Boolean).join(' '));
+
+  return PLAYOFF_HINT_TOKENS.some((token) => normalized.includes(token)) ? 'playoffs' : 'regular';
 }

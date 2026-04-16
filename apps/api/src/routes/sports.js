@@ -113,6 +113,7 @@ router.post('/api/sports/backtest', async (request, response) => {
       league: String(request.body?.league ?? 'NBA').toUpperCase(),
       startDate: request.body?.startDate,
       endDate: request.body?.endDate,
+      phase: String(request.body?.phase ?? 'all').toLowerCase(),
       minTrainingGames: Number.parseInt(request.body?.minTrainingGames ?? '10', 10),
       calibrationBucketSize: Number.parseFloat(request.body?.calibrationBucketSize ?? '0.1')
     });
