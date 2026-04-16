@@ -133,7 +133,7 @@ function buildMonitoringState(intent) {
     stopTriggeredAt: null,
     takeProfitTriggeredAt: null,
     exitReason: null,
-    notes: 'Tracking live probability against configured stop-loss and take-profit levels.'
+    notes: null
   };
 }
 
@@ -999,7 +999,7 @@ async function evaluateMonitoringState(env, intent, trackedQuote) {
     monitoring: {
       ...baseMonitoring,
       state: 'active',
-      notes: 'Monitoring live probability against configured stop-loss and take-profit levels.'
+      notes: null
     },
     updatedAt: new Date().toISOString()
   };
