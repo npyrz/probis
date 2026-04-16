@@ -145,6 +145,10 @@ function formatIntentStatus(intent) {
 function formatMonitoringStateLabel(state) {
   const normalized = String(state ?? 'active').trim();
 
+  if (normalized === 'sync-warning') {
+    return 'Sync Warning';
+  }
+
   if (normalized === 'active') {
     return 'Actively Trading';
   }
@@ -166,6 +170,10 @@ function formatMonitoringStateLabel(state) {
 function getMonitoringStateChipClass(state) {
   const normalized = String(state ?? 'active').trim();
 
+  if (normalized === 'sync-warning') {
+    return 'market-chip market-chip-warning';
+  }
+
   if (normalized.endsWith('-failed')) {
     return 'market-chip market-chip-alert';
   }
@@ -180,6 +188,15 @@ function getMonitoringStateChipClass(state) {
 function hasApiVerifiedFilledPosition(intent) {
   return intent?.verification?.source === 'polymarket-us'
     && intent?.verification?.apiVerifiedFilledPosition === true;
+}
+
+function hasMonitoringSyncWarning(intent) {
+  const notes = String(intent?.monitoring?.notes ?? '').toLowerCase();
+  const verificationReason = String(intent?.verification?.reason ?? '').toLowerCase();
+
+  return notes.includes('venue sync warning')
+    || verificationReason === 'order-lookup-temporary-failure'
+    || verificationReason === 'no-live-shares-detected';
 }
 
 function formatOrderId(value) {
@@ -242,6 +259,113 @@ function formatMarketPrice(value) {
   }
 
   return `$${value.toFixed(3)}`;
+}
+
+function formatEventPreview(value, maxLength = 220) {
+  const text = String(value ?? '').trim();
+
+  if (!text) {
+    return 'No event description is available for this market.';
+  }
+
+  return text.length > maxLength
+    ? `${text.slice(0, maxLength).trimEnd()}...`
+    : text;
+}
+
+function formatRecommendationHeadline(recommendation) {
+  const outcomeLabel = String(recommendation?.outcomeLabel ?? '').trim();
+  const marketQuestion = String(recommendation?.marketQuestion ?? '').trim();
+
+  if (outcomeLabel && marketQuestion) {
+    return `${outcomeLabel} in ${marketQuestion}`;
+  }
+
+  if (outcomeLabel) {
+    return outcomeLabel;
+  }
+
+  if (marketQuestion) {
+    return marketQuestion;
+  }
+
+  return 'No specific market recommendation available yet.';
+}
+
+function resolveRecommendationExpectedValue(recommendation) {
+  if (typeof recommendation?.expectedValuePerDollar === 'number') {
+    return recommendation.expectedValuePerDollar;
+  }
+
+  if (typeof recommendation?.edge === 'number'
+    && typeof recommendation?.currentProbability === 'number'
+    && recommendation.currentProbability > 0) {
+    return recommendation.edge / recommendation.currentProbability;
+  }
+
+  return null;
+}
+
+function parseOperatorNotes(analysisText) {
+  const source = String(analysisText ?? '').trim();
+
+  if (!source) {
+    return {
+      paragraphs: [],
+      bullets: []
+    };
+  }
+
+  const lines = source
+    .replace(/```[a-z]*\n?/gi, '')
+    .replace(/```/g, '')
+    .split('\n')
+    .map((line) => line.trim())
+    .filter(Boolean)
+    .map((line) => line.replace(/^[-*]\s+/, '').replace(/\*\*/g, '').trim());
+
+  const bullets = [];
+  const paragraphs = [];
+
+  for (const line of lines) {
+    if (/^(event state|strongest market\/opportunity|why the model differs from market price|key risk)\s*:/i.test(line)) {
+      bullets.push(line);
+      continue;
+    }
+
+    paragraphs.push(line);
+  }
+
+  return {
+    paragraphs,
+    bullets
+  };
+}
+
+function getEventValidationError(event) {
+  if (!event || typeof event !== 'object') {
+    return 'Unable to load this event. Please check the link or slug and try again.';
+  }
+
+  const slug = String(event.slug ?? '').trim();
+
+  if (!slug) {
+    return 'This event is missing a valid slug and cannot be loaded.';
+  }
+
+  if (!event.title || String(event.title).trim().length === 0) {
+    return 'This event is missing a title and may be invalid.';
+  }
+
+  if (event.endDate) {
+    const parsedEndDate = new Date(event.endDate);
+
+    if (!Number.isNaN(parsedEndDate.getTime()) && parsedEndDate.getTime() < Date.now()) {
+      return 'This event has already passed. Load an upcoming event to continue.';
+    }
+  }
+
+  return null;
 }
 
 function loadStoredTradeDraft() {
@@ -638,6 +762,10 @@ export default function App() {
   const recommendedMarket = getRecommendedMarket(selectedEvent, decisionEngine);
   const tradeSuggestion = buildTradeSuggestion(decisionEngine, tradeAmount, riskInputs);
   const activeTradeIntents = tradeHistory.filter((intent) => intent.status === 'tracking');
+  const latestPolymarketQuoteAt = activeTradeIntents
+    .map((intent) => intent?.monitoring?.lastPolymarketQuoteAt)
+    .filter(Boolean)
+    .sort((left, right) => new Date(right).getTime() - new Date(left).getTime())[0] ?? null;
   const filteredTradeHistory = tradeHistory.filter((intent) => {
     if (tradeCenterFilter === 'tracking') {
       return intent.status === 'tracking';
@@ -652,6 +780,9 @@ export default function App() {
   const lastPolledAge = formatRelativeAge(lastTradeUpdate, liveClock);
   const selectedLeader = selectedMarket ? getMarketLeader(selectedMarket) : null;
   const currentRecommendation = decisionEngine?.recommendation ?? null;
+  const recommendationHeadline = formatRecommendationHeadline(currentRecommendation);
+  const recommendationExpectedValue = resolveRecommendationExpectedValue(currentRecommendation);
+  const parsedOperatorNotes = parseOperatorNotes(analysis);
 
   function clearSelectedEventContext() {
     setSelectedEvent(null);
@@ -910,6 +1041,18 @@ export default function App() {
         resolveEvent(submittedInput),
         resolveEventAggregation(submittedInput)
       ]);
+
+      const validationError = getEventValidationError(event);
+
+      if (validationError) {
+        setSelectedEvent(null);
+        setAggregation(null);
+        setStatisticalModel(null);
+        setSelectedMarketId(null);
+        setError(validationError);
+        return;
+      }
+
       setSelectedEvent(event);
       setAggregation(analytics.aggregation ?? null);
       setStatisticalModel(analytics.statisticalModel ?? null);
@@ -982,6 +1125,17 @@ export default function App() {
         resolveEvent(eventInput.trim()),
         resolveEventAggregation(eventInput.trim(), { refresh: true })
       ]);
+
+      const validationError = getEventValidationError(event);
+
+      if (validationError) {
+        setSelectedEvent(null);
+        setAggregation(null);
+        setStatisticalModel(null);
+        setSelectedMarketId(null);
+        setError(validationError);
+        return;
+      }
 
       setSelectedEvent(event);
       setAggregation(analytics.aggregation ?? null);
@@ -1319,97 +1473,87 @@ export default function App() {
             <strong>{formatCurrency(status?.polymarket?.usTrading?.buyingPower)}</strong>
           </article>
           <article>
-            <span>Clock</span>
-            <strong>{formatClockTime(liveClock)}</strong>
-          </article>
-          <article>
             <span>Tracking</span>
             <strong>{activeTradeIntents.length}</strong>
           </article>
           <article>
-            <span>API Key</span>
-            <strong>{status?.accountIdentity?.keyIdSuffix ? `...${status.accountIdentity.keyIdSuffix}` : 'n/a'}</strong>
+            <span>Last Polymarket Quote</span>
+            <strong>{formatDateTime(latestPolymarketQuoteAt)}</strong>
           </article>
           <article>
-            <span>Open Positions</span>
-            <strong>{status?.accountIdentity?.openPositionsCount ?? 0}</strong>
+            <span>API Account</span>
+            <strong>{status?.accountIdentity?.authenticated ? 'AUTHENTICATED' : 'UNAUTHENTICATED'}</strong>
           </article>
           <article>
-            <span>Last Market</span>
-            <strong>{formatDateTime(lastMarketUpdate)}</strong>
-          </article>
-          <article>
-            <span>Last AI</span>
-            <strong>{formatDateTime(lastAiUpdate)}</strong>
+            <span>Clock</span>
+            <strong>{formatClockTime(liveClock)}</strong>
           </article>
         </div>
       </header>
 
-      <section className="terminal-ticker">
-        <div className="ticker-item">
-          <span>POLY</span>
-          <strong>{status?.polymarket?.publicReadOk ? 'ONLINE' : 'CHECKING'}</strong>
-        </div>
-        <div className="ticker-item">
-          <span>OLLAMA</span>
-          <strong>{status?.ai?.reachable ? status.ai.resolvedModel ?? 'READY' : 'OFFLINE'}</strong>
-        </div>
-        <div className="ticker-item">
-          <span>EVENT</span>
-          <strong>{selectedEvent?.slug ?? 'NONE'}</strong>
-        </div>
-        <div className="ticker-item">
-          <span>REC</span>
-          <strong>{currentRecommendation ? `${decisionEngine.action.toUpperCase()} ${currentRecommendation.outcomeLabel}` : 'WAITING'}</strong>
-        </div>
-        <div className="ticker-item">
-          <span>REALTIME</span>
-          <strong>{activeTradeIntents.length > 0 ? 'LIVE POLLING' : 'IDLE'}</strong>
-        </div>
-        <div className="ticker-item">
-          <span>API ACCOUNT</span>
-          <strong>{status?.accountIdentity?.authenticated ? 'AUTHENTICATED' : 'UNAUTHENTICATED'}</strong>
-        </div>
-        <div className="ticker-item">
-          <span>API POS</span>
-          <strong>{(status?.accountIdentity?.openPositions ?? []).slice(0, 2).map((position) => position.marketSlug).join(' | ') || 'NONE'}</strong>
-        </div>
-      </section>
-
-      {error ? <p className="error-banner terminal-banner">{error}</p> : null}
-      {notice ? <p className="notice-banner terminal-banner">{notice}</p> : null}
-
       <section className="dashboard-grid dashboard-grid-no-explorer">
         <aside className="dashboard-sidebar">
+          {error ? (
+            <section className="status-popup status-popup-error" role="alert" aria-live="assertive">
+              <div>
+                <p className="eyebrow">Notice</p>
+                <p className="status-popup-message">{error}</p>
+              </div>
+              <button
+                type="button"
+                className="ghost-button status-popup-dismiss"
+                onClick={() => setError('')}
+              >
+                Exit
+              </button>
+            </section>
+          ) : null}
+
+          {notice ? (
+            <section className="status-popup status-popup-notice" role="status" aria-live="polite">
+              <div>
+                <p className="eyebrow">Notice</p>
+                <p className="status-popup-message">{notice}</p>
+              </div>
+              <button
+                type="button"
+                className="ghost-button status-popup-dismiss"
+                onClick={() => setNotice('')}
+              >
+                Exit
+              </button>
+            </section>
+          ) : null}
+
           <section className="control-card terminal-card compact-card">
             <div className="panel-heading">
-              <p className="eyebrow">Operator Console</p>
-              <h2>Resolve Event</h2>
+              <p className="eyebrow">Market Controls</p>
+              <h2>Load Event</h2>
             </div>
             <form className="event-form" onSubmit={handleSubmit}>
-              <label htmlFor="event-input">Event URL or slug</label>
+              <label htmlFor="event-input">Event link or slug</label>
               <div className="input-row">
                 <input
                   id="event-input"
                   name="event-input"
                   type="text"
-                  placeholder="https://polymarket.com/event/..."
+                  placeholder="polymarket.com/event/..."
                   value={eventInput}
                   onChange={(inputEvent) => setEventInput(inputEvent.target.value)}
                 />
                 <button type="submit" disabled={isPending}>
-                  {isPending ? 'Loading...' : 'Resolve'}
+                  {isPending ? 'Loading...' : 'Load'}
                 </button>
               </div>
             </form>
-            <div className="action-row terminal-action-row">
+            <div className="action-row terminal-action-row control-actions">
               <button
                 type="button"
                 className="secondary-button"
                 onClick={() => void handleAnalyze()}
                 disabled={!selectedEvent || isPending || isAnalyzing || isRefreshing}
               >
-                {isAnalyzing ? 'Analyzing...' : 'Run Decision Engine'}
+                {isAnalyzing ? 'Analyzing...' : 'Analyze'}
               </button>
               <button
                 type="button"
@@ -1417,30 +1561,25 @@ export default function App() {
                 onClick={() => void handleRefreshData()}
                 disabled={!selectedEvent || isRefreshing || isInvalidating}
               >
-                {isRefreshing ? 'Refreshing...' : 'Refresh Data'}
-              </button>
-              <button
-                type="button"
-                className="ghost-button"
-                onClick={() => void handleInvalidateCache('event')}
-                disabled={!selectedEvent || isRefreshing || isInvalidating}
-              >
-                {isInvalidating ? 'Clearing...' : 'Clear Event Cache'}
+                {isRefreshing ? 'Refreshing...' : 'Refresh'}
               </button>
             </div>
           </section>
 
           {selectedEvent ? (
-            <article className="panel-card terminal-card compact-card">
+            <article className="panel-card terminal-card compact-card selected-event-card">
               <div className="panel-heading">
                 <p className="eyebrow">Selected Event</p>
                 <h2>{selectedEvent.title}</h2>
               </div>
-              <p className="event-meta">
-                slug: {selectedEvent.slug}
-                {selectedEvent.resolvedFromFallback ? ` · matched from ${selectedEvent.requestedSlug}` : ''}
-              </p>
-              <p className="terminal-copy">{selectedEvent.description || 'No event description is available for this market.'}</p>
+
+              <div className="selected-event-meta-row">
+                <p className="event-meta">slug: {selectedEvent.slug}</p>
+                {selectedEvent.resolvedFromFallback ? (
+                  <span className="market-chip market-chip-muted">matched from {selectedEvent.requestedSlug}</span>
+                ) : null}
+              </div>
+
               <div className="event-summary-stats compact-status-grid">
                 <article>
                   <span>Live Markets</span>
@@ -1463,11 +1602,12 @@ export default function App() {
                   <strong>{formatDate(selectedEvent.endDate)}</strong>
                 </article>
               </div>
+
               {selectedEvent.usFiltered && tradableMarkets.length === 0 ? (
-                <p className="empty-state">No tradable markets are currently available for this event via your connected Polymarket US API key.</p>
+                <p className="empty-state">No tradable markets are currently available via your connected Polymarket US API key.</p>
               ) : null}
               {selectedEvent.usFiltered && tradableMarkets.length > 0 && visibleMarkets.length === 0 ? (
-                <p className="empty-state">Markets exist for this event, but none are live-priced yet. Trading becomes available once the market is live.</p>
+                <p className="empty-state">Markets exist, but none are live-priced yet. Trading opens once the market is live.</p>
               ) : null}
               {eventHeadline ? (
                 <div className="event-highlight compact-highlight">
@@ -1494,13 +1634,13 @@ export default function App() {
 
             {currentRecommendation ? (
               <>
-                <div className="decision-highlight ai-primary-card">
+                <div className="decision-highlight ai-primary-card ai-subsection">
                   <span>Current recommendation</span>
-                  <strong>{currentRecommendation.outcomeLabel} in {currentRecommendation.marketQuestion}</strong>
+                  <strong>{recommendationHeadline}</strong>
                   <p>
-                    Confidence {formatPercent(currentRecommendation.combinedConfidence)} · EV {formatSignedPercent(currentRecommendation.expectedValuePerDollar)} · Edge {formatSignedPercent(currentRecommendation.edge)}
+                    Confidence {formatPercent(currentRecommendation.combinedConfidence)} · EV {formatSignedPercent(recommendationExpectedValue)} · Edge {formatSignedPercent(currentRecommendation.edge)}
                   </p>
-                  <p>{currentRecommendation.thesis}</p>
+                  <p>{currentRecommendation.thesis ?? 'No model thesis available yet for this event.'}</p>
                 </div>
 
                 {recommendedMarket ? (
@@ -1508,7 +1648,7 @@ export default function App() {
                     <div className="panel-heading panel-heading-inline">
                       <div>
                         <p className="eyebrow">Trade Suggestion</p>
-                        <h2>{decisionEngine.action.toUpperCase()} {currentRecommendation.outcomeLabel}</h2>
+                        <h2>{decisionEngine.action.toUpperCase()} {currentRecommendation.outcomeLabel ?? 'Recommendation'}</h2>
                       </div>
                       {recommendedMarket.conditionId !== selectedMarket?.conditionId ? (
                         <button
@@ -1619,30 +1759,30 @@ export default function App() {
                   </section>
                 ) : null}
 
-                <section className="panel-card terminal-card compact-card">
+                <section className="panel-card terminal-card compact-card ai-reasoning-card">
                   <div className="panel-heading">
                     <p className="eyebrow">AI Recommendations</p>
                     <h2>Reasoning</h2>
                   </div>
                   <div className="decision-rationale-grid compact-preview-grid">
                     <article>
-                      <span>Combined</span>
+                      <span>Combined Confidence</span>
                       <strong>{formatPercent(currentRecommendation.combinedConfidence)}</strong>
                     </article>
                     <article>
-                      <span>Model</span>
-                      <strong>{formatPercent(currentRecommendation.modelConfidence)}</strong>
+                      <span>Expected Value</span>
+                      <strong>{formatSignedPercent(recommendationExpectedValue)}</strong>
                     </article>
                     <article>
-                      <span>LLM</span>
-                      <strong>{formatPercent(currentRecommendation.llmConfidence)}</strong>
+                      <span>Model Probability</span>
+                      <strong>{formatPercent(currentRecommendation.modelProbability)}</strong>
                     </article>
                     <article>
                       <span>Agreement</span>
                       <strong>{currentRecommendation.agreementWithModel ? 'Aligned' : 'Divergent'}</strong>
                     </article>
                   </div>
-                  <p className="terminal-copy">{currentRecommendation.keyRisk}</p>
+                  <p className="terminal-copy">{currentRecommendation.keyRisk ?? 'No key risk summary provided.'}</p>
                   {currentRecommendation.reasons?.length ? (
                     <ul className="reason-list compact-reason-list">
                       {currentRecommendation.reasons.map((reason) => (
@@ -1657,10 +1797,23 @@ export default function App() {
             )}
 
             {analysis ? (
-              <section className="analysis-card terminal-analysis-card">
+              <section className="analysis-card terminal-analysis-card ai-notes-card">
                 <p className="eyebrow">Realtime Updates</p>
                 <h2>AI Operator Notes</h2>
-                <pre>{analysis}</pre>
+                {parsedOperatorNotes.paragraphs.length > 0 ? (
+                  <div className="operator-notes-copy">
+                    {parsedOperatorNotes.paragraphs.map((line, index) => (
+                      <p key={`${line}-${index}`}>{line}</p>
+                    ))}
+                  </div>
+                ) : null}
+                {parsedOperatorNotes.bullets.length > 0 ? (
+                  <ul className="operator-notes-list">
+                    {parsedOperatorNotes.bullets.map((line, index) => (
+                      <li key={`${line}-${index}`}>{line}</li>
+                    ))}
+                  </ul>
+                ) : null}
               </section>
             ) : null}
           </section>
@@ -1736,6 +1889,9 @@ export default function App() {
                   : (intent.recommendation?.currentProbability ?? null);
                 const entryProbability = getTrackedEntryProbability(intent);
                 const monitoringState = intent.monitoring?.state ?? 'active';
+                const monitoringStateDisplay = isTracking && hasMonitoringSyncWarning(intent)
+                  ? 'sync-warning'
+                  : monitoringState;
                 const isVerifiedFilledPosition = hasApiVerifiedFilledPosition(intent);
                 const driftDirection = intent?.position?.entryIntent === 'ORDER_INTENT_BUY_SHORT' ? -1 : 1;
                 const drift = typeof currentProbability === 'number' && typeof entryProbability === 'number'
@@ -1756,8 +1912,8 @@ export default function App() {
                         <h2>{intent.outcomeLabel} in {intent.marketQuestion}</h2>
                       </div>
                       <div className="trade-heading-chips">
-                        <span className={isTracking ? getMonitoringStateChipClass(monitoringState) : 'market-chip'}>
-                          {isTracking ? formatMonitoringStateLabel(monitoringState) : formatIntentStatus(intent)}
+                        <span className={isTracking ? getMonitoringStateChipClass(monitoringStateDisplay) : 'market-chip'}>
+                          {isTracking ? formatMonitoringStateLabel(monitoringStateDisplay) : formatIntentStatus(intent)}
                         </span>
                         {isVerifiedFilledPosition ? (
                           <span className="market-chip market-chip-verified">✓ API Verified</span>

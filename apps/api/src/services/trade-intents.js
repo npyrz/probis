@@ -325,6 +325,54 @@ function ensureApiVerificationField(intent) {
   });
 }
 
+async function reconcilePassiveIntentVerificationWithVenue(env, intent) {
+  const status = String(intent?.status ?? '').trim().toLowerCase();
+
+  if (!status || status === 'tracking' || status === 'closed') {
+    return intent;
+  }
+
+  if (!intent?.marketSlug) {
+    return withApiVerification(intent, {
+      apiVerifiedFilledPosition: false,
+      method: 'live-position-only',
+      reason: 'missing-market-slug',
+      orderId: intent?.executionRequest?.venueOrderId ?? intent?.position?.entryOrderId ?? null
+    });
+  }
+
+  const liveShares = Number.parseFloat(await resolveLivePositionShares(env, intent) ?? NaN);
+  const hasLiveShares = Number.isFinite(liveShares) && liveShares > 0;
+  const orderId = intent?.executionRequest?.venueOrderId ?? intent?.position?.entryOrderId ?? null;
+
+  if (hasLiveShares) {
+    return withApiVerification({
+      ...intent,
+      position: {
+        ...intent.position,
+        sharesFilled: Number.isFinite(intent?.position?.sharesFilled)
+          ? intent.position.sharesFilled
+          : liveShares,
+        lastExecutionAt: intent?.position?.lastExecutionAt ?? new Date().toISOString()
+      },
+      updatedAt: new Date().toISOString()
+    }, {
+      apiVerifiedFilledPosition: true,
+      method: 'live-position-only',
+      reason: 'live-position-detected',
+      orderId,
+      verifiedAt: intent?.verification?.verifiedAt ?? null
+    });
+  }
+
+  return withApiVerification(intent, {
+    apiVerifiedFilledPosition: false,
+    method: 'live-position-only',
+    reason: 'no-live-position-detected',
+    orderId
+  });
+}
+
 async function reconcileTrackingIntentWithVenue(env, intent) {
   if (intent.status !== 'tracking') {
     return intent;
@@ -345,23 +393,37 @@ async function reconcileTrackingIntentWithVenue(env, intent) {
   try {
     venueOrder = await getPolymarketUsOrderById(env, orderId);
   } catch (error) {
-    return buildVenueSyncClosedIntent(
-      intent,
-      'sync-removed-order-not-found',
-      error instanceof Error
-        ? `Removed from tracking because venue order lookup failed: ${error.message}`
-        : 'Removed from tracking because venue order lookup failed.'
-    );
+    return withApiVerification({
+      ...intent,
+      monitoring: {
+        ...intent.monitoring,
+        lastEvaluationAt: new Date().toISOString(),
+        notes: error instanceof Error
+          ? `Venue sync warning: order lookup failed temporarily (${error.message}). Keeping trade active pending next poll.`
+          : 'Venue sync warning: order lookup failed temporarily. Keeping trade active pending next poll.'
+      },
+      updatedAt: new Date().toISOString()
+    }, {
+      apiVerifiedFilledPosition: false,
+      method: 'order-by-id-plus-live-position',
+      reason: 'order-lookup-temporary-failure',
+      orderId
+    });
   }
 
   const sharesFilled = Number.parseFloat(getSharesFromOrder(venueOrder) ?? NaN);
   const notionalSpent = Number.parseFloat(getSpentFromOrder(venueOrder) ?? NaN);
   const orderState = getTerminalOrderStateFromVenueOrder(venueOrder);
   const liveShares = Number.parseFloat(await resolveLivePositionShares(env, intent) ?? NaN);
-  const hasNoShares = (!Number.isFinite(sharesFilled) || sharesFilled <= 0)
-    && (!Number.isFinite(liveShares) || liveShares <= 0);
+  const hasEntryFills = Number.isFinite(sharesFilled) && sharesFilled > 0;
+  const hasLiveShares = Number.isFinite(liveShares) && liveShares > 0;
+  const hasNoLiveShares = !hasLiveShares;
+  const previousNoLiveSharesCount = Number.parseInt(String(intent?.monitoring?.syncNoLiveSharesCount ?? '0'), 10);
+  const noLiveSharesCount = hasNoLiveShares
+    ? (Number.isFinite(previousNoLiveSharesCount) ? previousNoLiveSharesCount + 1 : 1)
+    : 0;
 
-  if (hasNoShares && isTerminalUnfilledOrderState(orderState)) {
+  if (hasNoLiveShares && !hasEntryFills && isTerminalUnfilledOrderState(orderState)) {
     return buildVenueSyncClosedIntent(
       {
         ...intent,
@@ -375,7 +437,21 @@ async function reconcileTrackingIntentWithVenue(env, intent) {
     );
   }
 
-  if (hasNoShares) {
+  if (hasNoLiveShares) {
+    if (noLiveSharesCount >= 3) {
+      return buildVenueSyncClosedIntent(
+        {
+          ...intent,
+          executionRequest: {
+            ...intent.executionRequest,
+            venueOrder: venueOrder
+          }
+        },
+        'sync-removed-no-live-position-confirmed',
+        `Removed from tracking after ${noLiveSharesCount} consecutive polls with no live position shares for order ${orderId}.`
+      );
+    }
+
     return withApiVerification({
       ...intent,
       executionRequest: {
@@ -385,7 +461,8 @@ async function reconcileTrackingIntentWithVenue(env, intent) {
       monitoring: {
         ...intent.monitoring,
         lastEvaluationAt: new Date().toISOString(),
-        notes: `Venue sync warning: no live position shares found yet for order ${orderId}.`
+        syncNoLiveSharesCount: noLiveSharesCount,
+        notes: `Venue sync warning: no live position shares found for order ${orderId}. Keeping trade active (${noLiveSharesCount}/3 checks).`
       },
       updatedAt: new Date().toISOString()
     }, {
@@ -413,6 +490,10 @@ async function reconcileTrackingIntentWithVenue(env, intent) {
         ? notionalSpent
         : (intent.position?.notionalSpent ?? null),
       lastExecutionAt: new Date().toISOString()
+    },
+    monitoring: {
+      ...intent.monitoring,
+      syncNoLiveSharesCount: 0
     },
     updatedAt: new Date().toISOString()
   }, {
@@ -451,8 +532,7 @@ async function reconcileSyncRemovedIntentWithVenue(env, intent) {
   const sharesFilled = Number.parseFloat(getSharesFromOrder(venueOrder) ?? NaN);
   const notionalSpent = Number.parseFloat(getSpentFromOrder(venueOrder) ?? NaN);
   const liveShares = Number.parseFloat(await resolveLivePositionShares(env, intent) ?? NaN);
-  const hasLiveShares = (Number.isFinite(sharesFilled) && sharesFilled > 0)
-    || (Number.isFinite(liveShares) && liveShares > 0);
+  const hasLiveShares = Number.isFinite(liveShares) && liveShares > 0;
 
   if (!hasLiveShares) {
     return intent;
@@ -511,7 +591,7 @@ async function syncTrackingIntentsWithVenue(env, intents) {
       continue;
     }
 
-    nextIntents.push(intent);
+    nextIntents.push(await reconcilePassiveIntentVerificationWithVenue(env, intent));
   }
 
   return nextIntents;

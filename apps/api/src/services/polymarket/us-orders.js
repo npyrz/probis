@@ -1264,8 +1264,10 @@ export async function placeSellOrderForIntent(env, intent) {
   const marketSlug = orderIntents.resolvedMarketSlug ?? requestedMarketSlug;
 
   const localShares = parseNumber(intent.position?.sharesFilled ?? intent.executionRequest?.sharesEstimate);
-  const liveShares = localShares && localShares > 0 ? null : await resolveLivePositionShares(env, intent);
-  const shares = localShares && localShares > 0 ? localShares : liveShares;
+  const liveShares = await resolveLivePositionShares(env, intent);
+  const shares = Number.isFinite(liveShares) && liveShares > 0
+    ? liveShares
+    : localShares;
 
   if (!shares || shares <= 0) {
     throw new Error('Trade intent does not have a valid filled share quantity for sell.');
