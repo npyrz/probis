@@ -261,10 +261,7 @@ For each outcome, the model returns estimated probability, edge, confidence, and
 Conceptually, the model starts from the current market price and adjusts it with trend and anchor terms:
 
 $$
-rawEstimate
-= p_{current}
-+ (\text{momentum} \times w_{trend})
-+ ((\text{anchor} - p_{current}) \times w_{anchor})
+	ext{rawEstimate} = p_{\mathrm{current}} + (\text{momentum} \times w_{\mathrm{trend}}) + ((\text{anchor} - p_{\mathrm{current}}) \times w_{\mathrm{anchor}})
 $$
 
 It then applies normalization and volatility-aware shrinkage.
