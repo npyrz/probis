@@ -6,6 +6,10 @@ Probis is a local-first Polymarket analysis and trade-monitoring system. It comb
 
 The recommendation path stays deterministic-first. The LLM helps explain the setup and choose within allowed candidates, but event resolution, aggregation, scoring, trade shaping, and tracking are handled in code.
 
+The sports path follows the same rule. Team history and matchup features live in the deterministic aggregation and pricing pipeline, not in the Ollama prompt layer.
+
+Live sports context follows the same pattern. Team and league news, game-feed state, and optional social signals are attached during aggregation as `eventIntelligence`, then passed into the prompt layer as supporting context rather than as a separate model.
+
 ## Quick Start
 
 You only need Node.js 20+, Ollama, and the default local API URL for a first run.
@@ -57,11 +61,38 @@ Live orders require Polymarket US credentials in `.env`.
 
 The API signs Polymarket US requests with Ed25519 using the standard `timestamp + method + path` format.
 
+### Optional News And Social Providers
+
+ESPN-backed team news, league news, rosters, and scoreboard data work with no extra configuration.
+
+Reddit and X are optional provider hooks. They stay disabled unless you opt in through `.env`.
+
+- `SOCIAL_REDDIT_ENABLED=true` enables Reddit post search.
+- `SOCIAL_REDDIT_SUBREDDITS` defaults to `nba,mlb,sportsbook,polymarket`.
+- `SOCIAL_REDDIT_USER_AGENT` defaults to `probis/0.1`.
+- `SOCIAL_X_BEARER_TOKEN` is required to enable X recent-search results.
+- `SOCIAL_X_RECENT_SEARCH_URL` defaults to `https://api.x.com/2/tweets/search/recent`.
+
+Example:
+
+```env
+SOCIAL_REDDIT_ENABLED=true
+SOCIAL_REDDIT_SUBREDDITS=nba,mlb,sportsbook,polymarket
+SOCIAL_REDDIT_USER_AGENT=probis/0.1
+
+SOCIAL_X_BEARER_TOKEN=your_x_api_bearer_token
+SOCIAL_X_RECENT_SEARCH_URL=https://api.x.com/2/tweets/search/recent
+```
+
 ## What The Current Codebase Does
 
 - Resolves events from a Polymarket URL or slug.
 - Pulls active event and market data, with US-market-aware fallback handling.
 - Builds 7-day market history and aggregation snapshots.
+- Recognizes supported team-vs-team sports markets from a local Polymarket US team universe snapshot.
+- Loads local team history and derives Elo-style matchup features for recognized sports markets.
+- Adds ESPN-backed event intelligence for supported NBA and MLB matchups, including game feed, team news, and player-aware article ranking.
+- Optionally merges Reddit and X posts into the same event-intelligence payload when provider env keys are configured.
 - Scores markets and outcomes with a deterministic statistical model.
 - Uses Ollama for event analysis and constrained recommendation selection.
 - Produces a single decision payload with action, edge, EV, confidence, and risk targets.
@@ -88,10 +119,21 @@ The API signs Polymarket US requests with Ed25519 using the standard `timestamp 
 │   │       │   ├── ai.js
 │   │       │   ├── health.js
 │   │       │   ├── polymarket.js
+│   │       │   ├── sports.js
 │   │       │   └── trades.js
 │   │       └── services/
 │   │           ├── decision-engine.js
 │   │           ├── ollama.js
+│   │           ├── sports/
+│   │           │   ├── aggregation.js
+│   │           │   ├── auto-sync.js
+│   │           │   ├── backtest.js
+│   │           │   ├── canonicalization.js
+│   │           │   ├── elo-model.js
+│   │           │   ├── event-intelligence.js
+│   │           │   ├── history-store.js
+│   │           │   ├── mlb-importer.js
+│   │           │   └── nba-importer.js
 │   │           ├── trade-intents.js
 │   │           └── polymarket/
 │   │               ├── aggregation.js
@@ -104,11 +146,20 @@ The API signs Polymarket US requests with Ed25519 using the standard `timestamp 
 │       ├── package.json
 │       └── src/
 │           ├── App.jsx
+│           ├── components/
+│           ├── features/
 │           ├── lib/
 │           │   └── api.js
+│           ├── main.jsx
 │           └── styles.css
 ├── data/
-│   └── trade-intents.json
+│   ├── trade-intents.json
+│   └── sports/
+│       ├── polymarket-us-teams.json
+│       └── team-history.json
+├── scripts/
+│   ├── check-orders-and-positions.js
+│   └── sync-polymarket-us-sports-universe.js
 ├── .env.example
 ├── package.json
 └── plan.md
@@ -122,11 +173,13 @@ flowchart LR
 		API --> Gamma[Gamma Events API]
 		API --> CLOB[Polymarket CLOB Client]
 		API --> PMUS[Polymarket US Orders API]
+    API --> ESPN[ESPN Site API]
 		API --> Ollama[Local Ollama]
 		API --> Store[Local JSON Trade Store]
 
 		Gamma --> Resolver[Event Resolution and Market Normalization]
 		CLOB --> Aggregation[7d Historical Aggregation]
+    ESPN --> Aggregation
 		Resolver --> Aggregation
 		Aggregation --> Stats[Deterministic Statistical Model]
 		Stats --> LLMDecision[LLM Candidate Selection]
@@ -140,12 +193,14 @@ flowchart LR
 
 ### 1. API Layer
 
-The API lives in `apps/api` and is split into four route groups.
+The API lives in `apps/api` and is split into five route groups.
 
 - `GET /health`
   Returns service timestamp plus Polymarket and Ollama status.
 - `GET /api/polymarket/*`
   Handles event discovery, event resolution, analytics resolution, cache invalidation, and account identity.
+- `GET|POST /api/sports/*`
+  Handles sports status, event inspection, NBA/MLB history imports, and backtesting.
 - `GET|POST /api/ai/*`
   Handles Ollama status, prompt smoke tests, and full event analysis plus decision output.
 - `GET|POST|PATCH|DELETE /api/trades/*`
@@ -153,11 +208,14 @@ The API lives in `apps/api` and is split into four route groups.
 
 ### 2. Data Providers
 
-The current system uses three external sources plus one local store.
+The current system uses six external sources plus one local store.
 
 - Gamma API for event and market discovery.
 - Polymarket CLOB client for public reads and history retrieval.
 - Polymarket US API for signed trading, balances, and account identity.
+- ESPN Site API for NBA/MLB scoreboards, rosters, and team or league news.
+- Optional Reddit recent-search inputs for extra live context when configured.
+- Optional X recent-search inputs for extra live context when configured.
 - Local JSON persistence in `data/trade-intents.json`.
 
 ### 3. Frontend Operator Console
@@ -231,12 +289,15 @@ Implemented in `apps/api/src/services/polymarket/aggregation.js`.
 Purpose:
 
 - Build a short-horizon analytics snapshot from live market state and 7-day history.
+- Enrich recognized sports matchups with deterministic team-history features from the local sports store.
 
 Outputs include:
 
 - `liquiditySnapshot`
 - `derivedMetrics`
 - `historicalPrices`
+- `sportsContext`
+- `eventIntelligence`
 
 ### Model 3: Statistical Pricing Model
 
@@ -246,6 +307,7 @@ Purpose:
 
 - Estimate fair probability for each outcome.
 - Quantify edge and confidence from observable market behavior.
+- Blend sports fair probabilities into recognized team-vs-team markets without involving the LLM.
 
 Core inputs:
 
@@ -255,8 +317,60 @@ Core inputs:
 - volatility
 - liquidity share
 - volume share
+- team Elo
+- home edge when matchup orientation is known
+- recent form
+- rest days
+- rolling score differential
 
 For each outcome, the model returns estimated probability, edge, confidence, and feature diagnostics.
+
+## Sports Data Pipeline
+
+The first-pass sports implementation is deterministic and local.
+
+1. `npm run sync:sports-universe`
+  Reads active Polymarket US markets from signed `/v1/markets` and snapshots recognized team outcomes into `data/sports/polymarket-us-teams.json`.
+2. Import NBA history with `npm run import:nba-history`
+  The first importer uses ESPN NBA scoreboard data and stores finalized games in `data/sports/team-history.json`.
+  You can pass `SEASON=2023-24` or explicit `START_DATE` and `END_DATE`. The importer fetches date ranges in batches so full-season imports are practical.
+  To load the full calibration sample from 2020 forward, run `npm run import:nba-history:all`.
+3. Import MLB history with `npm run import:mlb-history`
+  The MLB importer uses ESPN MLB scoreboard data, supports single-year seasons like `SEASON=2024`, and can load the full sample from 2020 forward with `npm run import:mlb-history:all`.
+  You can evaluate the same deterministic calibration stack with `npm run backtest:mlb`.
+4. Populate or extend `data/sports/team-history.json`
+  The model expects rows like `league`, `date`, `homeTeamId`, `awayTeamId`, `homeScore`, and `awayScore`.
+5. Run normal event aggregation
+  Recognized team-vs-team markets get a `sportsContext` block plus Elo-derived fair probabilities that are blended into Model 3.
+6. Attach live event intelligence
+  Supported NBA and MLB events also get an `eventIntelligence` block sourced from ESPN news, rosters, and game feeds, with optional Reddit/X posts merged in when configured.
+  Article ranking is impact-weighted so injuries, availability changes, lineup changes, suspensions, and transactions are promoted ahead of generic rankings, recap, tracker, and how-to-watch headlines.
+
+If the local sports files are empty, Probis falls back to the existing market-only model.
+
+### Sports Endpoints
+
+- `GET /api/sports/status`
+  Returns local sports universe and history-store counts.
+- `POST /api/sports/import/nba`
+  Imports NBA history with optional JSON body fields `season`, `startDate`, `endDate`, and `batchSize`.
+- `POST /api/sports/import/mlb`
+  Imports MLB history with optional JSON body fields `season`, `startDate`, `endDate`, and `batchSize`.
+- `GET /api/sports/events/inspect?input=...`
+  Returns recognized sports markets plus derived Elo features for a Polymarket event.
+- `POST /api/sports/backtest`
+  Runs deterministic backtesting on the local history store. Accepts `league`, `startDate`, `endDate`, `phase`, `minTrainingGames`, and `calibrationBucketSize`.
+
+### Sports Backtesting
+
+The sports backtest now evaluates both the raw Elo estimate and the calibrated post-model probability used in live pricing.
+
+- Prediction target: home-team win probability
+- Metrics: accuracy, Brier score, and log loss for both raw and calibrated probabilities
+- Warm-up: controlled by `minTrainingGames` so very early-season games do not dominate the evaluation
+- Calibration output: probability buckets with average prediction, empirical win rate, isotonic-smoothed target, and calibration gap
+- Phase split: `phase=all` also returns separate regular-season and playoff summaries so you can see whether postseason games distort the model
+- Live pricing: recognized sports markets now use a post-model calibration layer that applies logistic compression plus isotonic-style bucket mapping to reduce tail overconfidence before edge is computed
 
 Conceptually, the model starts from the current market price and adjusts it with trend and anchor terms:
 
@@ -404,11 +518,18 @@ POLYMARKET_PRIVATE_KEY=
 POLYMARKET_US_KEY_ID=
 POLYMARKET_US_SECRET_KEY=
 POLYMARKET_US_BASE_URL=https://api.polymarket.us
+POLYMARKET_US_GATEWAY_URL=https://gateway.polymarket.us
+GAMMA_BASE_URL=https://gamma-api.polymarket.com
 PORT=4000
 VITE_API_BASE_URL=http://localhost:4000
 OLLAMA_BASE_URL=http://localhost:11434
 OLLAMA_MODEL=gemma3:latest
 ANALYTICS_CACHE_TTL_MS=300000
+SOCIAL_REDDIT_ENABLED=true
+SOCIAL_REDDIT_SUBREDDITS=nba,mlb,sportsbook,polymarket
+SOCIAL_REDDIT_USER_AGENT=probis/0.1
+SOCIAL_X_BEARER_TOKEN=your_x_api_bearer_token
+SOCIAL_X_RECENT_SEARCH_URL=https://api.x.com/2/tweets/search/recent
 ```
 
 Notes:
@@ -459,6 +580,15 @@ curl http://localhost:4000/health
 - `GET /api/polymarket/events/aggregation?input=<url-or-slug>`
 - `GET /api/polymarket/events/aggregation?input=<url-or-slug>&refresh=true`
 - `POST /api/polymarket/events/aggregation/invalidate`
+
+### Sports data and calibration
+
+- `GET /api/sports/status`
+- `GET /api/sports/events/inspect?input=<url-or-slug>`
+- `GET /api/sports/events/inspect?input=<url-or-slug>&refresh=true`
+- `POST /api/sports/import/nba`
+- `POST /api/sports/import/mlb`
+- `POST /api/sports/backtest`
 
 ### AI and decision support
 

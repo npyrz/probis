@@ -53,6 +53,38 @@ function getSharesEstimate(tradeAmount, entryProbability) {
   return tradeAmount / entryProbability;
 }
 
+function normalizeTrackedOutcomeLabel(label) {
+  return String(label ?? '').trim().toLowerCase();
+}
+
+function isBinaryTrackedOutcomeLabel(label) {
+  const normalized = normalizeTrackedOutcomeLabel(label);
+  return normalized === 'yes' || normalized === 'no';
+}
+
+function getOrderCommissionNotional(orderResponse) {
+  const order = orderResponse?.order ?? orderResponse;
+  const commission = Number.parseFloat(order?.commissionNotionalTotalCollected?.value ?? NaN);
+  return Number.isFinite(commission) && commission >= 0 ? commission : 0;
+}
+
+function getTrackedDisplayNotionalSpent({ entryIntent, outcomeLabel, sharesFilled, rawNotionalSpent, orderResponse }) {
+  if (!Number.isFinite(rawNotionalSpent) || rawNotionalSpent < 0) {
+    return null;
+  }
+
+  if (entryIntent !== 'ORDER_INTENT_BUY_SHORT' || isBinaryTrackedOutcomeLabel(outcomeLabel)) {
+    return rawNotionalSpent;
+  }
+
+  if (!Number.isFinite(sharesFilled) || sharesFilled <= 0) {
+    return rawNotionalSpent;
+  }
+
+  const commission = getOrderCommissionNotional(orderResponse);
+  return Math.max(0, sharesFilled - rawNotionalSpent + commission);
+}
+
 function buildExecutionRequestShape(payload) {
   const entryProbability = Number.parseFloat(
     payload?.recommendation?.currentProbability ?? payload?.tradeSuggestion?.entryProbability ?? NaN
@@ -101,13 +133,20 @@ function buildMonitoringState(intent) {
     stopTriggeredAt: null,
     takeProfitTriggeredAt: null,
     exitReason: null,
-    notes: 'Tracking live probability against configured stop-loss and take-profit levels.'
+    notes: null
   };
 }
 
 function getExecutedEntryProbability(intent, buyOrder) {
   const shares = Number.parseFloat(buyOrder?.sharesFilled ?? intent?.executionRequest?.sharesEstimate ?? NaN);
-  const spent = Number.parseFloat(buyOrder?.notionalSpent ?? intent?.tradeAmount ?? NaN);
+  const rawSpent = Number.parseFloat(buyOrder?.notionalSpent ?? intent?.tradeAmount ?? NaN);
+  const spent = getTrackedDisplayNotionalSpent({
+    entryIntent: buyOrder?.entryIntent,
+    outcomeLabel: intent?.outcomeLabel,
+    sharesFilled: shares,
+    rawNotionalSpent: rawSpent,
+    orderResponse: buyOrder?.response
+  });
 
   if (!Number.isFinite(shares) || shares <= 0 || !Number.isFinite(spent) || spent <= 0) {
     return intent.executionRequest?.entryProbability ?? intent.recommendation?.currentProbability ?? null;
@@ -134,18 +173,6 @@ function deriveRemainingPositionCostBasis({ entryShares, entryNotionalSpent, rem
 
 function getPositionSideFromEntryIntent(entryIntent) {
   return entryIntent === 'ORDER_INTENT_BUY_SHORT' ? 'short' : 'long';
-}
-
-function toTrackedProbability(entryIntent, outcomeProbability) {
-  if (typeof outcomeProbability !== 'number') {
-    return null;
-  }
-
-  if (entryIntent === 'ORDER_INTENT_BUY_SHORT') {
-    return 1 - outcomeProbability;
-  }
-
-  return outcomeProbability;
 }
 
 function buildExitRequestShape(intent, exitReason) {
@@ -330,6 +357,35 @@ function buildVenueSyncClosedIntent(intent, nextState, notes, { exitReason } = {
   });
 }
 
+function isVenuePositionNotFoundError(error) {
+  const message = String(error instanceof Error ? error.message : error ?? '').trim().toLowerCase();
+  return message.includes('position not found');
+}
+
+function buildVenuePositionMissingClosedIntent(intent, { exitReason, notes, verificationReason }) {
+  const nextIntent = finalizeTrackedIntent(intent, exitReason, {
+    ...intent.monitoring,
+    state: 'venue-position-missing',
+    lastEvaluationAt: new Date().toISOString(),
+    exitReason,
+    notes
+  });
+
+  nextIntent.position = {
+    ...nextIntent.position,
+    sharesFilled: 0,
+    notionalSpent: 0,
+    lastExecutionAt: new Date().toISOString()
+  };
+
+  return withApiVerification(nextIntent, {
+    apiVerifiedFilledPosition: false,
+    method: 'close-position',
+    reason: verificationReason,
+    orderId: intent.executionRequest?.venueOrderId ?? intent.position?.entryOrderId ?? null
+  });
+}
+
 function withApiVerification(intent, {
   apiVerifiedFilledPosition,
   method,
@@ -464,7 +520,14 @@ async function reconcileTrackingIntentWithVenue(env, intent) {
   }
 
   const sharesFilled = Number.parseFloat(getSharesFromOrder(venueOrder) ?? NaN);
-  const notionalSpent = Number.parseFloat(getSpentFromOrder(venueOrder) ?? NaN);
+  const rawNotionalSpent = Number.parseFloat(getSpentFromOrder(venueOrder) ?? NaN);
+  const notionalSpent = getTrackedDisplayNotionalSpent({
+    entryIntent: intent?.position?.entryIntent,
+    outcomeLabel: intent?.outcomeLabel,
+    sharesFilled,
+    rawNotionalSpent,
+    orderResponse: venueOrder
+  });
   const orderState = getTerminalOrderStateFromVenueOrder(venueOrder);
   const hasEntryFills = Number.isFinite(sharesFilled) && sharesFilled > 0;
 
@@ -617,6 +680,9 @@ async function reconcileTrackingIntentWithVenue(env, intent) {
     },
     monitoring: {
       ...intent.monitoring,
+      entryProbability: Number.isFinite(remainingShares) && remainingShares > 0 && Number.isFinite(remainingNotionalSpent) && remainingNotionalSpent > 0
+        ? remainingNotionalSpent / remainingShares
+        : intent.monitoring?.entryProbability ?? null,
       lastEvaluationAt: new Date().toISOString(),
       syncNoLiveSharesCount: 0,
       notes: `Order ${orderId} is ${orderState} with ${sharesFilled} entry shares filled. Remaining open shares inferred from order fills: ${hasRemainingShares ? remainingShares : sharesFilled}.`
@@ -656,7 +722,14 @@ async function reconcileSyncRemovedIntentWithVenue(env, intent) {
   }
 
   const sharesFilled = Number.parseFloat(getSharesFromOrder(venueOrder) ?? NaN);
-  const notionalSpent = Number.parseFloat(getSpentFromOrder(venueOrder) ?? NaN);
+  const rawNotionalSpent = Number.parseFloat(getSpentFromOrder(venueOrder) ?? NaN);
+  const notionalSpent = getTrackedDisplayNotionalSpent({
+    entryIntent: intent?.position?.entryIntent,
+    outcomeLabel: intent?.outcomeLabel,
+    sharesFilled,
+    rawNotionalSpent,
+    orderResponse: venueOrder
+  });
 
   let liveShares;
 
@@ -695,6 +768,9 @@ async function reconcileSyncRemovedIntentWithVenue(env, intent) {
       ...intent.monitoring,
       state: 'active',
       exitReason: null,
+      entryProbability: Number.isFinite(sharesFilled) && sharesFilled > 0 && Number.isFinite(notionalSpent) && notionalSpent > 0
+        ? notionalSpent / sharesFilled
+        : intent.monitoring?.entryProbability ?? null,
       lastEvaluationAt: new Date().toISOString(),
       notes: `Recovered from venue sync for order ${orderId}; active position shares detected.`
     },
@@ -738,7 +814,21 @@ async function executeTriggeredExit(env, intent, exitReason, monitoringState) {
     marketSlug: resolvedMarket.marketSlug,
     conditionId: resolvedMarket.conditionId
   };
-  const sellOrder = await placeSellOrderForIntent(env, executableIntent);
+  let sellOrder;
+
+  try {
+    sellOrder = await placeSellOrderForIntent(env, executableIntent);
+  } catch (error) {
+    if (isVenuePositionNotFoundError(error)) {
+      return buildVenuePositionMissingClosedIntent(executableIntent, {
+        exitReason,
+        notes: 'Polymarket US reported that no active position remains for this market during exit. Marking the trade closed.',
+        verificationReason: 'exit-position-missing'
+      });
+    }
+
+    throw error;
+  }
 
   if (!sellOrder.fullyClosed) {
     if (!shouldKeepExitPending(sellOrder)) {
@@ -909,7 +999,7 @@ async function evaluateMonitoringState(env, intent, trackedQuote) {
     monitoring: {
       ...baseMonitoring,
       state: 'active',
-      notes: 'Monitoring live probability against configured stop-loss and take-profit levels.'
+      notes: null
     },
     updatedAt: new Date().toISOString()
   };
@@ -924,7 +1014,7 @@ async function resolveTrackedProbability(env, intent) {
 
   if (typeof liveOutcomeProbability === 'number') {
     return {
-      currentProbability: toTrackedProbability(intent?.position?.entryIntent, liveOutcomeProbability),
+      currentProbability: liveOutcomeProbability,
       lastPolymarketQuoteAt: new Date().toISOString()
     };
   }
@@ -1157,7 +1247,13 @@ export async function executeTradeIntent(env, id) {
       entryIntent: buyOrder.entryIntent,
       entryOrderId: buyOrder.orderId,
       sharesFilled: buyOrder.sharesFilled,
-      notionalSpent: buyOrder.notionalSpent,
+      notionalSpent: getTrackedDisplayNotionalSpent({
+        entryIntent: buyOrder.entryIntent,
+        outcomeLabel: executableIntent.outcomeLabel,
+        sharesFilled: Number.parseFloat(buyOrder?.sharesFilled ?? NaN),
+        rawNotionalSpent: Number.parseFloat(buyOrder?.notionalSpent ?? NaN),
+        orderResponse: buyOrder.response
+      }),
       lastExecutionAt: new Date().toISOString()
     },
     monitoring: buildMonitoringState(executableIntent),
@@ -1201,19 +1297,16 @@ export async function pollTradeIntent(env, id) {
 export async function pollTrackingTradeIntents(env) {
   const intents = await readTradeIntents();
   const syncedIntents = await syncTrackingIntentsWithVenue(env, intents);
-  const nextIntents = [];
-
-  for (const intent of syncedIntents) {
+  const nextIntents = await Promise.all(syncedIntents.map(async (intent) => {
     if (intent.status !== 'tracking') {
-      nextIntents.push(intent);
-      continue;
+      return intent;
     }
 
     try {
       const trackedProbability = await resolveTrackedProbability(env, intent);
-      nextIntents.push(await evaluateMonitoringState(env, intent, trackedProbability));
+      return await evaluateMonitoringState(env, intent, trackedProbability);
     } catch {
-      nextIntents.push({
+      return {
         ...intent,
         monitoring: {
           ...intent.monitoring,
@@ -1221,12 +1314,12 @@ export async function pollTrackingTradeIntents(env) {
           notes: 'Monitoring refresh failed on the last poll attempt.'
         },
         updatedAt: new Date().toISOString()
-      });
+      };
     }
-  }
+  }));
 
   await writeTradeIntents(nextIntents);
-  return nextIntents.filter((intent) => intent.status === 'tracking');
+  return nextIntents;
 }
 
 export async function sellTradeIntent(env, id) {
@@ -1243,7 +1336,24 @@ export async function sellTradeIntent(env, id) {
     marketSlug: resolvedMarket.marketSlug,
     conditionId: resolvedMarket.conditionId
   };
-  const sellOrder = await placeSellOrderForIntent(env, executableIntent);
+  let sellOrder;
+
+  try {
+    sellOrder = await placeSellOrderForIntent(env, executableIntent);
+  } catch (error) {
+    if (isVenuePositionNotFoundError(error)) {
+      const nextIntent = buildVenuePositionMissingClosedIntent(executableIntent, {
+        exitReason: 'manual-sell',
+        notes: 'Polymarket US reported that this position no longer exists. Marking the trade closed and removing it from active monitoring.',
+        verificationReason: 'manual-sell-position-missing'
+      });
+
+      await writeTradeIntents(replaceTradeIntent(intents, nextIntent));
+      return nextIntent;
+    }
+
+    throw error;
+  }
 
   if (!sellOrder.fullyClosed) {
     if (!shouldKeepExitPending(sellOrder)) {

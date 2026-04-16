@@ -13,11 +13,11 @@ import {
   resolveEvent,
   resolveEventAggregation,
   sellTradeIntent as sellTradeIntentRequest,
-  stopTradeIntent as stopTradeIntentRequest,
   updateTradeIntent as updateTradeIntentRequest
 } from './lib/api.js';
 
 const TRADE_DRAFT_STORAGE_KEY = 'probis.tradeDraft';
+const TRACKED_PROBABILITY_HISTORY_LIMIT = 36;
 
 function formatCompactNumber(value) {
   if (typeof value !== 'number' || Number.isNaN(value)) {
@@ -141,6 +141,10 @@ function formatIntentStatus(intent) {
   }
 
   return 'Confirmed';
+}
+
+function isDraftTradeIntent(intent) {
+  return intent?.status !== 'tracking' && intent?.status !== 'closed';
 }
 
 function formatMonitoringStateLabel(state) {
@@ -306,6 +310,25 @@ function formatRecommendationHeadline(recommendation) {
   return 'No specific market recommendation available yet.';
 }
 
+function formatRecommendationActionLabel(action, outcomeLabel) {
+  const normalizedAction = String(action ?? '').trim().toLowerCase();
+  const normalizedOutcome = String(outcomeLabel ?? '').trim();
+
+  if (normalizedAction === 'buy') {
+    return normalizedOutcome ? `Back ${normalizedOutcome}` : 'Buy';
+  }
+
+  if (normalizedAction === 'avoid') {
+    return normalizedOutcome ? `Avoid ${normalizedOutcome}` : 'Avoid';
+  }
+
+  if (normalizedAction === 'watch') {
+    return normalizedOutcome ? `Watch ${normalizedOutcome}` : 'Watch';
+  }
+
+  return normalizedOutcome || 'Recommendation';
+}
+
 function resolveRecommendationExpectedValue(recommendation) {
   if (typeof recommendation?.expectedValuePerDollar === 'number') {
     return recommendation.expectedValuePerDollar;
@@ -443,18 +466,6 @@ function getMarketLeader(market) {
   return rankedOutcomes[0] ?? null;
 }
 
-function getEventHeadline(event, visibleMarkets) {
-  const leaders = visibleMarkets
-    .map((market) => ({
-      market,
-      leader: getMarketLeader(market)
-    }))
-    .filter((candidate) => typeof candidate.leader?.probability === 'number')
-    .sort((left, right) => right.leader.probability - left.leader.probability);
-
-  return leaders[0] ?? null;
-}
-
 function findHistoricalMarket(aggregation, conditionId) {
   return aggregation?.historicalPrices?.markets?.find((market) => market.conditionId === conditionId) ?? null;
 }
@@ -493,6 +504,115 @@ function getMarketDisplayMetrics(market, aggregation, statisticalModel) {
     confidence: modelMarket?.confidence ?? null,
     liquidity: market.liquidity ?? null,
     momentum: getMarketMomentum(aggregation, market.conditionId)
+  };
+}
+
+function getModelOutcome(modelMarket, outcomeLabel) {
+  return modelMarket?.outcomes?.find((outcome) => outcome.label === outcomeLabel) ?? null;
+}
+
+function getSportsMarketOutcome(modelMarket, outcomeLabel) {
+  return modelMarket?.sportsContext?.outcomes?.find((outcome) => outcome.label === outcomeLabel) ?? null;
+}
+
+function getSportsProbabilityBreakdown(market, modelMarket) {
+  if (!market || !modelMarket?.sportsContext) {
+    return [];
+  }
+
+  return (Array.isArray(market.outcomes) ? market.outcomes : [])
+    .map((outcome) => {
+      const sportsOutcome = getSportsMarketOutcome(modelMarket, outcome.label);
+      const modelOutcome = getModelOutcome(modelMarket, outcome.label);
+
+      if (!sportsOutcome || !modelOutcome) {
+        return null;
+      }
+
+      return {
+        label: outcome.label,
+        marketProbability: typeof outcome.probability === 'number' ? outcome.probability : modelOutcome.currentProbability,
+        rawSportsProbability: sportsOutcome.rawFairProbability ?? null,
+        calibratedSportsProbability: sportsOutcome.fairProbability ?? null,
+        finalModelProbability: modelOutcome.estimatedProbability ?? null,
+        edge: modelOutcome.edge ?? null,
+        confidence: modelOutcome.confidence ?? null
+      };
+    })
+    .filter(Boolean)
+    .sort((left, right) => (right.finalModelProbability ?? -1) - (left.finalModelProbability ?? -1));
+}
+
+function getSportsLeagues(statisticalModel) {
+  return [...new Set(
+    (Array.isArray(statisticalModel?.markets) ? statisticalModel.markets : [])
+      .map((market) => market?.sportsContext?.league)
+      .filter(Boolean)
+  )];
+}
+
+function getRecommendationSource(modelMarket) {
+  const league = String(modelMarket?.sportsContext?.league ?? '').trim().toUpperCase();
+
+  if (league === 'NBA' || league === 'MLB') {
+    return {
+      label: league,
+      detail: 'sports model',
+      className: `market-chip market-chip-league market-chip-league-${league.toLowerCase()}`
+    };
+  }
+
+  return {
+    label: 'MARKET',
+    detail: 'market only',
+    className: 'market-chip market-chip-market-only'
+  };
+}
+
+function formatSignedDecimal(value, digits = 2) {
+  if (typeof value !== 'number' || Number.isNaN(value)) {
+    return 'n/a';
+  }
+
+  const prefix = value > 0 ? '+' : '';
+  return `${prefix}${value.toFixed(digits)}`;
+}
+
+function formatStarterSummary(pitcher) {
+  if (!pitcher?.name) {
+    return 'n/a';
+  }
+
+  const record = String(pitcher.record ?? '').trim();
+  return record ? `${pitcher.name} ${record}` : pitcher.name;
+}
+
+function getEventIntelligenceSummary(aggregation) {
+  return aggregation?.eventIntelligence?.available ? aggregation.eventIntelligence : null;
+}
+
+function formatImpactScore(value) {
+  if (typeof value !== 'number' || Number.isNaN(value)) {
+    return 'n/a';
+  }
+
+  return value.toFixed(0);
+}
+
+function getRecommendedStarterContext(modelMarket) {
+  const features = modelMarket?.sportsContext?.features;
+  const probablePitchers = features?.probablePitchers ?? null;
+
+  if (!probablePitchers?.home && !probablePitchers?.away) {
+    return null;
+  }
+
+  return {
+    source: features?.probablePitcherSource ?? null,
+    diff: features?.probablePitcherDiff ?? null,
+    home: probablePitchers.home ?? null,
+    away: probablePitchers.away ?? null,
+    recentForm: features?.probablePitcherRecentForm ?? null
   };
 }
 
@@ -640,8 +760,7 @@ function estimateTrackedPnl(intent, currentProbability, entryProbability) {
   }
 
   const spent = Number.parseFloat(intent?.position?.notionalSpent ?? intent?.tradeAmount ?? NaN);
-  const direction = intent?.position?.entryIntent === 'ORDER_INTENT_BUY_SHORT' ? -1 : 1;
-  const pnlDollars = shares * (currentProbability - entryProbability) * direction;
+  const pnlDollars = shares * (currentProbability - entryProbability);
   const pnlPercent = Number.isFinite(spent) && spent > 0 ? pnlDollars / spent : null;
 
   return {
@@ -754,6 +873,213 @@ function buildSparklinePath(history) {
     .join(' ');
 }
 
+function buildTrackedProbabilityPoint(intent, fallbackTimestamp = new Date().toISOString()) {
+  const price = intent?.monitoring?.currentProbability;
+
+  if (typeof price !== 'number' || Number.isNaN(price)) {
+    return null;
+  }
+
+  return {
+    price,
+    timestamp: intent?.monitoring?.lastPolymarketQuoteAt ?? intent?.monitoring?.lastEvaluationAt ?? fallbackTimestamp,
+    monitoringState: intent?.monitoring?.state ?? 'active'
+  };
+}
+
+function mergeTrackedProbabilityHistory(previousHistoryByIntent, intents) {
+  const nextHistoryByIntent = {};
+  let hasChanged = false;
+
+  for (const intent of intents) {
+    if (intent?.status !== 'tracking') {
+      continue;
+    }
+
+    const previousHistory = Array.isArray(previousHistoryByIntent[intent.id])
+      ? previousHistoryByIntent[intent.id]
+      : [];
+    const nextPoint = buildTrackedProbabilityPoint(intent);
+
+    if (!nextPoint) {
+      nextHistoryByIntent[intent.id] = previousHistory;
+      continue;
+    }
+
+    const lastPoint = previousHistory[previousHistory.length - 1] ?? null;
+    const isDuplicatePoint = lastPoint
+      && lastPoint.timestamp === nextPoint.timestamp
+      && lastPoint.price === nextPoint.price
+      && lastPoint.monitoringState === nextPoint.monitoringState;
+
+    if (isDuplicatePoint) {
+      nextHistoryByIntent[intent.id] = previousHistory;
+      continue;
+    }
+
+    const nextHistory = [...previousHistory, nextPoint].slice(-TRACKED_PROBABILITY_HISTORY_LIMIT);
+    nextHistoryByIntent[intent.id] = nextHistory;
+    hasChanged = true;
+  }
+
+  const previousIds = Object.keys(previousHistoryByIntent);
+
+  if (previousIds.length !== Object.keys(nextHistoryByIntent).length) {
+    hasChanged = true;
+  }
+
+  return hasChanged ? nextHistoryByIntent : previousHistoryByIntent;
+}
+
+function getProbabilityChartBounds(values) {
+  if (!Array.isArray(values) || values.length === 0) {
+    return null;
+  }
+
+  let minValue = Math.min(...values);
+  let maxValue = Math.max(...values);
+
+  if (!Number.isFinite(minValue) || !Number.isFinite(maxValue)) {
+    return null;
+  }
+
+  const range = maxValue - minValue;
+
+  if (range < 0.08) {
+    const midpoint = (maxValue + minValue) / 2;
+    minValue = midpoint - 0.04;
+    maxValue = midpoint + 0.04;
+  } else {
+    const padding = range * 0.18;
+    minValue -= padding;
+    maxValue += padding;
+  }
+
+  minValue = Math.max(0, minValue);
+  maxValue = Math.min(1, maxValue);
+
+  if (maxValue - minValue < 0.04) {
+    if (maxValue >= 1) {
+      minValue = Math.max(0, maxValue - 0.04);
+    } else {
+      maxValue = Math.min(1, minValue + 0.04);
+    }
+  }
+
+  return { minValue, maxValue };
+}
+
+function getProbabilityChartY(value, bounds) {
+  if (typeof value !== 'number' || !bounds) {
+    return 50;
+  }
+
+  const range = bounds.maxValue - bounds.minValue || 1;
+  return 100 - ((value - bounds.minValue) / range) * 100;
+}
+
+function TrackingProbabilityChart({
+  history,
+  currentProbability,
+  entryProbability,
+  stopLossProbability,
+  takeProfitProbability,
+  monitoringState,
+  lastQuoteAt
+}) {
+  const baseHistory = Array.isArray(history) ? history.filter((point) => typeof point?.price === 'number') : [];
+  const chartHistory = baseHistory.length > 0
+    ? baseHistory
+    : typeof currentProbability === 'number'
+      ? [{ price: currentProbability, timestamp: lastQuoteAt ?? null, monitoringState }]
+      : [];
+
+  if (chartHistory.length === 0) {
+    return <div className="sparkline-empty tracking-chart-empty">No live probability history yet.</div>;
+  }
+
+  const bounds = getProbabilityChartBounds([
+    ...chartHistory.map((point) => point.price),
+    entryProbability,
+    stopLossProbability,
+    takeProfitProbability
+  ].filter((value) => typeof value === 'number'));
+
+  const chartPoints = chartHistory.map((point, index) => ({
+    x: chartHistory.length === 1 ? 50 : (index / (chartHistory.length - 1)) * 100,
+    y: getProbabilityChartY(point.price, bounds),
+    price: point.price,
+    timestamp: point.timestamp
+  }));
+  const latestPoint = chartPoints[chartPoints.length - 1] ?? null;
+  const isSelling = monitoringState === 'exit-submitted-awaiting-fill';
+  const referenceLines = [
+    {
+      key: 'entry',
+      label: 'Entry',
+      value: entryProbability,
+      className: 'tracking-chart-threshold-entry'
+    },
+    {
+      key: 'stop',
+      label: 'Stop Exit',
+      value: stopLossProbability,
+      className: 'tracking-chart-threshold-stop'
+    },
+    {
+      key: 'take',
+      label: 'Take Exit',
+      value: takeProfitProbability,
+      className: 'tracking-chart-threshold-take'
+    }
+  ].filter((line) => typeof line.value === 'number');
+
+  return (
+    <div className="tracking-chart-shell">
+      <div className="tracking-chart-header">
+        <div>
+          <span className="eyebrow">Live Polling</span>
+          <strong>{formatPercent(currentProbability)}</strong>
+        </div>
+        <span className="tracking-chart-meta">{chartHistory.length} pts · {formatRelativeAge(lastQuoteAt)}</span>
+      </div>
+      <svg className="tracking-chart" viewBox="0 0 100 100" preserveAspectRatio="none" aria-hidden="true">
+        {referenceLines.map((line) => {
+          const y = getProbabilityChartY(line.value, bounds);
+
+          return (
+            <line
+              key={line.key}
+              className={`tracking-chart-threshold ${line.className}`}
+              x1="0"
+              y1={y}
+              x2="100"
+              y2={y}
+            />
+          );
+        })}
+        {latestPoint ? (
+          <line
+            className={isSelling ? 'tracking-chart-current-line tracking-chart-current-line-selling' : 'tracking-chart-current-line'}
+            x1="0"
+            y1={latestPoint.y}
+            x2="100"
+            y2={latestPoint.y}
+          />
+        ) : null}
+      </svg>
+      <div className="tracking-chart-legend">
+        {referenceLines.map((line) => (
+          <span key={line.key} className="tracking-chart-legend-item">
+            <span className={`tracking-chart-legend-swatch ${line.className}`} aria-hidden="true" />
+            {line.label} {formatPercent(line.value)}
+          </span>
+        ))}
+      </div>
+    </div>
+  );
+}
+
 function OutcomeSparkline({ history, className = 'sparkline' }) {
   const path = buildSparklinePath(history);
 
@@ -797,14 +1123,14 @@ export default function App() {
   const [isSavingTradeIntent, setIsSavingTradeIntent] = useState(false);
   const [isMutatingHistory, setIsMutatingHistory] = useState(false);
   const [isPollingTracking, setIsPollingTracking] = useState(false);
-  const [tradeCenterFilter, setTradeCenterFilter] = useState('all');
+  const [tradeCenterFilter, setTradeCenterFilter] = useState('tracking');
   const [editingActiveTradeId, setEditingActiveTradeId] = useState(null);
   const [activeTradeRiskInputs, setActiveTradeRiskInputs] = useState({});
+  const [trackedProbabilityHistory, setTrackedProbabilityHistory] = useState({});
   const [hasLoadedInitialData, setHasLoadedInitialData] = useState(false);
   const [isPending, startTransition] = useTransition();
   const tradableMarkets = selectedEvent?.markets ?? [];
   const visibleMarkets = tradableMarkets.filter(marketHasLivePrices);
-  const eventHeadline = selectedEvent ? getEventHeadline(selectedEvent, visibleMarkets) : null;
   const rankedMarkets = filterAndSortMarkets(visibleMarkets, aggregation, statisticalModel, sortBy, filterBy);
   const selectedMarket = visibleMarkets.find((market) => market.conditionId === selectedMarketId) ?? rankedMarkets[0]?.market ?? null;
   const selectedHistoricalMarket = selectedMarket ? findHistoricalMarket(aggregation, selectedMarket.conditionId) : null;
@@ -821,18 +1147,64 @@ export default function App() {
       return intent.status === 'tracking';
     }
 
+    if (tradeCenterFilter === 'draft') {
+      return isDraftTradeIntent(intent);
+    }
+
     if (tradeCenterFilter === 'closed') {
       return intent.status === 'closed';
     }
 
-    return true;
+    return isDraftTradeIntent(intent);
   });
+  const editingActiveTrade = editingActiveTradeId
+    ? tradeHistory.find((intent) => intent.id === editingActiveTradeId) ?? null
+    : null;
   const lastPolledAge = formatRelativeAge(lastTradeUpdate, liveClock);
   const selectedLeader = selectedMarket ? getMarketLeader(selectedMarket) : null;
+  const marketControlsOutcomes = Array.isArray(selectedMarket?.outcomes)
+    ? sortOutcomes(selectedMarket.outcomes).filter((outcome) => typeof outcome?.probability === 'number')
+    : [];
   const currentRecommendation = decisionEngine?.recommendation ?? null;
   const recommendationHeadline = formatRecommendationHeadline(currentRecommendation);
+  const recommendationActionLabel = formatRecommendationActionLabel(decisionEngine?.action, currentRecommendation?.outcomeLabel);
   const recommendationExpectedValue = resolveRecommendationExpectedValue(currentRecommendation);
   const parsedOperatorNotes = parseOperatorNotes(analysis);
+  const selectedSportsProbabilityBreakdown = getSportsProbabilityBreakdown(selectedMarket, selectedModelMarket);
+  const recommendedModelMarket = recommendedMarket ? getModelMarket(statisticalModel, recommendedMarket.conditionId) : null;
+  const recommendedSportsOutcome = currentRecommendation
+    ? getSportsMarketOutcome(recommendedModelMarket, currentRecommendation.outcomeLabel)
+    : null;
+  const recommendedModelOutcome = currentRecommendation
+    ? getModelOutcome(recommendedModelMarket, currentRecommendation.outcomeLabel)
+    : null;
+  const eventSportsLeagues = getSportsLeagues(statisticalModel);
+  const recommendationSource = getRecommendationSource(recommendedModelMarket);
+  const recommendedStarterContext = getRecommendedStarterContext(recommendedModelMarket);
+  const eventIntelligence = getEventIntelligenceSummary(aggregation);
+  const statusPopup = error
+    ? { kind: 'error', message: error, dismiss: () => setError('') }
+    : notice
+      ? { kind: 'notice', message: notice, dismiss: () => setNotice('') }
+      : null;
+
+  useEffect(() => {
+    setTrackedProbabilityHistory((previousHistoryByIntent) => mergeTrackedProbabilityHistory(previousHistoryByIntent, tradeHistory));
+  }, [tradeHistory]);
+
+  useEffect(() => {
+    if (!statusPopup) {
+      return undefined;
+    }
+
+    const timeoutId = window.setTimeout(() => {
+      statusPopup.dismiss();
+    }, 5000);
+
+    return () => {
+      window.clearTimeout(timeoutId);
+    };
+  }, [statusPopup?.kind, statusPopup?.message]);
 
   function clearSelectedEventContext() {
     setSelectedEvent(null);
@@ -845,6 +1217,12 @@ export default function App() {
     setTradeDraft(null);
     setRiskInputs({ stopLossProbability: '', takeProfitProbability: '' });
     setIsTradeModalOpen(false);
+  }
+
+  function handleClearSelectedEvent() {
+    setError('');
+    setNotice('');
+    clearSelectedEventContext();
   }
 
   useEffect(() => {
@@ -879,6 +1257,13 @@ export default function App() {
     setTradeHistory(intents);
     syncTradeDraftFromHistory(intents);
     return intents;
+  }
+
+  function applyAuthoritativeTradeHistory(intents) {
+    const nextIntents = Array.isArray(intents) ? intents.slice(0, 6) : [];
+    setTradeHistory(nextIntents);
+    syncTradeDraftFromHistory(nextIntents);
+    return nextIntents;
   }
 
   async function applyStoredTradeDraft(storedDraft, successMessage = null) {
@@ -1051,6 +1436,42 @@ export default function App() {
   }, []);
 
   useEffect(() => {
+    if (!hasLoadedInitialData) {
+      return undefined;
+    }
+
+    let isCancelled = false;
+    let isFetching = false;
+
+    const intervalId = window.setInterval(() => {
+      void (async () => {
+        if (isFetching || isCancelled) {
+          return;
+        }
+
+        isFetching = true;
+
+        try {
+          const nextStatus = await fetchStatus();
+
+          if (!isCancelled) {
+            setStatus(nextStatus);
+          }
+        } catch {
+          // Ignore background status refresh failures and keep the last known header values.
+        } finally {
+          isFetching = false;
+        }
+      })();
+    }, 5000);
+
+    return () => {
+      isCancelled = true;
+      window.clearInterval(intervalId);
+    };
+  }, [hasLoadedInitialData]);
+
+  useEffect(() => {
     if (activeTradeIntents.length === 0) {
       return undefined;
     }
@@ -1058,11 +1479,11 @@ export default function App() {
     const intervalId = window.setInterval(() => {
       void (async () => {
         try {
-          await pollTrackedTradeIntents();
-          const [_, nextStatus] = await Promise.all([
-            refreshTradeHistory(),
+          const [polledTradeIntents, nextStatus] = await Promise.all([
+            pollTrackedTradeIntents(),
             fetchStatus()
           ]);
+          applyAuthoritativeTradeHistory(polledTradeIntents);
           setStatus(nextStatus);
           setLastMarketUpdate(new Date().toISOString());
           setLastTradeUpdate(new Date().toISOString());
@@ -1070,7 +1491,7 @@ export default function App() {
           // Ignore background polling failures and keep the last known state in the UI.
         }
       })();
-    }, 3000);
+    }, 5000);
 
     return () => {
       window.clearInterval(intervalId);
@@ -1128,7 +1549,7 @@ export default function App() {
     }
 
     startTransition(() => {
-      void handleResolveEvent(eventInput.trim());
+      void handleAnalyze();
     });
   }
 
@@ -1139,7 +1560,10 @@ export default function App() {
   }
 
   async function handleAnalyze(options = {}) {
-    if (!selectedEvent?.slug) {
+    const submittedInput = eventInput.trim();
+
+    if (!submittedInput) {
+      setError('Paste a Polymarket event URL or slug.');
       return;
     }
 
@@ -1148,11 +1572,36 @@ export default function App() {
     setIsAnalyzing(true);
 
     try {
-      const result = await analyzeEvent(selectedEvent.slug, options);
+      const result = await analyzeEvent(submittedInput, options);
+      const nextEvent = result.event ?? selectedEvent;
+      const validationError = getEventValidationError(nextEvent);
+
+      if (validationError) {
+        setSelectedEvent(null);
+        setAggregation(null);
+        setStatisticalModel(null);
+        setSelectedMarketId(null);
+        setError(validationError);
+        return;
+      }
+
+      setSelectedEvent(nextEvent);
+      setAggregation(result.aggregation ?? null);
+      setStatisticalModel(result.statisticalModel ?? null);
       setAnalysis(result.analysis);
       setDecisionEngine(result.decisionEngine ?? null);
+      const currentSelection = nextEvent?.markets?.find((market) => market.conditionId === selectedMarketId);
+      const fallbackSelection = nextEvent?.markets?.filter(marketHasLivePrices)[0] ?? null;
+      setSelectedMarketId(currentSelection?.conditionId ?? fallbackSelection?.conditionId ?? null);
+      setEventInput(nextEvent?.slug ?? submittedInput);
+      setLastMarketUpdate(new Date().toISOString());
       setLastAiUpdate(new Date().toISOString());
-      setNotice(options.refresh ? 'Refreshed analytics and reran the decision engine.' : 'AI analysis updated.');
+      const sportsNotice = result.sportsSync?.updated
+        ? ` Synced ${result.sportsSync.league} ${result.sportsSync.season ?? ''} history.`.trim()
+        : '';
+      setNotice(
+        `${options.refresh ? 'Refreshed analytics and reran the decision engine.' : 'AI analysis updated.'}${sportsNotice ? ` ${sportsNotice}` : ''}`
+      );
     } catch (analysisError) {
       setError(analysisError instanceof Error ? analysisError.message : 'Unable to run AI analysis');
     } finally {
@@ -1279,13 +1728,13 @@ export default function App() {
     setIsPollingTracking(true);
 
     try {
-      await pollTrackedTradeIntents();
-      const intents = await refreshTradeHistory();
+      const polledTradeIntents = await pollTrackedTradeIntents();
+      const nextHistory = applyAuthoritativeTradeHistory(polledTradeIntents);
       const nextStatus = await fetchStatus();
       setStatus(nextStatus);
       setLastMarketUpdate(new Date().toISOString());
       setLastTradeUpdate(new Date().toISOString());
-      const stillTracking = intents.filter((intent) => intent.status === 'tracking').length;
+      const stillTracking = nextHistory.filter((intent) => intent.status === 'tracking').length;
       setNotice(stillTracking > 0 ? 'Updated active positions from live market probabilities.' : 'Polling completed and no active tracked positions remain.');
     } catch (pollError) {
       setError(pollError instanceof Error ? pollError.message : 'Unable to poll active positions');
@@ -1302,14 +1751,21 @@ export default function App() {
     try {
       const nextIntent = await sellTradeIntentRequest(intent.id);
       setTradeHistory((previous) => replaceIntentInList(previous, nextIntent));
+      const nextStatus = await fetchStatus();
+      setStatus(nextStatus);
       setLastTradeUpdate(new Date().toISOString());
+      setLastMarketUpdate(new Date().toISOString());
 
       if (tradeDraft?.id === nextIntent.id) {
         setTradeDraft(nextIntent);
         saveStoredTradeDraft(nextIntent);
       }
 
-      setNotice('Position sold and closed successfully.');
+      setNotice(
+        nextIntent.status === 'closed'
+          ? 'Position sold and closed successfully.'
+          : 'Cash out submitted to Polymarket US. Trade stays active until the venue confirms the full close.'
+      );
     } catch (sellError) {
       if (isTradeIntentNotFoundError(sellError)) {
         await refreshTradeHistory();
@@ -1321,39 +1777,6 @@ export default function App() {
         setNotice('That trade intent no longer exists. Refreshed history.');
       } else {
         setError(sellError instanceof Error ? sellError.message : 'Unable to sell position');
-      }
-    } finally {
-      setIsMutatingHistory(false);
-    }
-  }
-
-  async function handleStopTrackedIntent(intent) {
-    setError('');
-    setNotice('');
-    setIsMutatingHistory(true);
-
-    try {
-      const nextIntent = await stopTradeIntentRequest(intent.id);
-      setTradeHistory((previous) => replaceIntentInList(previous, nextIntent));
-      setLastTradeUpdate(new Date().toISOString());
-
-      if (tradeDraft?.id === nextIntent.id) {
-        setTradeDraft(nextIntent);
-        saveStoredTradeDraft(nextIntent);
-      }
-
-      setNotice('Trade stopped and moved out of active tracking.');
-    } catch (stopError) {
-      if (isTradeIntentNotFoundError(stopError)) {
-        await refreshTradeHistory();
-
-        if (tradeDraft?.id === intent.id) {
-          handleClearTradeDraft();
-        }
-
-        setNotice('That trade intent no longer exists. Refreshed history.');
-      } else {
-        setError(stopError instanceof Error ? stopError.message : 'Unable to stop trade monitoring');
       }
     } finally {
       setIsMutatingHistory(false);
@@ -1539,6 +1962,17 @@ export default function App() {
 
   return (
     <main className="app-shell terminal-shell">
+      {statusPopup ? (
+        <section
+          className={`status-toast ${statusPopup.kind === 'error' ? 'status-toast-error' : 'status-toast-notice'}`}
+          role={statusPopup.kind === 'error' ? 'alert' : 'status'}
+          aria-live={statusPopup.kind === 'error' ? 'assertive' : 'polite'}
+        >
+          <p className="eyebrow">{statusPopup.kind === 'error' ? 'Error' : 'Notice'}</p>
+          <p className="status-toast-message">{statusPopup.message}</p>
+        </section>
+      ) : null}
+
       <header className="terminal-topbar">
         <div className="terminal-brand-block">
           <div className="brand-row">
@@ -1576,46 +2010,14 @@ export default function App() {
 
       <section className="dashboard-grid dashboard-grid-no-explorer">
         <aside className="dashboard-sidebar">
-          {error ? (
-            <section className="status-popup status-popup-error" role="alert" aria-live="assertive">
-              <div>
-                <p className="eyebrow">Notice</p>
-                <p className="status-popup-message">{error}</p>
-              </div>
-              <button
-                type="button"
-                className="ghost-button status-popup-dismiss"
-                onClick={() => setError('')}
-              >
-                Exit
-              </button>
-            </section>
-          ) : null}
-
-          {notice ? (
-            <section className="status-popup status-popup-notice" role="status" aria-live="polite">
-              <div>
-                <p className="eyebrow">Notice</p>
-                <p className="status-popup-message">{notice}</p>
-              </div>
-              <button
-                type="button"
-                className="ghost-button status-popup-dismiss"
-                onClick={() => setNotice('')}
-              >
-                Exit
-              </button>
-            </section>
-          ) : null}
-
           <section className="control-card terminal-card compact-card">
             <div className="panel-heading">
               <p className="eyebrow">Market Controls</p>
-              <h2>Load Event</h2>
+              <h2>Event Input</h2>
             </div>
             <form className="event-form" onSubmit={handleSubmit}>
               <label htmlFor="event-input">Event link or slug</label>
-              <div className="input-row">
+              <div className="input-row input-row-single">
                 <input
                   id="event-input"
                   name="event-input"
@@ -1624,9 +2026,6 @@ export default function App() {
                   value={eventInput}
                   onChange={(inputEvent) => setEventInput(inputEvent.target.value)}
                 />
-                <button type="submit" disabled={isPending}>
-                  {isPending ? 'Loading...' : 'Load'}
-                </button>
               </div>
             </form>
             <div className="action-row terminal-action-row control-actions">
@@ -1634,75 +2033,77 @@ export default function App() {
                 type="button"
                 className="secondary-button"
                 onClick={() => void handleAnalyze()}
-                disabled={!selectedEvent || isPending || isAnalyzing || isRefreshing}
+                disabled={!eventInput.trim() || isPending || isAnalyzing || isRefreshing}
               >
-                {isAnalyzing ? 'Analyzing...' : 'Analyze'}
+                {isAnalyzing ? 'Running...' : 'Run Engine'}
               </button>
               <button
                 type="button"
                 className="secondary-button secondary-button-muted"
                 onClick={() => void handleRefreshData()}
-                disabled={!selectedEvent || isRefreshing || isInvalidating}
+                disabled={!eventInput.trim() || isRefreshing || isInvalidating}
               >
-                {isRefreshing ? 'Refreshing...' : 'Refresh'}
+                {isRefreshing ? 'Refreshing...' : 'Refresh Data'}
               </button>
             </div>
-          </section>
-
-          {selectedEvent ? (
-            <article className="panel-card terminal-card compact-card selected-event-card">
-              <div className="panel-heading">
-                <p className="eyebrow">Selected Event</p>
-                <h2>{selectedEvent.title}</h2>
-              </div>
-
-              <div className="selected-event-meta-row">
-                <p className="event-meta">slug: {selectedEvent.slug}</p>
-                {selectedEvent.resolvedFromFallback ? (
-                  <span className="market-chip market-chip-muted">matched from {selectedEvent.requestedSlug}</span>
-                ) : null}
-              </div>
-
-              <div className="event-summary-stats compact-status-grid">
-                <article>
-                  <span>Live Markets</span>
-                  <strong>{visibleMarkets.length}</strong>
-                </article>
-                <article>
-                  <span>Tradable Markets</span>
-                  <strong>{tradableMarkets.length}</strong>
-                </article>
-                <article>
-                  <span>Volume</span>
-                  <strong>{formatCompactNumber(selectedEvent.volume)}</strong>
-                </article>
-                <article>
-                  <span>Liquidity</span>
-                  <strong>{formatCompactNumber(selectedEvent.liquidity)}</strong>
-                </article>
-                <article>
-                  <span>End Date</span>
-                  <strong>{formatDate(selectedEvent.endDate)}</strong>
-                </article>
-              </div>
-
-              {selectedEvent.usFiltered && tradableMarkets.length === 0 ? (
-                <p className="empty-state">No tradable markets are currently available via your connected Polymarket US API key.</p>
-              ) : null}
-              {selectedEvent.usFiltered && tradableMarkets.length > 0 && visibleMarkets.length === 0 ? (
-                <p className="empty-state">Markets exist, but none are live-priced yet. Trading opens once the market is live.</p>
-              ) : null}
-              {eventHeadline ? (
-                <div className="event-highlight compact-highlight">
-                  <span>Highest-conviction</span>
-                  <strong>{eventHeadline.market.question}</strong>
-                  <p>
-                    {eventHeadline.leader.label} leads at {formatPercent(eventHeadline.leader.probability)}.
-                  </p>
+            {selectedEvent ? (
+              <>
+                <div className="market-controls-event-header">
+                  <div className="market-chip-row market-controls-chip-row">
+                    <span className="market-chip market-chip-muted">{selectedEvent.slug}</span>
+                    {eventSportsLeagues.map((league) => (
+                      <span key={league} className={`market-chip market-chip-league market-chip-league-${league.toLowerCase()}`}>
+                        {league}
+                      </span>
+                    ))}
+                    {eventSportsLeagues.length === 0 ? (
+                      <span className="market-chip market-chip-market-only">MARKET ONLY</span>
+                    ) : null}
+                    <button
+                      type="button"
+                      className="market-chip-button"
+                      onClick={handleClearSelectedEvent}
+                      title="Clear the current event and reset the panel."
+                    >
+                      Clear
+                    </button>
+                    {selectedEvent.resolvedFromFallback ? (
+                      <span className="market-chip market-chip-muted">matched from {selectedEvent.requestedSlug}</span>
+                    ) : null}
+                  </div>
+                  <div className="market-controls-title-wrap">
+                    <h3 className="market-controls-title">{selectedEvent.title}</h3>
+                    <p className="market-controls-subtitle">{selectedMarket?.question ?? 'Live market snapshot'}</p>
+                  </div>
                 </div>
-              ) : null}
-            </article>
-          ) : null}
+
+                <div className="event-summary-stats compact-status-grid market-controls-stats">
+                  <article>
+                    <span>Volume</span>
+                    <strong>{formatCompactNumber(selectedEvent.volume)}</strong>
+                  </article>
+                  <article>
+                    <span>Liquidity</span>
+                    <strong>{formatCompactNumber(selectedEvent.liquidity)}</strong>
+                  </article>
+                  {marketControlsOutcomes.map((outcome) => (
+                    <article key={outcome.label} className="market-outcome-stat">
+                      <span>{outcome.label}</span>
+                      <strong>{formatPercent(outcome.probability)}</strong>
+                      <small>{formatMarketPrice(outcome.probability)}</small>
+                    </article>
+                  ))}
+                </div>
+
+                {selectedEvent.usFiltered && tradableMarkets.length === 0 ? (
+                  <p className="empty-state">No markets are currently available via your connected Polymarket US API key.</p>
+                ) : null}
+                {selectedEvent.usFiltered && tradableMarkets.length > 0 && visibleMarkets.length === 0 ? (
+                  <p className="empty-state">Markets exist, but none are live-priced yet. Trading opens once the market is live.</p>
+                ) : null}
+              </>
+            ) : null}
+          </section>
         </aside>
 
         <aside className="dashboard-rail dashboard-rail-wide">
@@ -1712,18 +2113,43 @@ export default function App() {
                 <p className="eyebrow">AI Recommendations</p>
                 <h2>Decision Engine</h2>
               </div>
-              <span className="market-chip">{currentRecommendation ? decisionEngine.action.toUpperCase() : 'IDLE'}</span>
+              <div className="trade-heading-chips">
+                <span className={recommendationSource.className} title={recommendationSource.detail}>{recommendationSource.label}</span>
+                <span className="market-chip">{currentRecommendation ? decisionEngine.action.toUpperCase() : 'IDLE'}</span>
+              </div>
             </div>
 
+            <div className="panel-scroll-body ai-panel-scroll">
             {currentRecommendation ? (
               <>
                 <div className="decision-highlight ai-primary-card ai-subsection">
                   <span>Current recommendation</span>
-                  <strong>{recommendationHeadline}</strong>
-                  <p>
-                    Confidence {formatPercent(currentRecommendation.combinedConfidence)} · EV {formatSignedPercent(recommendationExpectedValue)} · Edge {formatSignedPercent(currentRecommendation.edge)}
-                  </p>
-                  <p>{currentRecommendation.thesis ?? 'No model thesis available yet for this event.'}</p>
+                  <strong>{recommendationActionLabel}</strong>
+                  <p className="recommendation-market-copy">{recommendationHeadline}</p>
+                  <div className="decision-rationale-grid compact-preview-grid recommendation-summary-grid">
+                    <article>
+                      <span className="label-with-tooltip" data-tooltip="Overall confidence in this recommendation after combining the sports model, market behavior, and agreement checks." tabIndex={0}>Confidence</span>
+                      <strong>{formatPercent(currentRecommendation.combinedConfidence)}</strong>
+                    </article>
+                    <article>
+                      <span className="label-with-tooltip" data-tooltip="Estimated value versus the current market price. Higher positive expected value means the recommendation looks more favorable." tabIndex={0}>Expected Value</span>
+                      <strong>{formatSignedPercent(recommendationExpectedValue)}</strong>
+                    </article>
+                    <article>
+                      <span className="label-with-tooltip" data-tooltip="The gap between the model's probability and the current market probability for this outcome." tabIndex={0}>Edge</span>
+                      <strong>{formatSignedPercent(currentRecommendation.edge)}</strong>
+                    </article>
+                  </div>
+                  <div className="market-chip-row recommendation-source-row">
+                    <span
+                      className={recommendationSource.className}
+                      title={recommendationSource.detail === 'sports model'
+                        ? 'This recommendation is driven by the sports model layer for this matchup.'
+                        : 'This recommendation is being driven by market pricing without sports-model support.'}
+                    >
+                      {recommendationSource.detail}
+                    </span>
+                  </div>
                 </div>
 
                 {recommendedMarket ? (
@@ -1849,31 +2275,188 @@ export default function App() {
                   </div>
                   <div className="decision-rationale-grid compact-preview-grid">
                     <article>
-                      <span>Combined Confidence</span>
+                      <span className="label-with-tooltip" data-tooltip="Overall confidence after combining the sports model, market data, and agreement checks." tabIndex={0}>Combined Confidence</span>
                       <strong>{formatPercent(currentRecommendation.combinedConfidence)}</strong>
                     </article>
                     <article>
-                      <span>Expected Value</span>
+                      <span className="label-with-tooltip" data-tooltip="Estimated edge versus the current market price. Higher positive expected value means the recommendation looks more favorable." tabIndex={0}>Expected Value</span>
                       <strong>{formatSignedPercent(recommendationExpectedValue)}</strong>
                     </article>
                     <article>
-                      <span>Model Probability</span>
+                      <span className="label-with-tooltip" data-tooltip="The model's probability estimate for the recommended outcome before your trade sizing is applied." tabIndex={0}>Model Probability</span>
                       <strong>{formatPercent(currentRecommendation.modelProbability)}</strong>
                     </article>
                     <article>
-                      <span>Agreement</span>
+                      <span className="label-with-tooltip" data-tooltip="Whether the live market and the model are pointing in the same direction for this recommendation." tabIndex={0}>Agreement</span>
                       <strong>{currentRecommendation.agreementWithModel ? 'Aligned' : 'Divergent'}</strong>
                     </article>
                   </div>
-                  <p className="terminal-copy">{currentRecommendation.keyRisk ?? 'No key risk summary provided.'}</p>
-                  {currentRecommendation.reasons?.length ? (
-                    <ul className="reason-list compact-reason-list">
-                      {currentRecommendation.reasons.map((reason) => (
-                        <li key={reason}>{reason}</li>
-                      ))}
-                    </ul>
-                  ) : null}
                 </section>
+
+                {recommendedSportsOutcome && recommendedModelOutcome ? (
+                  <section className="panel-card terminal-card compact-card ai-reasoning-card">
+                    <div className="panel-heading">
+                      <p className="eyebrow">Sports Pricing</p>
+                      <h2>Why This Team</h2>
+                    </div>
+                    <div className="decision-rationale-grid compact-preview-grid">
+                      <article>
+                        <span className="label-with-tooltip" data-tooltip="The live Polymarket probability for this outcome right now." tabIndex={0}>Market Price</span>
+                        <strong>{formatPercent(currentRecommendation.currentProbability)}</strong>
+                      </article>
+                      <article>
+                        <span className="label-with-tooltip" data-tooltip="The sports-only estimate after calibration. This is the cleaner pre-market model view to compare against the live market." tabIndex={0}>Sports Model</span>
+                        <strong>{formatPercent(recommendedSportsOutcome.fairProbability)}</strong>
+                      </article>
+                      <article>
+                        <span className="label-with-tooltip" data-tooltip="The final probability after blending the sports model with live market behavior and market quality signals." tabIndex={0}>Final Blended Model</span>
+                        <strong>{formatPercent(recommendedModelOutcome.estimatedProbability)}</strong>
+                      </article>
+                      <article>
+                        <span className="label-with-tooltip" data-tooltip="How reliable the sports model believes this matchup estimate is. Higher confidence means the model sees a cleaner signal." tabIndex={0}>Sports Confidence</span>
+                        <strong>{formatPercent(recommendedSportsOutcome.modelConfidence)}</strong>
+                      </article>
+                    </div>
+                  </section>
+                ) : null}
+
+                {recommendedStarterContext ? (
+                  <section className="panel-card terminal-card compact-card ai-reasoning-card">
+                    <div className="panel-heading">
+                      <p className="eyebrow">MLB Starter Context</p>
+                      <h2>Probable Starters</h2>
+                    </div>
+                    <div className="decision-rationale-grid compact-preview-grid">
+                      <article>
+                        <span>Starter Source</span>
+                        <strong>{recommendedStarterContext.source ?? 'n/a'}</strong>
+                      </article>
+                      <article>
+                        <span>Starter Signal</span>
+                        <strong>{formatSignedDecimal(recommendedStarterContext.diff)}</strong>
+                      </article>
+                      <article>
+                        <span>Home Starter</span>
+                        <strong>{formatStarterSummary(recommendedStarterContext.home)}</strong>
+                      </article>
+                      <article>
+                        <span>Away Starter</span>
+                        <strong>{formatStarterSummary(recommendedStarterContext.away)}</strong>
+                      </article>
+                    </div>
+                    <div className="operator-notes-copy">
+                      <p>
+                        Home recent form: {recommendedStarterContext.recentForm?.home
+                          ? `${recommendedStarterContext.recentForm.home.startCount} starts, ${formatSignedDecimal(recommendedStarterContext.recentForm.home.decayedScoreDiff)} score diff, ${formatPercent(recommendedStarterContext.recentForm.home.decayedWinRate)}`
+                          : 'n/a'}
+                      </p>
+                      <p>
+                        Away recent form: {recommendedStarterContext.recentForm?.away
+                          ? `${recommendedStarterContext.recentForm.away.startCount} starts, ${formatSignedDecimal(recommendedStarterContext.recentForm.away.decayedScoreDiff)} score diff, ${formatPercent(recommendedStarterContext.recentForm.away.decayedWinRate)}`
+                          : 'n/a'}
+                      </p>
+                    </div>
+                  </section>
+                ) : null}
+
+                {eventIntelligence ? (
+                  <section className="panel-card terminal-card compact-card ai-reasoning-card">
+                    <div className="panel-heading">
+                      <p className="eyebrow">Live Feed</p>
+                      <h2>News And Game Context</h2>
+                    </div>
+                    <div className="decision-rationale-grid compact-preview-grid">
+                      <article>
+                        <span>League</span>
+                        <strong>{eventIntelligence.league}</strong>
+                      </article>
+                      <article>
+                        <span>Game Status</span>
+                        <strong>{eventIntelligence.gameFeed?.status ?? 'n/a'}</strong>
+                      </article>
+                      <article>
+                        <span>Game Detail</span>
+                        <strong>{eventIntelligence.gameFeed?.detail ?? 'n/a'}</strong>
+                      </article>
+                      <article>
+                        <span>Player Mentions</span>
+                        <strong>{eventIntelligence.playerMentions?.length ?? 0}</strong>
+                      </article>
+                      <article>
+                        <span>Social Posts</span>
+                        <strong>{eventIntelligence.socialPosts?.length ?? 0}</strong>
+                      </article>
+                    </div>
+                    {eventIntelligence.gameFeed ? (
+                      <div className="operator-notes-copy">
+                        <p>{eventIntelligence.gameFeed.name ?? 'Live game feed unavailable'}</p>
+                        {(eventIntelligence.gameFeed.competitors ?? []).map((competitor) => (
+                          <p key={`${competitor.teamId}-${competitor.homeAway}`}>
+                            {competitor.teamName}: score {competitor.score ?? 'n/a'} | record {competitor.record ?? 'n/a'} | {competitor.homeAway ?? 'n/a'}
+                          </p>
+                        ))}
+                      </div>
+                    ) : null}
+                    {(eventIntelligence.articles ?? []).length > 0 ? (
+                      <div className="operator-notes-copy">
+                        {eventIntelligence.articles.slice(0, 5).map((article) => (
+                          <p key={article.id ?? article.headline}>
+                            [{formatImpactScore(article.impactScore)}] {article.headline}: {article.description ?? 'No summary'}
+                          </p>
+                        ))}
+                      </div>
+                    ) : null}
+                    {(eventIntelligence.socialPosts ?? []).length > 0 ? (
+                      <div className="operator-notes-copy">
+                        {eventIntelligence.socialPosts.slice(0, 4).map((post) => (
+                          <p key={post.id ?? post.headline}>
+                            [{String(post.provider ?? 'social').toUpperCase()} {formatImpactScore(post.impactScore)}] {post.headline}
+                          </p>
+                        ))}
+                      </div>
+                    ) : null}
+                  </section>
+                ) : null}
+
+                {selectedSportsProbabilityBreakdown.length > 0 ? (
+                  <section className="panel-card terminal-card compact-card ai-reasoning-card">
+                    <div className="panel-heading">
+                      <p className="eyebrow">Selected Market</p>
+                      <h2>Sports Probability Breakdown</h2>
+                    </div>
+                    <div className="sports-breakdown-list">
+                      {selectedSportsProbabilityBreakdown.map((outcome) => (
+                        <section key={outcome.label} className="sports-breakdown-row">
+                          <div className="sports-breakdown-row-header">
+                            <h3>{outcome.label}</h3>
+                          </div>
+                          <div className="decision-rationale-grid compact-preview-grid sports-breakdown-grid">
+                            <article>
+                              <span className="label-with-tooltip" data-tooltip="The live market probability for this team right now." tabIndex={0}>Market</span>
+                              <strong>{formatPercent(outcome.marketProbability)}</strong>
+                            </article>
+                            <article>
+                              <span className="label-with-tooltip" data-tooltip="The raw sports-only estimate before calibration." tabIndex={0}>Raw Model</span>
+                              <strong>{formatPercent(outcome.rawSportsProbability)}</strong>
+                            </article>
+                            <article>
+                              <span className="label-with-tooltip" data-tooltip="The calibrated sports model after historical reliability adjustments." tabIndex={0}>Calibrated</span>
+                              <strong>{formatPercent(outcome.calibratedSportsProbability)}</strong>
+                            </article>
+                            <article>
+                              <span className="label-with-tooltip" data-tooltip="The final blended estimate after combining sports and market context." tabIndex={0}>Final</span>
+                              <strong>{formatPercent(outcome.finalModelProbability)}</strong>
+                            </article>
+                            <article>
+                              <span className="label-with-tooltip" data-tooltip="The difference between the final model and the current market price." tabIndex={0}>Edge</span>
+                              <strong>{formatSignedPercent(outcome.edge)}</strong>
+                            </article>
+                          </div>
+                        </section>
+                      ))}
+                    </div>
+                  </section>
+                ) : null}
               </>
             ) : (
               <p className="empty-state">Run the decision engine to populate AI recommendations.</p>
@@ -1899,6 +2482,7 @@ export default function App() {
                 ) : null}
               </section>
             ) : null}
+            </div>
           </section>
         </aside>
       </section>
@@ -1911,18 +2495,7 @@ export default function App() {
               <h2>Trade Center</h2>
             </div>
             <div className="action-row">
-              <span className="market-chip">{activeTradeIntents.length} tracking</span>
-              <span className="market-chip">{tradeHistory.length} saved</span>
-              <span className="market-chip">{filteredTradeHistory.length} shown</span>
               <span className="market-chip market-chip-muted">Last polled {lastPolledAge}</span>
-              <button
-                type="button"
-                className="secondary-button secondary-button-muted"
-                onClick={() => void handlePollActivePositions()}
-                disabled={activeTradeIntents.length === 0 || isPollingTracking}
-              >
-                {isPollingTracking ? 'Polling...' : 'Poll Now'}
-              </button>
             </div>
           </div>
 
@@ -1930,20 +2503,20 @@ export default function App() {
             <button
               type="button"
               role="tab"
-              aria-selected={tradeCenterFilter === 'all'}
-              className={tradeCenterFilter === 'all' ? 'filter-chip filter-chip-active' : 'filter-chip'}
-              onClick={() => setTradeCenterFilter('all')}
-            >
-              All
-            </button>
-            <button
-              type="button"
-              role="tab"
               aria-selected={tradeCenterFilter === 'tracking'}
               className={tradeCenterFilter === 'tracking' ? 'filter-chip filter-chip-active' : 'filter-chip'}
               onClick={() => setTradeCenterFilter('tracking')}
             >
-              Tracking
+              Active
+            </button>
+            <button
+              type="button"
+              role="tab"
+              aria-selected={tradeCenterFilter === 'draft'}
+              className={tradeCenterFilter === 'draft' ? 'filter-chip filter-chip-active' : 'filter-chip'}
+              onClick={() => setTradeCenterFilter('draft')}
+            >
+              Drafts
             </button>
             <button
               type="button"
@@ -1956,17 +2529,16 @@ export default function App() {
             </button>
           </div>
 
-          {tradeHistory.length === 0 ? (
-            <p className="empty-state">No confirmed trade intents yet.</p>
-          ) : filteredTradeHistory.length === 0 ? (
-            <p className="empty-state">No trade intents match the selected filter.</p>
-          ) : (
-            <div className="trade-history-list terminal-list trade-center-list">
-              {filteredTradeHistory.map((intent) => {
+          <div className="panel-scroll-body trade-center-scroll">
+            {tradeHistory.length === 0 ? (
+              <p className="empty-state">No confirmed trade intents yet.</p>
+            ) : filteredTradeHistory.length === 0 ? (
+              <p className="empty-state">No trade intents match the selected filter.</p>
+            ) : (
+              <div className="trade-history-list terminal-list trade-center-list">
+                {filteredTradeHistory.map((intent) => {
                 const precheckMessage = getExecutePrecheckMessage(intent);
                 const isTracking = intent.status === 'tracking';
-                const isEditingActiveTrade = editingActiveTradeId === intent.id;
-                const activeTradeDraft = activeTradeRiskInputs[intent.id] ?? {};
                 const currentProbability = isTracking
                   ? (intent.monitoring?.currentProbability ?? null)
                   : (intent.recommendation?.currentProbability ?? null);
@@ -1976,9 +2548,8 @@ export default function App() {
                   ? 'sync-warning'
                   : monitoringState;
                 const isVerifiedFilledPosition = hasApiVerifiedFilledPosition(intent);
-                const driftDirection = intent?.position?.entryIntent === 'ORDER_INTENT_BUY_SHORT' ? -1 : 1;
                 const drift = typeof currentProbability === 'number' && typeof entryProbability === 'number'
-                  ? (currentProbability - entryProbability) * driftDirection
+                  ? (currentProbability - entryProbability)
                   : null;
                 const unrealizedPnl = estimateTrackedPnl(intent, currentProbability, entryProbability);
                 const stopLossProbability = intent.monitoring?.stopLossProbability ?? null;
@@ -2001,9 +2572,11 @@ export default function App() {
                     : null,
                   0.01
                 );
+                const monitoringNotes = String(intent.monitoring?.notes ?? '').trim();
+                const liveProbabilityHistory = trackedProbabilityHistory[intent.id] ?? [];
 
-                return (
-                  <article key={intent.id} className="trade-history-item trade-center-item">
+                  return (
+                    <article key={intent.id} className="trade-history-item trade-center-item">
                     <div className="panel-heading panel-heading-inline">
                       <div>
                         <p className="eyebrow">{intent.eventTitle ?? intent.eventSlug}</p>
@@ -2019,62 +2592,64 @@ export default function App() {
                       </div>
                     </div>
 
-                    <div className="trade-preview-grid">
+                    <div className={isTracking ? 'tracked-trade-layout' : 'trade-preview-grid'}>
                       {isTracking ? (
                         <>
-                          <article className={getTradeMetricClass(probabilityTone)}>
-                            <span>Current probability</span>
-                            <strong>{formatPercent(currentProbability)}</strong>
-                          </article>
-                          <article className={getTradeMetricClass('ok')}>
-                            <span>Entry probability</span>
-                            <strong>{formatPercent(entryProbability)}</strong>
-                          </article>
-                          <article className={getTradeMetricClass(driftTone)}>
-                            <span>Drift from entry</span>
-                            <strong>{formatSignedPercent(drift)}</strong>
-                          </article>
-                          <article className={getTradeMetricClass(pnlTone)}>
-                            <span>Unrealized P/L</span>
-                            <strong className={pnlClassName}>
-                              {formatSignedCurrency(unrealizedPnl.dollars)}
-                              {typeof unrealizedPnl.percent === 'number' ? ` (${formatSignedPercent(unrealizedPnl.percent)})` : ''}
-                            </strong>
-                          </article>
-                          <article className={getTradeMetricClass('bad')}>
-                            <span>Stop-loss</span>
-                            <strong>{formatPercent(stopLossProbability)}</strong>
-                          </article>
-                          <article className={getTradeMetricClass('good')}>
-                            <span>Take-profit</span>
-                            <strong>{formatPercent(takeProfitProbability)}</strong>
-                          </article>
-                          <article className={getTradeMetricClass('ok')}>
-                            <span>Last evaluation</span>
-                            <strong>{formatDateTime(intent.monitoring?.lastEvaluationAt)}</strong>
-                          </article>
-                          <article className={getTradeMetricClass('ok')}>
-                            <span>Last Polymarket Quote</span>
-                            <strong>{formatDateTime(intent.monitoring?.lastPolymarketQuoteAt)}</strong>
-                          </article>
-                          <article className={getTradeMetricClass('ok')}>
-                            <span>Entry order</span>
-                            <strong>{formatOrderId(intent.executionRequest?.venueOrderId)}</strong>
-                          </article>
-                          <article className={getTradeMetricClass('good')}>
-                            <span>Shares filled</span>
-                            <strong>{typeof intent.position?.sharesFilled === 'number' ? intent.position.sharesFilled.toFixed(2) : 'n/a'}</strong>
-                          </article>
-                          <article className={getTradeMetricClass('ok')}>
-                            <span>Cost basis</span>
-                            <strong>{formatCurrency(costBasis)}</strong>
-                          </article>
-                          <article className={getTradeMetricClass(currentValueTone)}>
-                            <span>Current value</span>
-                            <strong>{typeof currentValue === 'number'
-                              ? formatCurrency(currentValue)
-                              : 'n/a'}</strong>
-                          </article>
+                          <div className="tracked-trade-summary">
+                            <div className="tracked-trade-summary-list">
+                              <article className={`tracked-trade-summary-row ${getTradeMetricClass(probabilityTone)}`}>
+                                <span>Current</span>
+                                <strong>{formatPercent(currentProbability)}</strong>
+                              </article>
+                              <article className={`tracked-trade-summary-row ${getTradeMetricClass('ok')}`}>
+                                <span>Entry</span>
+                                <strong>{formatPercent(entryProbability)}</strong>
+                              </article>
+                              <article className={`tracked-trade-summary-row ${getTradeMetricClass(driftTone)}`}>
+                                <span>Drift</span>
+                                <strong>{formatSignedPercent(drift)}</strong>
+                              </article>
+                              <article className={`tracked-trade-summary-row ${getTradeMetricClass(pnlTone)}`}>
+                                <span>P/L</span>
+                                <strong className={pnlClassName}>
+                                  {formatSignedCurrency(unrealizedPnl.dollars)}
+                                  {typeof unrealizedPnl.percent === 'number' ? ` (${formatSignedPercent(unrealizedPnl.percent)})` : ''}
+                                </strong>
+                              </article>
+                              <article className={`tracked-trade-summary-row ${getTradeMetricClass('bad')}`}>
+                                <span>Stop</span>
+                                <strong>{formatPercent(stopLossProbability)}</strong>
+                              </article>
+                              <article className={`tracked-trade-summary-row ${getTradeMetricClass('good')}`}>
+                                <span>Take</span>
+                                <strong>{formatPercent(takeProfitProbability)}</strong>
+                              </article>
+                              <article className={`tracked-trade-summary-row ${getTradeMetricClass('ok')}`}>
+                                <span>Shares</span>
+                                <strong>{typeof intent.position?.sharesFilled === 'number' ? intent.position.sharesFilled.toFixed(2) : 'n/a'}</strong>
+                              </article>
+                              <article className={`tracked-trade-summary-row ${getTradeMetricClass(currentValueTone)}`}>
+                                <span>Value</span>
+                                <strong>{typeof currentValue === 'number' ? formatCurrency(currentValue) : 'n/a'}</strong>
+                              </article>
+                            </div>
+                            <div className="tracked-trade-meta-row">
+                              <span className="market-chip market-chip-muted">Basis {formatCurrency(costBasis)}</span>
+                              <span className="market-chip market-chip-muted">Quote {formatDateTime(intent.monitoring?.lastPolymarketQuoteAt)}</span>
+                              <span className="market-chip market-chip-muted">Order {formatOrderId(intent.executionRequest?.venueOrderId)}</span>
+                            </div>
+                          </div>
+                          <div className="tracked-trade-chart-panel">
+                            <TrackingProbabilityChart
+                              history={liveProbabilityHistory}
+                              currentProbability={currentProbability}
+                              entryProbability={entryProbability}
+                              stopLossProbability={stopLossProbability}
+                              takeProfitProbability={takeProfitProbability}
+                              monitoringState={monitoringState}
+                              lastQuoteAt={intent.monitoring?.lastPolymarketQuoteAt}
+                            />
+                          </div>
                         </>
                       ) : (
                         <>
@@ -2106,64 +2681,39 @@ export default function App() {
                       )}
                     </div>
 
-                    {isTracking ? (
-                      <p className="trade-status-copy">{intent.monitoring?.notes ?? 'Monitoring live price movement.'}</p>
-                    ) : (
+                    {!isTracking ? (
                       <p className="trade-status-copy">
                         {intent.executionRequest?.readyForExecution
                           ? `Request ready · ${intent.executionRequest.orderType} · ${intent.executionRequest.side}`
                           : precheckMessage ?? 'Intent is ready for review.'}
                       </p>
-                    )}
+                    ) : null}
+
+                    {isTracking && monitoringNotes ? (
+                      <p className={monitoringStateDisplay.includes('failed') ? 'trade-monitoring-note trade-monitoring-note-alert' : 'trade-monitoring-note'}>
+                        {monitoringNotes}
+                      </p>
+                    ) : null}
 
                     <div className="trade-history-actions">
                       {isTracking ? (
                         <>
-                          {isEditingActiveTrade ? (
-                            <>
-                              <button
-                                type="button"
-                                className="secondary-button"
-                                onClick={() => void handleSaveActiveTradeRisk(intent)}
-                                disabled={isMutatingHistory}
-                              >
-                                Save Targets
-                              </button>
-                              <button
-                                type="button"
-                                className="ghost-button"
-                                onClick={handleCancelEditingActiveTrade}
-                                disabled={isMutatingHistory}
-                              >
-                                Cancel
-                              </button>
-                            </>
-                          ) : (
-                            <button
-                              type="button"
-                              className="secondary-button"
-                              onClick={() => handleStartEditingActiveTrade(intent)}
-                              disabled={isMutatingHistory}
-                            >
-                              Edit Active Trade
-                            </button>
-                          )}
+                          <button
+                            type="button"
+                            className="secondary-button"
+                            onClick={() => handleStartEditingActiveTrade(intent)}
+                            disabled={isMutatingHistory}
+                          >
+                            Edit Active Trade
+                          </button>
                           <button
                             type="button"
                             className="secondary-button"
                             onClick={() => void handleSellTrackedIntent(intent)}
                             disabled={isMutatingHistory}
-                            title="Sell all shares and close this position now."
+                            title="Sell all shares via Polymarket US and close this trade when the venue fill completes."
                           >
-                            Cash Out
-                          </button>
-                          <button
-                            type="button"
-                            className="ghost-button"
-                            onClick={() => void handleStopTrackedIntent(intent)}
-                            disabled={isMutatingHistory}
-                          >
-                            Stop Trade
+                            Cash Out & Stop
                           </button>
                         </>
                       ) : (
@@ -2191,40 +2741,12 @@ export default function App() {
                         </>
                       )}
                     </div>
-
-                    {isTracking && isEditingActiveTrade ? (
-                      <div className="trade-input-row compact-input-grid">
-                        <label>
-                          <span>Stop-loss</span>
-                          <input
-                            type="number"
-                            min="0.01"
-                            max="0.99"
-                            step="0.01"
-                            value={activeTradeDraft.stopLossProbability}
-                            onChange={(event) => handleActiveTradeRiskInputChange(intent.id, 'stopLossProbability', event.target.value)}
-                            disabled={isMutatingHistory}
-                          />
-                        </label>
-                        <label>
-                          <span>Take-profit</span>
-                          <input
-                            type="number"
-                            min="0.01"
-                            max="0.99"
-                            step="0.01"
-                            value={activeTradeDraft.takeProfitProbability}
-                            onChange={(event) => handleActiveTradeRiskInputChange(intent.id, 'takeProfitProbability', event.target.value)}
-                            disabled={isMutatingHistory}
-                          />
-                        </label>
-                      </div>
-                    ) : null}
-                  </article>
-                );
-              })}
-            </div>
-          )}
+                    </article>
+                  );
+                })}
+              </div>
+            )}
+          </div>
         </section>
       </section>
 
@@ -2307,6 +2829,89 @@ export default function App() {
               </button>
               <button type="button" className="ghost-button" onClick={handleCloseTradeModal}>
                 Keep Editing
+              </button>
+            </div>
+          </section>
+        </div>
+      ) : null}
+
+      {editingActiveTrade ? (
+        <div className="modal-backdrop" role="presentation" onClick={handleCancelEditingActiveTrade}>
+          <section
+            className="modal-card active-trade-edit-modal"
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="active-trade-edit-title"
+            onClick={(event) => event.stopPropagation()}
+          >
+            <div className="panel-heading panel-heading-inline">
+              <div>
+                <p className="eyebrow">Active Trade</p>
+                <h2 id="active-trade-edit-title">Edit Stop-Loss And Take-Profit</h2>
+              </div>
+              <button type="button" className="ghost-button" onClick={handleCancelEditingActiveTrade}>
+                Close
+              </button>
+            </div>
+
+            <p className="modal-copy">
+              Update the live risk thresholds for {editingActiveTrade.outcomeLabel} in {editingActiveTrade.marketQuestion}.
+            </p>
+
+            <div className="trade-preview-grid">
+              <article>
+                <span>Current probability</span>
+                <strong>{formatPercent(editingActiveTrade.monitoring?.currentProbability)}</strong>
+              </article>
+              <article>
+                <span>Entry probability</span>
+                <strong>{formatPercent(getTrackedEntryProbability(editingActiveTrade))}</strong>
+              </article>
+            </div>
+
+            <div className="trade-input-row compact-input-grid">
+              <label>
+                <span>Stop-loss</span>
+                <input
+                  type="number"
+                  min="0.01"
+                  max="0.99"
+                  step="0.01"
+                  value={activeTradeRiskInputs[editingActiveTrade.id]?.stopLossProbability ?? ''}
+                  onChange={(event) => handleActiveTradeRiskInputChange(editingActiveTrade.id, 'stopLossProbability', event.target.value)}
+                  disabled={isMutatingHistory}
+                />
+              </label>
+              <label>
+                <span>Take-profit</span>
+                <input
+                  type="number"
+                  min="0.01"
+                  max="0.99"
+                  step="0.01"
+                  value={activeTradeRiskInputs[editingActiveTrade.id]?.takeProfitProbability ?? ''}
+                  onChange={(event) => handleActiveTradeRiskInputChange(editingActiveTrade.id, 'takeProfitProbability', event.target.value)}
+                  disabled={isMutatingHistory}
+                />
+              </label>
+            </div>
+
+            <div className="modal-actions">
+              <button
+                type="button"
+                className="secondary-button"
+                onClick={() => void handleSaveActiveTradeRisk(editingActiveTrade)}
+                disabled={isMutatingHistory}
+              >
+                {isMutatingHistory ? 'Saving...' : 'Save Targets'}
+              </button>
+              <button
+                type="button"
+                className="ghost-button"
+                onClick={handleCancelEditingActiveTrade}
+                disabled={isMutatingHistory}
+              >
+                Cancel
               </button>
             </div>
           </section>

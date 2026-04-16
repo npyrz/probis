@@ -2,6 +2,7 @@ import axios from 'axios';
 import nacl from 'tweetnacl';
 
 const US_MARKETS_CACHE_TTL_MS = 60_000;
+const QUOTE_REQUEST_TIMEOUT_MS = 2_500;
 const usMarketsCache = new Map();
 const MARKET_MATCH_STOP_WORDS = new Set([
   'the',
@@ -59,10 +60,10 @@ function createAuthSignature({ timestamp, method, path, secretKey }) {
   return Buffer.from(signature).toString('base64');
 }
 
-function createPolymarketUsClient(env) {
+function createPolymarketUsClient(env, timeout = 30000) {
   return axios.create({
     baseURL: env.polymarketUsBaseUrl,
-    timeout: 30000,
+    timeout,
     headers: {
       'Content-Type': 'application/json'
     }
@@ -128,28 +129,108 @@ function extractNumericQuantity(candidate) {
   return null;
 }
 
+function extractSignedQuantity(candidate) {
+  if (!candidate || typeof candidate !== 'object') {
+    return null;
+  }
+
+  const directKeys = [
+    'netPosition',
+    'qtyAvailable',
+    'quantity',
+    'qty',
+    'size',
+    'shares',
+    'position',
+    'netQuantity',
+    'availableQuantity'
+  ];
+
+  for (const key of directKeys) {
+    const numeric = parseNumber(candidate[key]);
+    if (typeof numeric === 'number' && numeric !== 0) {
+      return numeric;
+    }
+  }
+
+  const nestedKeys = ['quantity', 'qty', 'size', 'shares', 'position', 'netPosition'];
+
+  for (const key of nestedKeys) {
+    const numeric = parseNumber(candidate[key]?.value);
+    if (typeof numeric === 'number' && numeric !== 0) {
+      return numeric;
+    }
+  }
+
+  return null;
+}
+
+function extractPositionCashValue(position) {
+  if (!position || typeof position !== 'object') {
+    return null;
+  }
+
+  return parseNumber(
+    position.cashValue?.value
+    ?? position.cashValue
+    ?? position.marketValue?.value
+    ?? position.marketValue
+    ?? position.notionalValue?.value
+    ?? position.notionalValue
+  );
+}
+
+function summarizePortfolioPositions(positions) {
+  const summarizedPositions = (Array.isArray(positions) ? positions : [])
+    .map((position) => {
+      const signedQuantity = extractSignedQuantity(position);
+
+      if (!Number.isFinite(signedQuantity) || signedQuantity === 0) {
+        return null;
+      }
+
+      return {
+        marketSlug: getPositionMarketSlug(position),
+        outcome: getPositionOutcome(position),
+        quantity: Math.abs(signedQuantity),
+        signedQuantity,
+        side: signedQuantity > 0 ? 'long' : 'short',
+        cashValue: extractPositionCashValue(position),
+        avgPrice: parseNumber(position.avgPx?.value ?? position.avgPx),
+        updatedAt: typeof position.updateTime === 'string' ? position.updateTime : null
+      };
+    })
+    .filter(Boolean);
+
+  const totalCashValue = summarizedPositions.reduce((sum, position) => {
+    return typeof position.cashValue === 'number' ? sum + position.cashValue : sum;
+  }, 0);
+
+  return {
+    positions: summarizedPositions,
+    totalCashValue
+  };
+}
+
 function getPortfolioPositions(payload) {
   const positions = [];
 
-  if (Array.isArray(payload)) {
-    positions.push(...payload);
-  }
+  const pushPositionCollection = (value) => {
+    if (Array.isArray(value)) {
+      positions.push(...value);
+      return;
+    }
 
-  if (Array.isArray(payload?.positions)) {
-    positions.push(...payload.positions);
-  }
+    if (value && typeof value === 'object') {
+      positions.push(...Object.values(value));
+    }
+  };
 
-  if (Array.isArray(payload?.availablePositions)) {
-    positions.push(...payload.availablePositions);
-  }
-
-  if (Array.isArray(payload?.data?.positions)) {
-    positions.push(...payload.data.positions);
-  }
-
-  if (Array.isArray(payload?.data?.availablePositions)) {
-    positions.push(...payload.data.availablePositions);
-  }
+  pushPositionCollection(payload);
+  pushPositionCollection(payload?.positions);
+  pushPositionCollection(payload?.availablePositions);
+  pushPositionCollection(payload?.data?.positions);
+  pushPositionCollection(payload?.data?.availablePositions);
 
   return positions;
 }
@@ -194,6 +275,72 @@ function pickUsdBalance(balances) {
   return balances.find((balance) => String(balance?.currency ?? '').toUpperCase() === 'USD')
     ?? balances[0]
     ?? null;
+}
+
+function extractUsdAccountSnapshot(usdBalance) {
+  if (!usdBalance || typeof usdBalance !== 'object') {
+    return null;
+  }
+
+  return {
+    totalAccountBudget: parseNumber(
+      usdBalance.currentBalance
+      ?? usdBalance.balance
+      ?? usdBalance.balance?.value
+    ),
+    buyingPower: parseNumber(
+      usdBalance.buyingPower
+      ?? usdBalance.availableBalance
+      ?? usdBalance.available
+      ?? usdBalance.available?.value
+    ),
+    assetNotional: parseNumber(
+      usdBalance.assetNotional
+      ?? usdBalance.assetValue
+      ?? usdBalance.assetValue?.value
+    ),
+    assetAvailable: parseNumber(
+      usdBalance.assetAvailable
+      ?? usdBalance.availableAsset
+      ?? usdBalance.availableAsset?.value
+    ),
+    pendingCredit: parseNumber(
+      usdBalance.pendingCredit
+      ?? usdBalance.pendingCredits
+      ?? usdBalance.pendingCredits?.value
+    ),
+    openOrders: parseNumber(
+      usdBalance.openOrders
+      ?? usdBalance.openOrderNotional
+      ?? usdBalance.openOrderNotional?.value
+    ),
+    unsettledFunds: parseNumber(
+      usdBalance.unsettledFunds
+      ?? usdBalance.unsettled
+      ?? usdBalance.unsettled?.value
+    ),
+    marginRequirement: parseNumber(
+      usdBalance.marginRequirement
+      ?? usdBalance.marginUsed
+      ?? usdBalance.marginUsed?.value
+    ),
+    budgetCurrency: String(usdBalance.currency ?? 'USD').toUpperCase(),
+    balanceLastUpdatedAt: typeof usdBalance.lastUpdated === 'string' && usdBalance.lastUpdated.trim().length > 0
+      ? usdBalance.lastUpdated
+      : null
+  };
+}
+
+async function fetchUsdAccountSnapshot(env) {
+  const path = '/v1/account/balances';
+  const client = createPolymarketUsClient(env);
+  const response = await client.get(path, {
+    headers: getSignedHeaders(env, 'GET', path)
+  });
+  const balances = getAccountBalances(response.data);
+  const usdBalance = pickUsdBalance(balances);
+
+  return extractUsdAccountSnapshot(usdBalance);
 }
 
 function getPositionOutcome(position) {
@@ -247,7 +394,7 @@ function getUsMarketsFromPayload(payload) {
   return [];
 }
 
-export async function fetchUsMarketsBySlug(env, slug, { includeClosed = true } = {}) {
+export async function fetchUsMarketsBySlug(env, slug, { includeClosed = true, timeoutMs = 30000 } = {}) {
   const normalizedSlug = String(slug ?? '').trim().toLowerCase();
 
   if (!normalizedSlug) {
@@ -259,7 +406,7 @@ export async function fetchUsMarketsBySlug(env, slug, { includeClosed = true } =
   }
 
   const path = '/v1/markets';
-  const client = createPolymarketUsClient(env);
+  const client = createPolymarketUsClient(env, timeoutMs);
   const candidateSlugs = [
     normalizedSlug,
     normalizedSlug.startsWith('aec-') ? normalizedSlug.slice(4) : `aec-${normalizedSlug}`
@@ -449,6 +596,10 @@ async function listUsMarkets(env, { limit = 200, maxPages = 20 } = {}) {
   });
 
   return collected;
+}
+
+export async function listUsActiveMarkets(env, options = {}) {
+  return listUsMarkets(env, options);
 }
 
 export async function getUsMarketSlugsForEvent(env, eventSlug) {
@@ -876,6 +1027,20 @@ function buildAggressiveSellLimitLadder(basePrice, floor = 0.001) {
   });
 }
 
+function resolveFallbackSellQuotePrice(orderIntent, outcomePrice) {
+  const normalizedOutcomePrice = normalizeLimitPrice(outcomePrice);
+
+  if (!normalizedOutcomePrice) {
+    return null;
+  }
+
+  if (orderIntent === 'ORDER_INTENT_SELL_SHORT') {
+    return clampLimitPrice(1 - normalizedOutcomePrice);
+  }
+
+  return normalizedOutcomePrice;
+}
+
 async function submitLimitBuyOrder(env, { marketSlug, orderIntent, amount, limitPrice }) {
   const limitQuantity = Number((amount / limitPrice).toFixed(4));
 
@@ -939,7 +1104,10 @@ async function submitLimitSellOrder(env, { marketSlug, orderIntent, shares, limi
 }
 
 async function resolveOutcomeMarketQuote(env, marketSlug, outcomeLabel) {
-  const markets = await fetchUsMarketsBySlug(env, marketSlug, { includeClosed: true });
+  const markets = await fetchUsMarketsBySlug(env, marketSlug, {
+    includeClosed: true,
+    timeoutMs: QUOTE_REQUEST_TIMEOUT_MS
+  });
   const market = markets.find((candidate) => String(candidate?.slug ?? '').toLowerCase() === String(marketSlug).toLowerCase())
     ?? markets[0]
     ?? null;
@@ -972,6 +1140,7 @@ async function resolveOutcomeMarketQuote(env, marketSlug, outcomeLabel) {
 
   return {
     resolvedMarketSlug: market.slug ?? marketSlug,
+    matchingIndex,
     outcomePrice
   };
 }
@@ -981,23 +1150,24 @@ export async function getLiveOutcomeProbabilityFromUsMarket(env, marketSlug, out
     return null;
   }
 
-  // Prefer BBO endpoint for real-time prices.
-  try {
-    const bboPrice = await fetchBboMidpointForOutcome(env, marketSlug, outcomeLabel);
+  const [bboResult, quoteResult] = await Promise.allSettled([
+    fetchBboForMarket(env, marketSlug),
+    resolveOutcomeMarketQuote(env, marketSlug, outcomeLabel)
+  ]);
 
-    if (typeof bboPrice === 'number') {
-      return bboPrice;
-    }
-  } catch {
-    // Fall through to market metadata.
+  const bboPrice = bboResult.status === 'fulfilled' && quoteResult.status === 'fulfilled'
+    ? getBboExecutablePriceForOutcome(bboResult.value, quoteResult.value.matchingIndex)
+    : null;
+
+  if (typeof bboPrice === 'number') {
+    return bboPrice;
   }
 
-  try {
-    const quote = await resolveOutcomeMarketQuote(env, marketSlug, outcomeLabel);
-    return typeof quote?.outcomePrice === 'number' ? quote.outcomePrice : null;
-  } catch {
-    return null;
+  if (quoteResult.status === 'fulfilled') {
+    return typeof quoteResult.value?.outcomePrice === 'number' ? quoteResult.value.outcomePrice : null;
   }
+
+  return null;
 }
 
 async function fetchBboForMarket(env, marketSlug) {
@@ -1007,54 +1177,62 @@ async function fetchBboForMarket(env, marketSlug) {
     return null;
   }
 
-  const encodedSlug = encodeURIComponent(normalizedSlug);
-  const path = `/v1/markets/${encodedSlug}/bbo`;
-  const client = createPolymarketUsClient(env);
+  const candidateSlugs = [
+    normalizedSlug,
+    normalizedSlug.startsWith('aec-') ? normalizedSlug.slice(4) : `aec-${normalizedSlug}`
+  ];
+  const dedupedCandidates = [...new Set(candidateSlugs.filter(Boolean))];
+  const client = createPolymarketUsClient(env, QUOTE_REQUEST_TIMEOUT_MS);
 
-  try {
-    const response = await client.get(path, {
-      headers: getSignedHeaders(env, 'GET', path)
-    });
+  for (const candidateSlug of dedupedCandidates) {
+    const encodedSlug = encodeURIComponent(candidateSlug);
+    const path = `/v1/markets/${encodedSlug}/bbo`;
 
-    return response.data ?? null;
-  } catch {
-    return null;
+    try {
+      const response = await client.get(path, {
+        headers: getSignedHeaders(env, 'GET', path)
+      });
+
+      return response.data ?? null;
+    } catch {
+      // Try the next candidate slug.
+    }
   }
+
+  return null;
 }
 
-async function fetchBboMidpointForOutcome(env, marketSlug, outcomeLabel) {
-  const bbo = await fetchBboForMarket(env, marketSlug);
+function getBboExecutablePriceForOutcome(bbo, outcomeIndex) {
+  const marketData = bbo?.marketData ?? bbo;
 
-  if (!bbo || typeof bbo !== 'object') {
+  if (!marketData || typeof marketData !== 'object') {
     return null;
   }
 
-  const bestBid = parseNumber(bbo.bestBid?.price?.value ?? bbo.bestBid?.price ?? bbo.bestBid ?? bbo.bid?.price?.value ?? bbo.bid?.price ?? bbo.bid);
-  const bestAsk = parseNumber(bbo.bestAsk?.price?.value ?? bbo.bestAsk?.price ?? bbo.bestAsk ?? bbo.ask?.price?.value ?? bbo.ask?.price ?? bbo.ask);
+  const bestBid = parseNumber(marketData.bestBid?.price?.value ?? marketData.bestBid?.price ?? marketData.bestBid?.value ?? marketData.bestBid ?? marketData.bid?.price?.value ?? marketData.bid?.price ?? marketData.bid);
+  const bestAsk = parseNumber(marketData.bestAsk?.price?.value ?? marketData.bestAsk?.price ?? marketData.bestAsk?.value ?? marketData.bestAsk ?? marketData.ask?.price?.value ?? marketData.ask?.price ?? marketData.ask);
 
-  let longPrice = null;
+  if (outcomeIndex === 1) {
+    if (typeof bestAsk === 'number' && bestAsk > 0) {
+      return normalizeLimitPrice(1 - bestAsk);
+    }
 
-  if (typeof bestBid === 'number' && typeof bestAsk === 'number' && bestBid > 0 && bestAsk > 0) {
-    longPrice = (bestBid + bestAsk) / 2;
-  } else if (typeof bestAsk === 'number' && bestAsk > 0) {
-    longPrice = bestAsk;
-  } else if (typeof bestBid === 'number' && bestBid > 0) {
-    longPrice = bestBid;
-  }
+    if (typeof bestBid === 'number' && bestBid > 0) {
+      return normalizeLimitPrice(1 - bestBid);
+    }
 
-  if (typeof longPrice !== 'number') {
     return null;
   }
 
-  // BBO always reports the long (YES) side price.
-  // For short (NO) outcomes, invert.
-  const normalized = normalizeOutcomeLabel(outcomeLabel);
-
-  if (normalized === 'no') {
-    return normalizeLimitPrice(1 - longPrice);
+  if (typeof bestBid === 'number' && bestBid > 0) {
+    return normalizeLimitPrice(bestBid);
   }
 
-  return normalizeLimitPrice(longPrice);
+  if (typeof bestAsk === 'number' && bestAsk > 0) {
+    return normalizeLimitPrice(bestAsk);
+  }
+
+  return null;
 }
 
 async function resolveOrderIntentsForOutcome(env, marketSlug, outcomeLabel) {
@@ -1279,8 +1457,17 @@ export async function getPolymarketUsTradingStatus(env) {
     secretKeyValid: Boolean(decodeSecretSeed(env.polymarketUsSecretKey)),
     authenticated: false,
     totalAccountBudget: null,
+    reportedCurrentBalance: null,
     buyingPower: null,
+    positionsCashValue: null,
+    assetNotional: null,
+    assetAvailable: null,
+    pendingCredit: null,
+    openOrders: null,
+    unsettledFunds: null,
+    marginRequirement: null,
     budgetCurrency: 'USD',
+    balanceLastUpdatedAt: null,
     error: null
   };
 
@@ -1292,37 +1479,39 @@ export async function getPolymarketUsTradingStatus(env) {
     return status;
   }
 
-  const path = '/v1/portfolio/positions';
-  const balancesPath = '/v1/account/balances';
-  const client = createPolymarketUsClient(env);
-
   try {
-    await client.get(path, {
-      headers: getSignedHeaders(env, 'GET', path)
-    });
-    status.authenticated = true;
+    const [snapshotResult, positionsResult] = await Promise.allSettled([
+      fetchUsdAccountSnapshot(env),
+      fetchPortfolioPositions(env)
+    ]);
+    status.authenticated = snapshotResult.status === 'fulfilled' || positionsResult.status === 'fulfilled';
 
-    try {
-      const balancesResponse = await client.get(balancesPath, {
-        headers: getSignedHeaders(env, 'GET', balancesPath)
-      });
-      const balances = getAccountBalances(balancesResponse.data);
-      const usdBalance = pickUsdBalance(balances);
+    if (snapshotResult.status === 'fulfilled' && snapshotResult.value) {
+      const snapshot = snapshotResult.value;
+      status.reportedCurrentBalance = snapshot.totalAccountBudget;
+      status.buyingPower = snapshot.buyingPower;
+      status.assetNotional = snapshot.assetNotional;
+      status.assetAvailable = snapshot.assetAvailable;
+      status.pendingCredit = snapshot.pendingCredit;
+      status.openOrders = snapshot.openOrders;
+      status.unsettledFunds = snapshot.unsettledFunds;
+      status.marginRequirement = snapshot.marginRequirement;
+      status.budgetCurrency = snapshot.budgetCurrency;
+      status.balanceLastUpdatedAt = snapshot.balanceLastUpdatedAt;
+      status.totalAccountBudget = snapshot.totalAccountBudget;
+    }
 
-      status.totalAccountBudget = parseNumber(
-        usdBalance?.currentBalance
-        ?? usdBalance?.balance
-        ?? usdBalance?.balance?.value
-      );
-      status.buyingPower = parseNumber(
-        usdBalance?.buyingPower
-        ?? usdBalance?.availableBalance
-        ?? usdBalance?.available
-        ?? usdBalance?.available?.value
-      );
-      status.budgetCurrency = String(usdBalance?.currency ?? 'USD').toUpperCase();
-    } catch {
-      // Keep status reachable/authenticated even if account balance endpoint is temporarily unavailable.
+    if (positionsResult.status === 'fulfilled') {
+      const portfolio = summarizePortfolioPositions(positionsResult.value);
+      status.positionsCashValue = portfolio.totalCashValue;
+
+      if (typeof status.buyingPower === 'number') {
+        status.totalAccountBudget = status.buyingPower + portfolio.totalCashValue;
+      }
+    }
+
+    if (snapshotResult.status === 'rejected' && positionsResult.status === 'rejected') {
+      status.error = getErrorMessage(snapshotResult.reason);
     }
   } catch (error) {
     status.error = getErrorMessage(error);
@@ -1337,8 +1526,18 @@ export async function getPolymarketUsAccountIdentity(env) {
     endpoint: env.polymarketUsBaseUrl,
     keyIdSuffix: env.polymarketUsKeyId ? String(env.polymarketUsKeyId).slice(-8) : null,
     authenticated: false,
+    totalAccountBudget: null,
+    reportedCurrentBalance: null,
     buyingPower: null,
+    positionsCashValue: null,
+    assetNotional: null,
+    assetAvailable: null,
+    pendingCredit: null,
+    openOrders: null,
+    unsettledFunds: null,
+    marginRequirement: null,
     budgetCurrency: 'USD',
+    balanceLastUpdatedAt: null,
     openPositionsCount: 0,
     openPositions: [],
     error: null
@@ -1349,48 +1548,44 @@ export async function getPolymarketUsAccountIdentity(env) {
   }
 
   try {
-    const [positions, balancesResponse] = await Promise.all([
+    const [positionsResult, snapshotResult] = await Promise.allSettled([
       fetchPortfolioPositions(env),
-      (async () => {
-        const path = '/v1/account/balances';
-        const client = createPolymarketUsClient(env);
-        return client.get(path, {
-          headers: getSignedHeaders(env, 'GET', path)
-        });
-      })()
+      fetchUsdAccountSnapshot(env)
     ]);
 
-    identity.authenticated = true;
+    identity.authenticated = positionsResult.status === 'fulfilled' || snapshotResult.status === 'fulfilled';
 
-    const balances = getAccountBalances(balancesResponse.data);
-    const usdBalance = pickUsdBalance(balances);
+    if (snapshotResult.status === 'fulfilled' && snapshotResult.value) {
+      identity.reportedCurrentBalance = snapshotResult.value.totalAccountBudget;
+      identity.totalAccountBudget = snapshotResult.value.totalAccountBudget;
+      identity.buyingPower = snapshotResult.value.buyingPower;
+      identity.assetNotional = snapshotResult.value.assetNotional;
+      identity.assetAvailable = snapshotResult.value.assetAvailable;
+      identity.pendingCredit = snapshotResult.value.pendingCredit;
+      identity.openOrders = snapshotResult.value.openOrders;
+      identity.unsettledFunds = snapshotResult.value.unsettledFunds;
+      identity.marginRequirement = snapshotResult.value.marginRequirement;
+      identity.budgetCurrency = snapshotResult.value.budgetCurrency;
+      identity.balanceLastUpdatedAt = snapshotResult.value.balanceLastUpdatedAt;
+    }
 
-    identity.buyingPower = parseNumber(
-      usdBalance?.buyingPower
-      ?? usdBalance?.availableBalance
-      ?? usdBalance?.available
-      ?? usdBalance?.available?.value
-    );
-    identity.budgetCurrency = String(usdBalance?.currency ?? 'USD').toUpperCase();
+    if (positionsResult.status !== 'fulfilled') {
+      if (snapshotResult.status === 'rejected') {
+        identity.error = getErrorMessage(positionsResult.reason);
+      }
 
-    const summarizedPositions = positions
-      .map((position) => {
-        const quantity = extractNumericQuantity(position);
+      return identity;
+    }
 
-        if (!Number.isFinite(quantity) || quantity <= 0) {
-          return null;
-        }
+    const positions = positionsResult.value;
+    const portfolio = summarizePortfolioPositions(positions);
 
-        return {
-          marketSlug: getPositionMarketSlug(position),
-          outcome: getPositionOutcome(position),
-          quantity
-        };
-      })
-      .filter(Boolean);
-
-    identity.openPositionsCount = summarizedPositions.length;
-    identity.openPositions = summarizedPositions.slice(0, 10);
+    identity.positionsCashValue = portfolio.totalCashValue;
+    if (typeof identity.buyingPower === 'number') {
+      identity.totalAccountBudget = identity.buyingPower + portfolio.totalCashValue;
+    }
+    identity.openPositionsCount = portfolio.positions.length;
+    identity.openPositions = portfolio.positions.slice(0, 10);
   } catch (error) {
     identity.error = getErrorMessage(error);
   }
@@ -1579,7 +1774,13 @@ export async function placeSellOrderForIntent(env, intent) {
   }
 
   const quote = await resolveOutcomeMarketQuote(env, marketSlug, intent.outcomeLabel);
-  const aggressiveLimitPrices = buildAggressiveSellLimitLadder(quote.outcomePrice);
+  const fallbackQuotePrice = resolveFallbackSellQuotePrice(orderIntent, quote.outcomePrice);
+
+  if (!fallbackQuotePrice) {
+    throw new Error('Unable to derive a valid executable limit price for sell retry.');
+  }
+
+  const aggressiveLimitPrices = buildAggressiveSellLimitLadder(fallbackQuotePrice);
 
   if (aggressiveLimitPrices.length === 0) {
     throw new Error('Unable to derive a valid limit price for sell retry.');

@@ -26,16 +26,48 @@ async function requestJson(path, options) {
 }
 
 export async function fetchStatus() {
-  const [polymarket, ai, accountIdentity] = await Promise.all([
+  const [polymarketResult, aiResult, accountIdentityResult] = await Promise.allSettled([
     requestJson('/api/polymarket/status'),
     requestJson('/api/ai/status'),
     requestJson('/api/polymarket/account-identity')
   ]);
 
+  if (polymarketResult.status !== 'fulfilled') {
+    throw polymarketResult.reason;
+  }
+
   return {
-    polymarket: polymarket.status,
-    ai: ai.status,
-    accountIdentity: accountIdentity.identity
+    polymarket: polymarketResult.value.status,
+    ai: aiResult.status === 'fulfilled'
+      ? aiResult.value.status
+      : {
+          reachable: false,
+          requestedModel: null,
+          resolvedModel: null,
+          availableModels: [],
+          error: aiResult.reason instanceof Error ? aiResult.reason.message : 'Unable to refresh AI status'
+        },
+    accountIdentity: accountIdentityResult.status === 'fulfilled'
+      ? accountIdentityResult.value.identity
+      : {
+          configured: false,
+          endpoint: null,
+          keyIdSuffix: null,
+          authenticated: false,
+          totalAccountBudget: null,
+          buyingPower: null,
+          assetNotional: null,
+          assetAvailable: null,
+          pendingCredit: null,
+          openOrders: null,
+          unsettledFunds: null,
+          marginRequirement: null,
+          budgetCurrency: 'USD',
+          balanceLastUpdatedAt: null,
+          openPositionsCount: 0,
+          openPositions: [],
+          error: accountIdentityResult.reason instanceof Error ? accountIdentityResult.reason.message : 'Unable to refresh Polymarket account identity'
+        }
   };
 }
 
