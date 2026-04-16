@@ -1,3 +1,5 @@
+import { resolveMlbProbablePitcherMatchup } from './mlb-importer.js';
+
 function average(values) {
   if (values.length === 0) {
     return null;
@@ -47,11 +49,24 @@ function getLeagueConfig(league) {
     homeAdvantageElo: 45,
     recentFormWeight: 20,
     restDayWeight: 8,
-    pointDiffWeight: 12
+    pointDiffWeight: 12,
+    pitcherAdjustmentCap: 40,
+    pitcherEraWeight: 10,
+    pitcherRecordWeight: 12,
+    pitcherFullWeightSample: 20,
+    pitcherEraFallbackSampleWeight: 0.2
   };
 
   const perLeague = {
-    MLB: { homeAdvantageElo: 25, pointDiffWeight: 8 },
+    MLB: {
+      homeAdvantageElo: 25,
+      pointDiffWeight: 8,
+      pitcherAdjustmentCap: 28,
+      pitcherEraWeight: 6,
+      pitcherRecordWeight: 8,
+      pitcherFullWeightSample: 18,
+      pitcherEraFallbackSampleWeight: 0.15
+    },
     NHL: { homeAdvantageElo: 30, pointDiffWeight: 10 },
     NBA: { homeAdvantageElo: 40, pointDiffWeight: 14 },
     WNBA: { homeAdvantageElo: 35, pointDiffWeight: 12 },
@@ -474,6 +489,76 @@ function getTeamProbability({ teamId, homeTeamId, awayTeamId, homeProbability })
   return 0.5;
 }
 
+function getPitcherWinRate(pitcher) {
+  const wins = Number(pitcher?.wins);
+  const losses = Number(pitcher?.losses);
+
+  if (!Number.isFinite(wins) || !Number.isFinite(losses) || wins + losses <= 0) {
+    return null;
+  }
+
+  return wins / (wins + losses);
+}
+
+function getPitcherDecisionSample(pitcher) {
+  const wins = Number(pitcher?.wins);
+  const losses = Number(pitcher?.losses);
+
+  if (!Number.isFinite(wins) || !Number.isFinite(losses)) {
+    return 0;
+  }
+
+  return Math.max(0, wins + losses);
+}
+
+function getMlbPitcherScore(pitcher, config) {
+  if (!pitcher) {
+    return 0;
+  }
+
+  const era = Number.isFinite(Number(pitcher.era)) ? Number(pitcher.era) : null;
+  const winRate = getPitcherWinRate(pitcher);
+  const decisionSample = getPitcherDecisionSample(pitcher);
+  const sampleWeight = decisionSample > 0
+    ? clamp(decisionSample / config.pitcherFullWeightSample, 0.1, 1)
+    : config.pitcherEraFallbackSampleWeight;
+  const eraComponent = typeof era === 'number'
+    ? (4.2 - clamp(era, 2.2, 6.2)) * config.pitcherEraWeight * sampleWeight
+    : 0;
+  const recordComponent = typeof winRate === 'number'
+    ? (winRate - 0.5) * config.pitcherRecordWeight * 2 * sampleWeight
+    : 0;
+
+  return eraComponent + recordComponent;
+}
+
+function getPitcherAdjustment(league, probablePitchers, config) {
+  if (league !== 'MLB') {
+    return {
+      adjustment: 0,
+      homeScore: 0,
+      awayScore: 0,
+      homePitcher: null,
+      awayPitcher: null,
+      source: null
+    };
+  }
+
+  const homePitcher = probablePitchers?.home ?? null;
+  const awayPitcher = probablePitchers?.away ?? null;
+  const homeScore = getMlbPitcherScore(homePitcher, config);
+  const awayScore = getMlbPitcherScore(awayPitcher, config);
+
+  return {
+    adjustment: clamp(homeScore - awayScore, -config.pitcherAdjustmentCap, config.pitcherAdjustmentCap),
+    homeScore,
+    awayScore,
+    homePitcher,
+    awayPitcher,
+    source: homePitcher || awayPitcher ? 'espn-probable-starters' : null
+  };
+}
+
 export function buildHistoricalCalibrationContext(
   historyStore,
   { league, endDate, phase = 'all', minTrainingGames = 10, calibrationBucketSize = 0.1 } = {}
@@ -493,11 +578,14 @@ export function applyPostModelCalibration(probability, calibrationProfile) {
   return applyCalibrationProfile(probability, calibrationProfile);
 }
 
-export function buildTeamStrengthMarketContext({ event, market, historyStore, phase = 'all', calibrationProfile = null }) {
+export async function buildTeamStrengthMarketContext({ event, market, historyStore, phase = 'all', calibrationProfile = null }) {
   const config = getLeagueConfig(market.league);
   const asOfDate = toDate(event?.startDate) ?? toDate(event?.endDate) ?? new Date();
   const games = getGamesForLeague(historyStore, market.league, asOfDate, phase);
   const teamStates = new Map();
+  const homeAdvantageApplied = market.homeAwaySource && market.homeAwaySource !== 'vs'
+    ? config.homeAdvantageElo
+    : 0;
 
   for (const game of games) {
     applyGame(teamStates, game, config);
@@ -514,11 +602,20 @@ export function buildTeamStrengthMarketContext({ event, market, historyStore, ph
   const recentFormDiff = (homeSummary.recentWinRate ?? 0.5) - (awaySummary.recentWinRate ?? 0.5);
   const recentScoreDiff = (homeSummary.recentScoreDiff ?? 0) - (awaySummary.recentScoreDiff ?? 0);
   const restDiff = Math.max(-4, Math.min(4, (homeSummary.restDays ?? 0) - (awaySummary.restDays ?? 0)));
+  const probablePitcherMatchup = market.league === 'MLB' && homeTeamId && awayTeamId
+    ? await resolveMlbProbablePitcherMatchup({
+        eventDate: event?.startDate ?? event?.endDate ?? asOfDate.toISOString(),
+        homeTeamId,
+        awayTeamId
+      })
+    : null;
+  const pitcherAdjustment = getPitcherAdjustment(market.league, probablePitcherMatchup?.probablePitchers, config);
   const adjustedDiff = (homeSummary.elo - awaySummary.elo)
-    + (market.homeTeamId && market.awayTeamId ? config.homeAdvantageElo : 0)
+    + homeAdvantageApplied
     + recentFormDiff * config.recentFormWeight
     + recentScoreDiff * config.pointDiffWeight
-    + restDiff * config.restDayWeight;
+    + restDiff * config.restDayWeight
+    + pitcherAdjustment.adjustment;
   const rawHomeProbability = expectedScore(adjustedDiff, 0);
   const calibratedHomeProbability = applyCalibrationProfile(rawHomeProbability, calibrationProfile);
   const marketSampleSize = Math.min(homeSummary.sampleSize, awaySummary.sampleSize);
@@ -529,8 +626,10 @@ export function buildTeamStrengthMarketContext({ event, market, historyStore, ph
     question: market.question,
     league: market.league,
     model: {
-      name: 'team-strength-elo-v1',
-      description: 'League-specific Elo with optional home advantage, recent form, rest adjustment, and rolling score-differential features.'
+      name: market.league === 'MLB' ? 'team-strength-elo-plus-starters-v2' : 'team-strength-elo-v2',
+      description: market.league === 'MLB'
+        ? 'League-specific Elo with optional home advantage, recent form, rest adjustment, rolling score-differential features, and MLB probable-starter adjustments when available.'
+        : 'League-specific Elo with optional home advantage, recent form, rest adjustment, and rolling score-differential features.'
     },
     marketConfidence,
     matchup: {
@@ -540,10 +639,15 @@ export function buildTeamStrengthMarketContext({ event, market, historyStore, ph
       asOfDate: asOfDate.toISOString()
     },
     features: {
-      homeAdvantageEloApplied: market.homeTeamId && market.awayTeamId ? config.homeAdvantageElo : 0,
+      homeAdvantageEloApplied: homeAdvantageApplied,
       recentFormDiff,
       recentScoreDiff,
       restDiff,
+      probablePitcherSource: pitcherAdjustment.source,
+      probablePitcherDiff: pitcherAdjustment.adjustment,
+      probablePitcherHomeScore: pitcherAdjustment.homeScore,
+      probablePitcherAwayScore: pitcherAdjustment.awayScore,
+      probablePitchers: probablePitcherMatchup?.probablePitchers ?? null,
       adjustedDiff,
       leagueGameSampleSize: games.length,
       competitionPhase: phase,
@@ -611,11 +715,13 @@ export function runTeamStrengthBacktest(
     const recentFormDiff = (homeSummary.recentWinRate ?? 0.5) - (awaySummary.recentWinRate ?? 0.5);
     const recentScoreDiff = (homeSummary.recentScoreDiff ?? 0) - (awaySummary.recentScoreDiff ?? 0);
     const restDiff = Math.max(-4, Math.min(4, (homeSummary.restDays ?? 0) - (awaySummary.restDays ?? 0)));
+    const pitcherAdjustment = getPitcherAdjustment(league, game?.metadata?.probablePitchers, config);
     const adjustedDiff = (homeSummary.elo - awaySummary.elo)
       + config.homeAdvantageElo
       + recentFormDiff * config.recentFormWeight
       + recentScoreDiff * config.pointDiffWeight
-      + restDiff * config.restDayWeight;
+      + restDiff * config.restDayWeight
+      + pitcherAdjustment.adjustment;
     const homeProbability = expectedScore(adjustedDiff, 0);
     const actualHomeWin = Number(game.homeScore) > Number(game.awayScore) ? 1 : 0;
 
@@ -637,6 +743,7 @@ export function runTeamStrengthBacktest(
           recentFormDiff,
           recentScoreDiff,
           restDiff,
+          probablePitcherDiff: pitcherAdjustment.adjustment,
           adjustedDiff,
           trainingSample
         }

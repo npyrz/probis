@@ -712,6 +712,29 @@ h3 {
   color: #9fb0c4;
 }
 
+.market-chip-league {
+  font-weight: 700;
+  letter-spacing: 0.04em;
+}
+
+.market-chip-league-nba {
+  border-color: rgba(255, 150, 92, 0.5);
+  background: rgba(96, 49, 18, 0.34);
+  color: #ffc08e;
+}
+
+.market-chip-league-mlb {
+  border-color: rgba(109, 182, 255, 0.52);
+  background: rgba(19, 44, 84, 0.34);
+  color: #a9d4ff;
+}
+
+.market-chip-market-only {
+  border-color: rgba(137, 150, 168, 0.45);
+  background: rgba(18, 25, 34, 0.5);
+  color: #d1dae4;
+}
+
 .outcome-list {
   display: grid;
   gap: 6px;

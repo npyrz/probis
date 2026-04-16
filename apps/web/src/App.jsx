@@ -532,6 +532,32 @@ function getSportsProbabilityBreakdown(market, modelMarket) {
     .sort((left, right) => (right.finalModelProbability ?? -1) - (left.finalModelProbability ?? -1));
 }
 
+function getSportsLeagues(statisticalModel) {
+  return [...new Set(
+    (Array.isArray(statisticalModel?.markets) ? statisticalModel.markets : [])
+      .map((market) => market?.sportsContext?.league)
+      .filter(Boolean)
+  )];
+}
+
+function getRecommendationSource(modelMarket) {
+  const league = String(modelMarket?.sportsContext?.league ?? '').trim().toUpperCase();
+
+  if (league === 'NBA' || league === 'MLB') {
+    return {
+      label: league,
+      detail: 'sports model',
+      className: `market-chip market-chip-league market-chip-league-${league.toLowerCase()}`
+    };
+  }
+
+  return {
+    label: 'MARKET',
+    detail: 'market only',
+    className: 'market-chip market-chip-market-only'
+  };
+}
+
 function getRecommendedMarket(selectedEvent, decisionEngine) {
   if (!selectedEvent?.markets || !decisionEngine?.recommendation?.marketQuestion) {
     return null;
@@ -877,6 +903,8 @@ export default function App() {
   const recommendedModelOutcome = currentRecommendation
     ? getModelOutcome(recommendedModelMarket, currentRecommendation.outcomeLabel)
     : null;
+  const eventSportsLeagues = getSportsLeagues(statisticalModel);
+  const recommendationSource = getRecommendationSource(recommendedModelMarket);
 
   function clearSelectedEventContext() {
     setSelectedEvent(null);
@@ -1710,6 +1738,14 @@ export default function App() {
 
               <div className="selected-event-meta-row">
                 <p className="event-meta">slug: {selectedEvent.slug}</p>
+                {eventSportsLeagues.map((league) => (
+                  <span key={league} className={`market-chip market-chip-league market-chip-league-${league.toLowerCase()}`}>
+                    {league}
+                  </span>
+                ))}
+                {eventSportsLeagues.length === 0 ? (
+                  <span className="market-chip market-chip-market-only">MARKET ONLY</span>
+                ) : null}
                 {selectedEvent.resolvedFromFallback ? (
                   <span className="market-chip market-chip-muted">matched from {selectedEvent.requestedSlug}</span>
                 ) : null}
@@ -1764,7 +1800,10 @@ export default function App() {
                 <p className="eyebrow">AI Recommendations</p>
                 <h2>Decision Engine</h2>
               </div>
-              <span className="market-chip">{currentRecommendation ? decisionEngine.action.toUpperCase() : 'IDLE'}</span>
+              <div className="trade-heading-chips">
+                <span className={recommendationSource.className} title={recommendationSource.detail}>{recommendationSource.label}</span>
+                <span className="market-chip">{currentRecommendation ? decisionEngine.action.toUpperCase() : 'IDLE'}</span>
+              </div>
             </div>
 
             {currentRecommendation ? (
@@ -1775,6 +1814,9 @@ export default function App() {
                   <p>
                     Confidence {formatPercent(currentRecommendation.combinedConfidence)} · EV {formatSignedPercent(recommendationExpectedValue)} · Edge {formatSignedPercent(currentRecommendation.edge)}
                   </p>
+                  <div className="market-chip-row">
+                    <span className={recommendationSource.className}>{recommendationSource.detail}</span>
+                  </div>
                   <p>{currentRecommendation.thesis ?? 'No model thesis available yet for this event.'}</p>
                 </div>
 
@@ -1958,9 +2000,17 @@ export default function App() {
                         <span>Calibration Method</span>
                         <strong>{recommendedModelMarket?.sportsContext?.features?.calibrationMethod ?? recommendedModelOutcome.features?.sportsModel ?? 'n/a'}</strong>
                       </article>
+                      <article>
+                        <span>League Source</span>
+                        <strong>{recommendationSource.detail}</strong>
+                      </article>
+                      <article>
+                        <span>Starter Input</span>
+                        <strong>{recommendedModelMarket?.sportsContext?.features?.probablePitcherSource ?? 'n/a'}</strong>
+                      </article>
                     </div>
                     <p className="terminal-copy">
-                      Raw Elo gives the uncalibrated matchup estimate. Calibrated sports probability compresses tail confidence using historical bucket performance, and the final blended model then mixes that with live Polymarket price history and market quality.
+                      Raw Elo gives the uncalibrated matchup estimate. Calibrated sports probability compresses tail confidence using historical bucket performance, and the final blended model then mixes that with live Polymarket price history and market quality. For MLB, probable starters are folded in when ESPN exposes them.
                     </p>
                   </section>
                 ) : null}

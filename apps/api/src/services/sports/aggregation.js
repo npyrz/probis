@@ -23,13 +23,13 @@ export async function buildSportsContext(event) {
       })
     ]))
   );
-  const markets = canonicalMarkets.map((market) => buildTeamStrengthMarketContext({
+  const markets = await Promise.all(canonicalMarkets.map((market) => buildTeamStrengthMarketContext({
     event,
     market,
     historyStore,
     phase: competitionPhase,
     calibrationProfile: calibrationProfiles.get(market.league) ?? null
-  }));
+  })));
 
   return {
     generatedAt: new Date().toISOString(),

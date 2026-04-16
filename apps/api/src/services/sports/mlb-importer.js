@@ -176,6 +176,70 @@ function parseScore(value) {
   return Number.isFinite(parsed) ? parsed : null;
 }
 
+function parseFloatStat(value) {
+  const parsed = Number.parseFloat(String(value ?? '').replace(/[^0-9.-]+/g, ''));
+  return Number.isFinite(parsed) ? parsed : null;
+}
+
+function getProbablePitcherEntry(competitor) {
+  const probables = Array.isArray(competitor?.probables) ? competitor.probables : [];
+
+  return probables.find((entry) => String(entry?.abbreviation ?? '').toUpperCase() === 'SP')
+    ?? probables.find((entry) => String(entry?.name ?? '').toLowerCase().includes('startingpitcher'))
+    ?? probables[0]
+    ?? null;
+}
+
+function getProbablePitcherStat(probablePitcher, key) {
+  const statistics = Array.isArray(probablePitcher?.statistics) ? probablePitcher.statistics : [];
+  const match = statistics.find((statistic) => {
+    const statisticName = String(statistic?.name ?? '').toLowerCase();
+    const abbreviation = String(statistic?.abbreviation ?? '').toLowerCase();
+    return statisticName === key || abbreviation === key;
+  });
+
+  return parseFloatStat(match?.displayValue);
+}
+
+function parsePitcherRecord(probablePitcher) {
+  const record = String(probablePitcher?.record ?? '');
+  const recordMatch = record.match(/(\d+)\s*-\s*(\d+)/);
+  const eraMatch = record.match(/,\s*([0-9.]+)\)?$/);
+
+  return {
+    wins: recordMatch ? Number.parseInt(recordMatch[1], 10) : null,
+    losses: recordMatch ? Number.parseInt(recordMatch[2], 10) : null,
+    era: eraMatch ? Number.parseFloat(eraMatch[1]) : null
+  };
+}
+
+function normalizeProbablePitcher(probablePitcher) {
+  if (!probablePitcher) {
+    return null;
+  }
+
+  const parsedRecord = parsePitcherRecord(probablePitcher);
+
+  return {
+    playerId: probablePitcher?.athlete?.id ? String(probablePitcher.athlete.id) : null,
+    name: probablePitcher?.athlete?.displayName ?? probablePitcher?.athlete?.fullName ?? null,
+    shortName: probablePitcher?.athlete?.shortName ?? null,
+    position: probablePitcher?.athlete?.position ?? probablePitcher?.abbreviation ?? null,
+    era: getProbablePitcherStat(probablePitcher, 'era') ?? parsedRecord.era,
+    wins: getProbablePitcherStat(probablePitcher, 'wins') ?? parsedRecord.wins,
+    losses: getProbablePitcherStat(probablePitcher, 'losses') ?? parsedRecord.losses,
+    record: probablePitcher?.record ?? null
+  };
+}
+
+function summarizeTeamRecord(competitor) {
+  const record = (Array.isArray(competitor?.records) ? competitor.records : []).find(
+    (entry) => String(entry?.type ?? '').toLowerCase() === 'total'
+  ) ?? competitor?.records?.[0] ?? null;
+
+  return record?.summary ?? null;
+}
+
 function getMlbSeasonPhase(event) {
   const seasonType = Number(event?.season?.type ?? event?.competitions?.[0]?.season?.type ?? NaN);
 
@@ -190,11 +254,7 @@ function getMlbSeasonPhase(event) {
   return 'other';
 }
 
-function normalizeEspnGame(event, teamLookup) {
-  if (!isFinalEvent(event)) {
-    return null;
-  }
-
+function normalizeEspnMatchup(event, teamLookup) {
   const competitors = getCompetitors(event);
   const home = competitors.find((competitor) => competitor.homeAway === 'home');
   const away = competitors.find((competitor) => competitor.homeAway === 'away');
@@ -220,6 +280,38 @@ function normalizeEspnGame(event, teamLookup) {
     return null;
   }
 
+  return {
+    name: event?.name ?? null,
+    shortName: event?.shortName ?? null,
+    status: getStatus(event),
+    seasonPhase: getMlbSeasonPhase(event),
+    seasonLabel: event?.season?.year ? String(event.season.year) : null,
+    homeTeam,
+    awayTeam,
+    homeRecord: summarizeTeamRecord(home),
+    awayRecord: summarizeTeamRecord(away),
+    probablePitchers: {
+      home: normalizeProbablePitcher(getProbablePitcherEntry(home)),
+      away: normalizeProbablePitcher(getProbablePitcherEntry(away))
+    }
+  };
+}
+
+function normalizeEspnGame(event, teamLookup) {
+  if (!isFinalEvent(event)) {
+    return null;
+  }
+
+  const matchup = normalizeEspnMatchup(event, teamLookup);
+
+  if (!matchup) {
+    return null;
+  }
+
+  const competitors = getCompetitors(event);
+  const home = competitors.find((competitor) => competitor.homeAway === 'home');
+  const away = competitors.find((competitor) => competitor.homeAway === 'away');
+
   const homeScore = parseScore(home.score);
   const awayScore = parseScore(away.score);
 
@@ -229,23 +321,26 @@ function normalizeEspnGame(event, teamLookup) {
 
   return {
     league: 'MLB',
-    seasonPhase: getMlbSeasonPhase(event),
+    seasonPhase: matchup.seasonPhase,
     source: 'espn-scoreboard',
-    sourceId: String(event?.id ?? `${event?.date}:${awayTeam.id}:${homeTeam.id}`),
+    sourceId: String(event?.id ?? `${event?.date}:${matchup.awayTeam.id}:${matchup.homeTeam.id}`),
     date: event?.date ?? null,
-    seasonLabel: event?.season?.year ? String(event.season.year) : null,
+    seasonLabel: matchup.seasonLabel,
     status: 'final',
-    homeTeamId: homeTeam.id,
-    awayTeamId: awayTeam.id,
-    homeTeamName: homeTeam.displayName,
-    awayTeamName: awayTeam.displayName,
+    homeTeamId: matchup.homeTeam.id,
+    awayTeamId: matchup.awayTeam.id,
+    homeTeamName: matchup.homeTeam.displayName,
+    awayTeamName: matchup.awayTeam.displayName,
     homeScore,
     awayScore,
     neutralSite: Boolean(event?.competitions?.[0]?.neutralSite),
     metadata: {
-      name: event?.name ?? null,
-      shortName: event?.shortName ?? null,
-      seasonType: event?.season?.type ?? null
+      name: matchup.name,
+      shortName: matchup.shortName,
+      seasonType: event?.season?.type ?? null,
+      homeRecord: matchup.homeRecord,
+      awayRecord: matchup.awayRecord,
+      probablePitchers: matchup.probablePitchers
     }
   };
 }
@@ -314,4 +409,63 @@ export async function importMlbHistory(options = {}) {
     insertedCount: merged.insertedCount,
     totalStoredGameCount: merged.totalCount
   };
+}
+
+export async function resolveMlbProbablePitcherMatchup({ eventDate, homeTeamId, awayTeamId }) {
+  if (!eventDate || !homeTeamId || !awayTeamId) {
+    return null;
+  }
+
+  const [snapshot] = await Promise.all([
+    loadPolymarketUsTeamUniverse()
+  ]);
+  const teamLookup = buildResolvedTeamLookup(snapshot);
+  const client = createEspnClient();
+  const response = await client.get('', {
+    params: {
+      dates: toDateKey(parseInputDate(eventDate)),
+      limit: 200
+    }
+  });
+  const events = Array.isArray(response.data?.events) ? response.data.events : [];
+
+  for (const event of events) {
+    const matchup = normalizeEspnMatchup(event, teamLookup);
+
+    if (!matchup) {
+      continue;
+    }
+
+    if (matchup.homeTeam.id === homeTeamId && matchup.awayTeam.id === awayTeamId) {
+      return {
+        name: matchup.name,
+        shortName: matchup.shortName,
+        status: matchup.status,
+        seasonPhase: matchup.seasonPhase,
+        seasonLabel: matchup.seasonLabel,
+        homeRecord: matchup.homeRecord,
+        awayRecord: matchup.awayRecord,
+        probablePitchers: matchup.probablePitchers
+      };
+    }
+
+    if (matchup.homeTeam.id === awayTeamId && matchup.awayTeam.id === homeTeamId) {
+      return {
+        name: matchup.name,
+        shortName: matchup.shortName,
+        status: matchup.status,
+        seasonPhase: matchup.seasonPhase,
+        seasonLabel: matchup.seasonLabel,
+        homeRecord: matchup.awayRecord,
+        awayRecord: matchup.homeRecord,
+        probablePitchers: {
+          home: matchup.probablePitchers?.away ?? null,
+          away: matchup.probablePitchers?.home ?? null
+        },
+        swappedMatchup: true
+      };
+    }
+  }
+
+  return null;
 }

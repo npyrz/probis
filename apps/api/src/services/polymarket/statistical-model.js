@@ -163,10 +163,12 @@ export function buildStatisticalModel(event, aggregation) {
         'home_edge',
         'recent_form',
         'rest_days',
-        'rolling_score_differential'
+        'rolling_score_differential',
+        'mlb_probable_starter_era',
+        'mlb_probable_starter_record'
       ],
       description:
-        'Adjusts current market probabilities with short-horizon market behavior and, for recognized team-vs-team sports markets, blends in an Elo-based fair probability built from local team history.'
+        'Adjusts current market probabilities with short-horizon market behavior and, for recognized team-vs-team sports markets, blends in a calibrated fair probability built from local team history. MLB matchups additionally use probable-starter inputs when ESPN exposes them.'
     },
     summary: {
       eventSlug: event.slug,
