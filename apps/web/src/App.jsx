@@ -576,6 +576,10 @@ function formatStarterSummary(pitcher) {
   return record ? `${pitcher.name} ${record}` : pitcher.name;
 }
 
+function getEventIntelligenceSummary(aggregation) {
+  return aggregation?.eventIntelligence?.available ? aggregation.eventIntelligence : null;
+}
+
 function getRecommendedStarterContext(modelMarket) {
   const features = modelMarket?.sportsContext?.features;
   const probablePitchers = features?.probablePitchers ?? null;
@@ -941,6 +945,7 @@ export default function App() {
   const eventSportsLeagues = getSportsLeagues(statisticalModel);
   const recommendationSource = getRecommendationSource(recommendedModelMarket);
   const recommendedStarterContext = getRecommendedStarterContext(recommendedModelMarket);
+  const eventIntelligence = getEventIntelligenceSummary(aggregation);
 
   function clearSelectedEventContext() {
     setSelectedEvent(null);
@@ -2083,6 +2088,52 @@ export default function App() {
                           : 'n/a'}
                       </p>
                     </div>
+                  </section>
+                ) : null}
+
+                {eventIntelligence ? (
+                  <section className="panel-card terminal-card compact-card ai-reasoning-card">
+                    <div className="panel-heading">
+                      <p className="eyebrow">Live Feed</p>
+                      <h2>News And Game Context</h2>
+                    </div>
+                    <div className="decision-rationale-grid compact-preview-grid">
+                      <article>
+                        <span>League</span>
+                        <strong>{eventIntelligence.league}</strong>
+                      </article>
+                      <article>
+                        <span>Game Status</span>
+                        <strong>{eventIntelligence.gameFeed?.status ?? 'n/a'}</strong>
+                      </article>
+                      <article>
+                        <span>Game Detail</span>
+                        <strong>{eventIntelligence.gameFeed?.detail ?? 'n/a'}</strong>
+                      </article>
+                      <article>
+                        <span>Player Mentions</span>
+                        <strong>{eventIntelligence.playerMentions?.length ?? 0}</strong>
+                      </article>
+                    </div>
+                    {eventIntelligence.gameFeed ? (
+                      <div className="operator-notes-copy">
+                        <p>{eventIntelligence.gameFeed.name ?? 'Live game feed unavailable'}</p>
+                        {(eventIntelligence.gameFeed.competitors ?? []).map((competitor) => (
+                          <p key={`${competitor.teamId}-${competitor.homeAway}`}>
+                            {competitor.teamName}: score {competitor.score ?? 'n/a'} | record {competitor.record ?? 'n/a'} | {competitor.homeAway ?? 'n/a'}
+                          </p>
+                        ))}
+                      </div>
+                    ) : null}
+                    {(eventIntelligence.articles ?? []).length > 0 ? (
+                      <div className="operator-notes-copy">
+                        {eventIntelligence.articles.slice(0, 5).map((article) => (
+                          <p key={article.id ?? article.headline}>
+                            {article.headline}: {article.description ?? 'No summary'}
+                          </p>
+                        ))}
+                      </div>
+                    ) : null}
                   </section>
                 ) : null}
 

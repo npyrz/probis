@@ -1,5 +1,48 @@
 import axios from 'axios';
 
+function formatEventIntelligence(aggregation) {
+  const intelligence = aggregation?.eventIntelligence;
+
+  if (!intelligence?.available) {
+    return 'Event intelligence: unavailable';
+  }
+
+  const teams = (Array.isArray(intelligence.teams) ? intelligence.teams : [])
+    .map((team) => team.displayName ?? team.teamName)
+    .filter(Boolean)
+    .join(', ');
+  const gameFeed = intelligence.gameFeed
+    ? `Game feed: ${intelligence.gameFeed.name ?? 'n/a'} | status=${intelligence.gameFeed.status ?? 'n/a'} | detail=${intelligence.gameFeed.detail ?? 'n/a'} | score=${(intelligence.gameFeed.competitors ?? []).map((competitor) => `${competitor.teamName}:${competitor.score ?? 'n/a'}`).join(', ')}`
+    : 'Game feed: unavailable';
+  const players = (Array.isArray(intelligence.playerMentions) ? intelligence.playerMentions : [])
+    .map((player) => player.name)
+    .filter(Boolean)
+    .slice(0, 8)
+    .join(', ');
+  const headlines = (Array.isArray(intelligence.articles) ? intelligence.articles : [])
+    .slice(0, 6)
+    .map((article) => {
+      const signals = Array.isArray(article.impactSignals) && article.impactSignals.length > 0
+        ? ` signals=${article.impactSignals.join('/')}`
+        : '';
+      const playersMentioned = Array.isArray(article.matchedPlayers) && article.matchedPlayers.length > 0
+        ? ` players=${article.matchedPlayers.map((player) => player.name).join(', ')}`
+        : '';
+
+      return `- ${article.headline ?? 'n/a'} | ${article.description ?? ''}${signals}${playersMentioned}`.trim();
+    })
+    .join('\n');
+
+  return [
+    `Event intelligence league: ${intelligence.league}`,
+    `Tracked teams: ${teams || 'n/a'}`,
+    gameFeed,
+    `Player mentions: ${players || 'none'}`,
+    'Relevant news:',
+    headlines || '- none'
+  ].join('\n');
+}
+
 function getErrorMessage(error) {
   if (error instanceof Error) {
     return error.message;
@@ -140,6 +183,7 @@ export function buildEventAnalysisPrompt(event, aggregation, statisticalModel) {
     `Event liquidity: ${aggregation.liquiditySnapshot.eventLiquidity ?? 'n/a'}`,
     `Top outcome: ${statisticalModel.summary.bestOpportunity ? `${bestOpportunity.label} in ${bestOpportunity.question}` : 'n/a'}`,
     `Model methodology: ${statisticalModel.methodology.description}`,
+    formatEventIntelligence(aggregation),
     'Live markets:',
     marketLines
   ].join('\n');
@@ -202,6 +246,7 @@ export function buildDecisionEnginePrompt(event, aggregation, statisticalModel) 
     `Slug: ${event.slug}`,
     `Event volume: ${aggregation.liquiditySnapshot.eventVolume ?? 'n/a'}`,
     `Event liquidity: ${aggregation.liquiditySnapshot.eventLiquidity ?? 'n/a'}`,
+    formatEventIntelligence(aggregation),
     `validCandidates: ${JSON.stringify(topMarkets)}`
   ].join('\n');
 }

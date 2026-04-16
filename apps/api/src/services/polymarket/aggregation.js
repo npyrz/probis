@@ -1,5 +1,6 @@
 import { createPolymarketClient } from './client.js';
 import { buildSportsContext } from '../sports/aggregation.js';
+import { buildEventIntelligence } from '../sports/event-intelligence.js';
 
 const HISTORY_WINDOW_SECONDS = 7 * 24 * 60 * 60;
 const HISTORY_FIDELITY_MINUTES = 1440;
@@ -180,6 +181,7 @@ export async function buildEventAggregation(env, event) {
   );
 
   const sportsContext = await buildSportsContext(event);
+  const eventIntelligence = await buildEventIntelligence(event, sportsContext);
   const sportsMarketsByConditionId = new Map(
     (Array.isArray(sportsContext.markets) ? sportsContext.markets : []).map((market) => [market.conditionId, market])
   );
@@ -221,6 +223,7 @@ export async function buildEventAggregation(env, event) {
         : null
     },
     sportsContext,
+    eventIntelligence,
     historicalPrices: {
       markets: aggregatedMarkets.map((market) => ({
         conditionId: market.conditionId,
