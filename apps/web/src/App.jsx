@@ -196,7 +196,8 @@ function hasMonitoringSyncWarning(intent) {
 
   return notes.includes('venue sync warning')
     || verificationReason === 'order-lookup-temporary-failure'
-    || verificationReason === 'no-live-shares-detected';
+    || verificationReason === 'no-live-shares-detected'
+    || verificationReason === 'live-position-lookup-temporary-failure';
 }
 
 function formatOrderId(value) {

@@ -341,7 +341,14 @@ async function reconcilePassiveIntentVerificationWithVenue(env, intent) {
     });
   }
 
-  const liveShares = Number.parseFloat(await resolveLivePositionShares(env, intent) ?? NaN);
+  let liveShares;
+
+  try {
+    liveShares = Number.parseFloat(await resolveLivePositionShares(env, intent) ?? NaN);
+  } catch {
+    liveShares = NaN;
+  }
+
   const hasLiveShares = Number.isFinite(liveShares) && liveShares > 0;
   const orderId = intent?.executionRequest?.venueOrderId ?? intent?.position?.entryOrderId ?? null;
 
@@ -414,9 +421,41 @@ async function reconcileTrackingIntentWithVenue(env, intent) {
   const sharesFilled = Number.parseFloat(getSharesFromOrder(venueOrder) ?? NaN);
   const notionalSpent = Number.parseFloat(getSpentFromOrder(venueOrder) ?? NaN);
   const orderState = getTerminalOrderStateFromVenueOrder(venueOrder);
-  const liveShares = Number.parseFloat(await resolveLivePositionShares(env, intent) ?? NaN);
   const hasEntryFills = Number.isFinite(sharesFilled) && sharesFilled > 0;
+
+  let liveShares;
+  let livePositionFetchFailed = false;
+
+  try {
+    liveShares = Number.parseFloat(await resolveLivePositionShares(env, intent) ?? NaN);
+  } catch (error) {
+    liveShares = NaN;
+    livePositionFetchFailed = true;
+  }
+
   const hasLiveShares = Number.isFinite(liveShares) && liveShares > 0;
+
+  if (livePositionFetchFailed) {
+    return withApiVerification({
+      ...intent,
+      executionRequest: {
+        ...intent.executionRequest,
+        venueOrder: venueOrder
+      },
+      monitoring: {
+        ...intent.monitoring,
+        lastEvaluationAt: new Date().toISOString(),
+        notes: 'Venue sync warning: portfolio position lookup failed temporarily. Keeping trade active and counters unchanged pending next poll.'
+      },
+      updatedAt: new Date().toISOString()
+    }, {
+      apiVerifiedFilledPosition: false,
+      method: 'order-by-id-plus-live-position',
+      reason: 'live-position-lookup-temporary-failure',
+      orderId
+    });
+  }
+
   const hasNoLiveShares = !hasLiveShares;
   const previousNoLiveSharesCount = Number.parseInt(String(intent?.monitoring?.syncNoLiveSharesCount ?? '0'), 10);
   const noLiveSharesCount = hasNoLiveShares
@@ -438,7 +477,7 @@ async function reconcileTrackingIntentWithVenue(env, intent) {
   }
 
   if (hasNoLiveShares) {
-    if (noLiveSharesCount >= 3) {
+    if (noLiveSharesCount >= 5) {
       return buildVenueSyncClosedIntent(
         {
           ...intent,
@@ -448,7 +487,7 @@ async function reconcileTrackingIntentWithVenue(env, intent) {
           }
         },
         'sync-removed-no-live-position-confirmed',
-        `Removed from tracking after ${noLiveSharesCount} consecutive polls with no live position shares for order ${orderId}.`
+        `Removed from tracking after ${noLiveSharesCount} consecutive confirmed polls with no live position shares for order ${orderId}.`
       );
     }
 
@@ -462,7 +501,7 @@ async function reconcileTrackingIntentWithVenue(env, intent) {
         ...intent.monitoring,
         lastEvaluationAt: new Date().toISOString(),
         syncNoLiveSharesCount: noLiveSharesCount,
-        notes: `Venue sync warning: no live position shares found for order ${orderId}. Keeping trade active (${noLiveSharesCount}/3 checks).`
+        notes: `Venue sync warning: no live position shares found for order ${orderId}. Keeping trade active (${noLiveSharesCount}/5 confirmed checks).`
       },
       updatedAt: new Date().toISOString()
     }, {
@@ -531,7 +570,15 @@ async function reconcileSyncRemovedIntentWithVenue(env, intent) {
 
   const sharesFilled = Number.parseFloat(getSharesFromOrder(venueOrder) ?? NaN);
   const notionalSpent = Number.parseFloat(getSpentFromOrder(venueOrder) ?? NaN);
-  const liveShares = Number.parseFloat(await resolveLivePositionShares(env, intent) ?? NaN);
+
+  let liveShares;
+
+  try {
+    liveShares = Number.parseFloat(await resolveLivePositionShares(env, intent) ?? NaN);
+  } catch {
+    liveShares = NaN;
+  }
+
   const hasLiveShares = Number.isFinite(liveShares) && liveShares > 0;
 
   if (!hasLiveShares) {

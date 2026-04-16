@@ -520,26 +520,22 @@ export async function resolveLivePositionShares(env, intent) {
     return null;
   }
 
-  try {
-    const positions = await fetchPortfolioPositions(env);
-    const matches = positions.filter((position) => marketSlugsMatch(getPositionMarketSlug(position), marketSlug));
+  const positions = await fetchPortfolioPositions(env);
+  const matches = positions.filter((position) => marketSlugsMatch(getPositionMarketSlug(position), marketSlug));
 
-    if (matches.length === 0) {
-      return null;
-    }
-
-    const byOutcome = matches.find((position) => {
-      const outcome = String(
-        position.outcome ?? position.marketMetadata?.outcome ?? position.side ?? ''
-      ).trim().toLowerCase();
-      const desired = normalizeOutcomeLabel(intent.outcomeLabel);
-      return outcome === desired;
-    }) ?? matches[0];
-
-    return extractNumericQuantity(byOutcome);
-  } catch {
+  if (matches.length === 0) {
     return null;
   }
+
+  const byOutcome = matches.find((position) => {
+    const outcome = String(
+      position.outcome ?? position.marketMetadata?.outcome ?? position.side ?? ''
+    ).trim().toLowerCase();
+    const desired = normalizeOutcomeLabel(intent.outcomeLabel);
+    return outcome === desired;
+  }) ?? matches[0];
+
+  return extractNumericQuantity(byOutcome);
 }
 
 function normalizeOutcomeLabel(label) {
@@ -1264,7 +1260,14 @@ export async function placeSellOrderForIntent(env, intent) {
   const marketSlug = orderIntents.resolvedMarketSlug ?? requestedMarketSlug;
 
   const localShares = parseNumber(intent.position?.sharesFilled ?? intent.executionRequest?.sharesEstimate);
-  const liveShares = await resolveLivePositionShares(env, intent);
+  let liveShares;
+
+  try {
+    liveShares = await resolveLivePositionShares(env, intent);
+  } catch {
+    liveShares = null;
+  }
+
   const shares = Number.isFinite(liveShares) && liveShares > 0
     ? liveShares
     : localShares;
