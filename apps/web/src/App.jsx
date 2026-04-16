@@ -443,18 +443,6 @@ function getMarketLeader(market) {
   return rankedOutcomes[0] ?? null;
 }
 
-function getEventHeadline(event, visibleMarkets) {
-  const leaders = visibleMarkets
-    .map((market) => ({
-      market,
-      leader: getMarketLeader(market)
-    }))
-    .filter((candidate) => typeof candidate.leader?.probability === 'number')
-    .sort((left, right) => right.leader.probability - left.leader.probability);
-
-  return leaders[0] ?? null;
-}
-
 function findHistoricalMarket(aggregation, conditionId) {
   return aggregation?.historicalPrices?.markets?.find((market) => market.conditionId === conditionId) ?? null;
 }
@@ -913,7 +901,6 @@ export default function App() {
   const [isPending, startTransition] = useTransition();
   const tradableMarkets = selectedEvent?.markets ?? [];
   const visibleMarkets = tradableMarkets.filter(marketHasLivePrices);
-  const eventHeadline = selectedEvent ? getEventHeadline(selectedEvent, visibleMarkets) : null;
   const rankedMarkets = filterAndSortMarkets(visibleMarkets, aggregation, statisticalModel, sortBy, filterBy);
   const selectedMarket = visibleMarkets.find((market) => market.conditionId === selectedMarketId) ?? rankedMarkets[0]?.market ?? null;
   const selectedHistoricalMarket = selectedMarket ? findHistoricalMarket(aggregation, selectedMarket.conditionId) : null;
@@ -1249,7 +1236,7 @@ export default function App() {
     }
 
     startTransition(() => {
-      void handleResolveEvent(eventInput.trim());
+      void handleAnalyze();
     });
   }
 
@@ -1260,7 +1247,10 @@ export default function App() {
   }
 
   async function handleAnalyze(options = {}) {
-    if (!selectedEvent?.slug) {
+    const submittedInput = eventInput.trim();
+
+    if (!submittedInput) {
+      setError('Paste a Polymarket event URL or slug.');
       return;
     }
 
@@ -1269,12 +1259,29 @@ export default function App() {
     setIsAnalyzing(true);
 
     try {
-      const result = await analyzeEvent(selectedEvent.slug, options);
-      setSelectedEvent(result.event ?? selectedEvent);
+      const result = await analyzeEvent(submittedInput, options);
+      const nextEvent = result.event ?? selectedEvent;
+      const validationError = getEventValidationError(nextEvent);
+
+      if (validationError) {
+        setSelectedEvent(null);
+        setAggregation(null);
+        setStatisticalModel(null);
+        setSelectedMarketId(null);
+        setError(validationError);
+        return;
+      }
+
+      setSelectedEvent(nextEvent);
       setAggregation(result.aggregation ?? null);
       setStatisticalModel(result.statisticalModel ?? null);
       setAnalysis(result.analysis);
       setDecisionEngine(result.decisionEngine ?? null);
+      const currentSelection = nextEvent?.markets?.find((market) => market.conditionId === selectedMarketId);
+      const fallbackSelection = nextEvent?.markets?.filter(marketHasLivePrices)[0] ?? null;
+      setSelectedMarketId(currentSelection?.conditionId ?? fallbackSelection?.conditionId ?? null);
+      setEventInput(nextEvent?.slug ?? submittedInput);
+      setLastMarketUpdate(new Date().toISOString());
       setLastAiUpdate(new Date().toISOString());
       const sportsNotice = result.sportsSync?.updated
         ? ` Synced ${result.sportsSync.league} ${result.sportsSync.season ?? ''} history.`.trim()
@@ -1740,11 +1747,11 @@ export default function App() {
           <section className="control-card terminal-card compact-card">
             <div className="panel-heading">
               <p className="eyebrow">Market Controls</p>
-              <h2>Load Event</h2>
+              <h2>Event Input</h2>
             </div>
             <form className="event-form" onSubmit={handleSubmit}>
               <label htmlFor="event-input">Event link or slug</label>
-              <div className="input-row">
+              <div className="input-row input-row-single">
                 <input
                   id="event-input"
                   name="event-input"
@@ -1753,9 +1760,6 @@ export default function App() {
                   value={eventInput}
                   onChange={(inputEvent) => setEventInput(inputEvent.target.value)}
                 />
-                <button type="submit" disabled={isPending}>
-                  {isPending ? 'Loading...' : 'Load'}
-                </button>
               </div>
             </form>
             <div className="action-row terminal-action-row control-actions">
@@ -1763,83 +1767,63 @@ export default function App() {
                 type="button"
                 className="secondary-button"
                 onClick={() => void handleAnalyze()}
-                disabled={!selectedEvent || isPending || isAnalyzing || isRefreshing}
+                disabled={!eventInput.trim() || isPending || isAnalyzing || isRefreshing}
               >
-                {isAnalyzing ? 'Analyzing...' : 'Analyze'}
+                {isAnalyzing ? 'Running...' : 'Run Engine'}
               </button>
               <button
                 type="button"
                 className="secondary-button secondary-button-muted"
                 onClick={() => void handleRefreshData()}
-                disabled={!selectedEvent || isRefreshing || isInvalidating}
+                disabled={!eventInput.trim() || isRefreshing || isInvalidating}
               >
-                {isRefreshing ? 'Refreshing...' : 'Refresh'}
+                {isRefreshing ? 'Refreshing...' : 'Refresh Data'}
               </button>
             </div>
-          </section>
-
-          {selectedEvent ? (
-            <article className="panel-card terminal-card compact-card selected-event-card">
-              <div className="panel-heading">
-                <p className="eyebrow">Selected Event</p>
-                <h2>{selectedEvent.title}</h2>
-              </div>
-
-              <div className="selected-event-meta-row">
-                <p className="event-meta">slug: {selectedEvent.slug}</p>
-                {eventSportsLeagues.map((league) => (
-                  <span key={league} className={`market-chip market-chip-league market-chip-league-${league.toLowerCase()}`}>
-                    {league}
-                  </span>
-                ))}
-                {eventSportsLeagues.length === 0 ? (
-                  <span className="market-chip market-chip-market-only">MARKET ONLY</span>
-                ) : null}
-                {selectedEvent.resolvedFromFallback ? (
-                  <span className="market-chip market-chip-muted">matched from {selectedEvent.requestedSlug}</span>
-                ) : null}
-              </div>
-
-              <div className="event-summary-stats compact-status-grid">
-                <article>
-                  <span>Live Markets</span>
-                  <strong>{visibleMarkets.length}</strong>
-                </article>
-                <article>
-                  <span>Tradable Markets</span>
-                  <strong>{tradableMarkets.length}</strong>
-                </article>
-                <article>
-                  <span>Volume</span>
-                  <strong>{formatCompactNumber(selectedEvent.volume)}</strong>
-                </article>
-                <article>
-                  <span>Liquidity</span>
-                  <strong>{formatCompactNumber(selectedEvent.liquidity)}</strong>
-                </article>
-                <article>
-                  <span>End Date</span>
-                  <strong>{formatDate(selectedEvent.endDate)}</strong>
-                </article>
-              </div>
-
-              {selectedEvent.usFiltered && tradableMarkets.length === 0 ? (
-                <p className="empty-state">No tradable markets are currently available via your connected Polymarket US API key.</p>
-              ) : null}
-              {selectedEvent.usFiltered && tradableMarkets.length > 0 && visibleMarkets.length === 0 ? (
-                <p className="empty-state">Markets exist, but none are live-priced yet. Trading opens once the market is live.</p>
-              ) : null}
-              {eventHeadline ? (
-                <div className="event-highlight compact-highlight">
-                  <span>Highest-conviction</span>
-                  <strong>{eventHeadline.market.question}</strong>
-                  <p>
-                    {eventHeadline.leader.label} leads at {formatPercent(eventHeadline.leader.probability)}.
-                  </p>
+            {selectedEvent ? (
+              <>
+                <div className="market-controls-event-header">
+                  <div className="market-chip-row market-controls-chip-row">
+                    <span className="market-chip market-chip-muted">{selectedEvent.slug}</span>
+                    {eventSportsLeagues.map((league) => (
+                      <span key={league} className={`market-chip market-chip-league market-chip-league-${league.toLowerCase()}`}>
+                        {league}
+                      </span>
+                    ))}
+                    {eventSportsLeagues.length === 0 ? (
+                      <span className="market-chip market-chip-market-only">MARKET ONLY</span>
+                    ) : null}
+                    {selectedEvent.resolvedFromFallback ? (
+                      <span className="market-chip market-chip-muted">matched from {selectedEvent.requestedSlug}</span>
+                    ) : null}
+                  </div>
+                  <h3>{selectedEvent.title}</h3>
                 </div>
-              ) : null}
-            </article>
-          ) : null}
+
+                <div className="event-summary-stats compact-status-grid market-controls-stats">
+                  <article>
+                    <span>Volume</span>
+                    <strong>{formatCompactNumber(selectedEvent.volume)}</strong>
+                  </article>
+                  <article>
+                    <span>Liquidity</span>
+                    <strong>{formatCompactNumber(selectedEvent.liquidity)}</strong>
+                  </article>
+                  <article>
+                    <span>End Date</span>
+                    <strong>{formatDate(selectedEvent.endDate)}</strong>
+                  </article>
+                </div>
+
+                {selectedEvent.usFiltered && tradableMarkets.length === 0 ? (
+                  <p className="empty-state">No markets are currently available via your connected Polymarket US API key.</p>
+                ) : null}
+                {selectedEvent.usFiltered && tradableMarkets.length > 0 && visibleMarkets.length === 0 ? (
+                  <p className="empty-state">Markets exist, but none are live-priced yet. Trading opens once the market is live.</p>
+                ) : null}
+              </>
+            ) : null}
+          </section>
         </aside>
 
         <aside className="dashboard-rail dashboard-rail-wide">
@@ -1855,6 +1839,7 @@ export default function App() {
               </div>
             </div>
 
+            <div className="panel-scroll-body ai-panel-scroll">
             {currentRecommendation ? (
               <>
                 <div className="decision-highlight ai-primary-card ai-subsection">
@@ -2198,6 +2183,7 @@ export default function App() {
                 ) : null}
               </section>
             ) : null}
+            </div>
           </section>
         </aside>
       </section>
@@ -2255,13 +2241,14 @@ export default function App() {
             </button>
           </div>
 
-          {tradeHistory.length === 0 ? (
-            <p className="empty-state">No confirmed trade intents yet.</p>
-          ) : filteredTradeHistory.length === 0 ? (
-            <p className="empty-state">No trade intents match the selected filter.</p>
-          ) : (
-            <div className="trade-history-list terminal-list trade-center-list">
-              {filteredTradeHistory.map((intent) => {
+          <div className="panel-scroll-body trade-center-scroll">
+            {tradeHistory.length === 0 ? (
+              <p className="empty-state">No confirmed trade intents yet.</p>
+            ) : filteredTradeHistory.length === 0 ? (
+              <p className="empty-state">No trade intents match the selected filter.</p>
+            ) : (
+              <div className="trade-history-list terminal-list trade-center-list">
+                {filteredTradeHistory.map((intent) => {
                 const precheckMessage = getExecutePrecheckMessage(intent);
                 const isTracking = intent.status === 'tracking';
                 const isEditingActiveTrade = editingActiveTradeId === intent.id;
@@ -2301,8 +2288,8 @@ export default function App() {
                   0.01
                 );
 
-                return (
-                  <article key={intent.id} className="trade-history-item trade-center-item">
+                  return (
+                    <article key={intent.id} className="trade-history-item trade-center-item">
                     <div className="panel-heading panel-heading-inline">
                       <div>
                         <p className="eyebrow">{intent.eventTitle ?? intent.eventSlug}</p>
@@ -2519,11 +2506,12 @@ export default function App() {
                         </label>
                       </div>
                     ) : null}
-                  </article>
-                );
-              })}
-            </div>
-          )}
+                    </article>
+                  );
+                })}
+              </div>
+            )}
+          </div>
         </section>
       </section>
 

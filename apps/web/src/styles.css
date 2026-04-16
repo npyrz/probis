@@ -308,7 +308,7 @@ select {
 .dashboard-grid {
   display: grid;
   grid-template-columns: 320px minmax(0, 1fr);
-  gap: 12px;
+  gap: 10px;
   align-items: start;
 }
 
@@ -319,7 +319,7 @@ select {
 .dashboard-sidebar,
 .dashboard-rail {
   display: grid;
-  gap: 12px;
+  gap: 10px;
   align-content: start;
 }
 
@@ -334,15 +334,15 @@ select {
 .dashboard-footer-grid {
   display: grid;
   grid-template-columns: 1fr;
-  gap: 12px;
+  gap: 10px;
 }
 
 .compact-card {
-  padding: 13px;
+  padding: 11px;
 }
 
 .panel-heading {
-  margin-bottom: 12px;
+  margin-bottom: 10px;
 }
 
 .panel-heading-inline {
@@ -561,6 +561,10 @@ h3 {
   gap: 8px;
 }
 
+.control-card .input-row.input-row-single {
+  grid-template-columns: minmax(0, 1fr);
+}
+
 .control-card .input-row input,
 .control-card .input-row button,
 .control-card .control-actions .secondary-button,
@@ -581,6 +585,20 @@ h3 {
 }
 
 .control-card .control-actions {
+  margin-top: 2px;
+}
+
+.market-controls-event-header {
+  display: grid;
+  gap: 8px;
+  padding-top: 2px;
+}
+
+.market-controls-chip-row {
+  align-items: center;
+}
+
+.market-controls-stats {
   margin-top: 2px;
 }
 
@@ -806,11 +824,15 @@ h3 {
 
 .ai-panel {
   display: grid;
-  gap: 12px;
+  gap: 10px;
 }
 
 .ai-panel > .panel-heading {
   margin-bottom: 2px;
+}
+
+.panel-scroll-body {
+  min-height: 0;
 }
 
 .ai-subsection,
@@ -820,12 +842,12 @@ h3 {
 }
 
 .ai-subsection {
-  padding: 12px 14px;
+  padding: 10px 12px;
 }
 
 .ai-reasoning-card {
   display: grid;
-  gap: 10px;
+  gap: 8px;
 }
 
 .ai-reasoning-card .panel-heading {
@@ -833,9 +855,9 @@ h3 {
 }
 
 .ai-notes-card {
-  padding: 12px 14px;
+  padding: 10px 12px;
   display: grid;
-  gap: 10px;
+  gap: 8px;
 }
 
 .ai-notes-card .eyebrow,
@@ -847,7 +869,7 @@ h3 {
 .model-highlight,
 .event-highlight,
 .detail-callout {
-  padding: 12px;
+  padding: 10px;
 }
 
 .compact-highlight p,
@@ -861,9 +883,9 @@ h3 {
 .trade-input-row {
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(100px, 1fr));
-  gap: 10px;
+  gap: 8px;
   align-items: end;
-  margin-top: 10px;
+  margin-top: 8px;
 }
 
 .compact-input-grid {
@@ -934,16 +956,16 @@ textarea:focus-visible,
 .trade-history-card,
 .active-positions-card {
   display: grid;
-  gap: 12px;
+  gap: 10px;
 }
 
 .trade-center-list {
-  gap: 12px;
+  gap: 8px;
 }
 
 .trade-center-item {
   display: grid;
-  gap: 10px;
+  gap: 8px;
 }
 
 .trade-center-filter-row {
@@ -976,7 +998,7 @@ textarea:focus-visible,
 
 .operator-notes-copy {
   display: grid;
-  gap: 8px;
+  gap: 6px;
   color: #c9d5e3;
 }
 
@@ -999,7 +1021,7 @@ textarea:focus-visible,
 
 .compact-reason-list,
 .reason-list {
-  margin: 8px 0 0;
+  margin: 6px 0 0;
   padding-left: 18px;
 }
 
@@ -1024,6 +1046,29 @@ textarea:focus-visible,
 
 button {
   cursor: pointer;
+}
+
+@media (min-width: 981px) {
+  .ai-panel,
+  .trade-history-card {
+    max-height: calc(100vh - 164px);
+    min-height: 0;
+  }
+
+  .ai-panel {
+    grid-template-rows: auto minmax(0, 1fr);
+  }
+
+  .trade-history-card {
+    grid-template-rows: auto auto minmax(0, 1fr);
+  }
+
+  .ai-panel-scroll,
+  .trade-center-scroll {
+    overflow-y: auto;
+    padding-right: 4px;
+    scrollbar-gutter: stable;
+  }
 }
 
 @media (max-width: 1320px) {
@@ -1081,6 +1126,11 @@ button {
 
   .status-popup {
     grid-template-columns: 1fr;
+  }
+
+  .ai-panel,
+  .trade-history-card {
+    max-height: none;
   }
 }
 

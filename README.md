@@ -8,6 +8,8 @@ The recommendation path stays deterministic-first. The LLM helps explain the set
 
 The sports path follows the same rule. Team history and matchup features live in the deterministic aggregation and pricing pipeline, not in the Ollama prompt layer.
 
+Live sports context follows the same pattern. Team and league news, game-feed state, and optional social signals are attached during aggregation as `eventIntelligence`, then passed into the prompt layer as supporting context rather than as a separate model.
+
 ## Quick Start
 
 You only need Node.js 20+, Ollama, and the default local API URL for a first run.
@@ -59,6 +61,29 @@ Live orders require Polymarket US credentials in `.env`.
 
 The API signs Polymarket US requests with Ed25519 using the standard `timestamp + method + path` format.
 
+### Optional News And Social Providers
+
+ESPN-backed team news, league news, rosters, and scoreboard data work with no extra configuration.
+
+Reddit and X are optional provider hooks. They stay disabled unless you opt in through `.env`.
+
+- `SOCIAL_REDDIT_ENABLED=true` enables Reddit post search.
+- `SOCIAL_REDDIT_SUBREDDITS` defaults to `nba,mlb,sportsbook,polymarket`.
+- `SOCIAL_REDDIT_USER_AGENT` defaults to `probis/0.1`.
+- `SOCIAL_X_BEARER_TOKEN` is required to enable X recent-search results.
+- `SOCIAL_X_RECENT_SEARCH_URL` defaults to `https://api.x.com/2/tweets/search/recent`.
+
+Example:
+
+```env
+SOCIAL_REDDIT_ENABLED=true
+SOCIAL_REDDIT_SUBREDDITS=nba,mlb,sportsbook,polymarket
+SOCIAL_REDDIT_USER_AGENT=probis/0.1
+
+SOCIAL_X_BEARER_TOKEN=your_x_api_bearer_token
+SOCIAL_X_RECENT_SEARCH_URL=https://api.x.com/2/tweets/search/recent
+```
+
 ## What The Current Codebase Does
 
 - Resolves events from a Polymarket URL or slug.
@@ -66,6 +91,8 @@ The API signs Polymarket US requests with Ed25519 using the standard `timestamp 
 - Builds 7-day market history and aggregation snapshots.
 - Recognizes supported team-vs-team sports markets from a local Polymarket US team universe snapshot.
 - Loads local team history and derives Elo-style matchup features for recognized sports markets.
+- Adds ESPN-backed event intelligence for supported NBA and MLB matchups, including game feed, team news, and player-aware article ranking.
+- Optionally merges Reddit and X posts into the same event-intelligence payload when provider env keys are configured.
 - Scores markets and outcomes with a deterministic statistical model.
 - Uses Ollama for event analysis and constrained recommendation selection.
 - Produces a single decision payload with action, edge, EV, confidence, and risk targets.
@@ -160,11 +187,13 @@ The API lives in `apps/api` and is split into four route groups.
 
 ### 2. Data Providers
 
-The current system uses three external sources plus one local store.
+The current system uses five external sources plus one local store.
 
 - Gamma API for event and market discovery.
 - Polymarket CLOB client for public reads and history retrieval.
 - Polymarket US API for signed trading, balances, and account identity.
+- ESPN Site API for NBA/MLB scoreboards, rosters, and team or league news.
+- Optional Reddit and X recent-search inputs for extra live context when configured.
 - Local JSON persistence in `data/trade-intents.json`.
 
 ### 3. Frontend Operator Console
@@ -246,6 +275,7 @@ Outputs include:
 - `derivedMetrics`
 - `historicalPrices`
 - `sportsContext`
+- `eventIntelligence`
 
 ### Model 3: Statistical Pricing Model
 
@@ -290,6 +320,9 @@ The first-pass sports implementation is deterministic and local.
   The model expects rows like `league`, `date`, `homeTeamId`, `awayTeamId`, `homeScore`, and `awayScore`.
 5. Run normal event aggregation
   Recognized team-vs-team markets get a `sportsContext` block plus Elo-derived fair probabilities that are blended into Model 3.
+6. Attach live event intelligence
+  Supported NBA and MLB events also get an `eventIntelligence` block sourced from ESPN news, rosters, and game feeds, with optional Reddit/X posts merged in when configured.
+  Article ranking is impact-weighted so injuries, availability changes, lineup changes, suspensions, and transactions are promoted ahead of generic rankings, recap, tracker, and how-to-watch headlines.
 
 If the local sports files are empty, Probis falls back to the existing market-only model.
 
