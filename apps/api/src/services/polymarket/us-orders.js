@@ -808,12 +808,80 @@ export async function getLiveOutcomeProbabilityFromUsMarket(env, marketSlug, out
     return null;
   }
 
+  // Prefer BBO endpoint for real-time prices.
+  try {
+    const bboPrice = await fetchBboMidpointForOutcome(env, marketSlug, outcomeLabel);
+
+    if (typeof bboPrice === 'number') {
+      return bboPrice;
+    }
+  } catch {
+    // Fall through to market metadata.
+  }
+
   try {
     const quote = await resolveOutcomeMarketQuote(env, marketSlug, outcomeLabel);
     return typeof quote?.outcomePrice === 'number' ? quote.outcomePrice : null;
   } catch {
     return null;
   }
+}
+
+async function fetchBboForMarket(env, marketSlug) {
+  const normalizedSlug = String(marketSlug ?? '').trim();
+
+  if (!normalizedSlug) {
+    return null;
+  }
+
+  const encodedSlug = encodeURIComponent(normalizedSlug);
+  const path = `/v1/markets/${encodedSlug}/bbo`;
+  const client = createPolymarketUsClient(env);
+
+  try {
+    const response = await client.get(path, {
+      headers: getSignedHeaders(env, 'GET', path)
+    });
+
+    return response.data ?? null;
+  } catch {
+    return null;
+  }
+}
+
+async function fetchBboMidpointForOutcome(env, marketSlug, outcomeLabel) {
+  const bbo = await fetchBboForMarket(env, marketSlug);
+
+  if (!bbo || typeof bbo !== 'object') {
+    return null;
+  }
+
+  const bestBid = parseNumber(bbo.bestBid?.price?.value ?? bbo.bestBid?.price ?? bbo.bestBid ?? bbo.bid?.price?.value ?? bbo.bid?.price ?? bbo.bid);
+  const bestAsk = parseNumber(bbo.bestAsk?.price?.value ?? bbo.bestAsk?.price ?? bbo.bestAsk ?? bbo.ask?.price?.value ?? bbo.ask?.price ?? bbo.ask);
+
+  let longPrice = null;
+
+  if (typeof bestBid === 'number' && typeof bestAsk === 'number' && bestBid > 0 && bestAsk > 0) {
+    longPrice = (bestBid + bestAsk) / 2;
+  } else if (typeof bestAsk === 'number' && bestAsk > 0) {
+    longPrice = bestAsk;
+  } else if (typeof bestBid === 'number' && bestBid > 0) {
+    longPrice = bestBid;
+  }
+
+  if (typeof longPrice !== 'number') {
+    return null;
+  }
+
+  // BBO always reports the long (YES) side price.
+  // For short (NO) outcomes, invert.
+  const normalized = normalizeOutcomeLabel(outcomeLabel);
+
+  if (normalized === 'no') {
+    return normalizeLimitPrice(1 - longPrice);
+  }
+
+  return normalizeLimitPrice(longPrice);
 }
 
 async function resolveOrderIntentsForOutcome(env, marketSlug, outcomeLabel) {

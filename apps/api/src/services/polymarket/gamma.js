@@ -136,6 +136,16 @@ function createGammaClient(env) {
   });
 }
 
+function createUsGatewayClient(env) {
+  return axios.create({
+    baseURL: env.polymarketUsGatewayUrl ?? 'https://gateway.polymarket.us',
+    timeout: 15000,
+    headers: {
+      Accept: 'application/json'
+    }
+  });
+}
+
 function normalizeSearchText(value) {
   return value.toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim();
 }
@@ -265,6 +275,28 @@ export function extractEventSlug(input) {
 }
 
 export async function fetchActiveEvents(env, { limit = 10, offset = 0 } = {}) {
+  // Prefer the Polymarket US public gateway for event browsing.
+  try {
+    const usClient = createUsGatewayClient(env);
+    const response = await usClient.get('/events', {
+      params: {
+        active: true,
+        closed: false,
+        limit,
+        offset
+      }
+    });
+    const events = Array.isArray(response.data)
+      ? response.data
+      : (Array.isArray(response.data?.events) ? response.data.events : []);
+
+    if (events.length > 0) {
+      return events.map(normalizeEvent);
+    }
+  } catch {
+    // Fall through to Gamma.
+  }
+
   const gammaClient = createGammaClient(env);
   const response = await gammaClient.get('/events', {
     params: {
@@ -281,8 +313,22 @@ export async function fetchActiveEvents(env, { limit = 10, offset = 0 } = {}) {
 }
 
 export async function fetchEventByInput(env, input) {
-  const gammaClient = createGammaClient(env);
   const slug = extractEventSlug(input);
+
+  // Prefer the Polymarket US public gateway.
+  try {
+    const usClient = createUsGatewayClient(env);
+    const response = await usClient.get(`/events/${encodeURIComponent(slug)}`);
+    const event = Array.isArray(response.data) ? response.data[0] : (response.data?.event ?? response.data);
+
+    if (event && (event.title || event.slug || event.markets)) {
+      return filterEventMarketsToUs(env, normalizeEvent(event));
+    }
+  } catch {
+    // Fall through to Gamma / US market slug / fallback chain.
+  }
+
+  const gammaClient = createGammaClient(env);
 
   try {
     const response = await gammaClient.get(`/events/slug/${encodeURIComponent(slug)}`);

@@ -2002,6 +2002,16 @@ export default function App() {
                             <span>Shares filled</span>
                             <strong>{typeof intent.position?.sharesFilled === 'number' ? intent.position.sharesFilled.toFixed(2) : 'n/a'}</strong>
                           </article>
+                          <article>
+                            <span>Cost basis</span>
+                            <strong>{formatCurrency(intent.position?.notionalSpent ?? intent.tradeAmount)}</strong>
+                          </article>
+                          <article>
+                            <span>Current value</span>
+                            <strong>{typeof intent.position?.sharesFilled === 'number' && typeof currentProbability === 'number'
+                              ? formatCurrency(intent.position.sharesFilled * currentProbability)
+                              : 'n/a'}</strong>
+                          </article>
                         </>
                       ) : (
                         <>

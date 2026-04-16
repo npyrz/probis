@@ -522,9 +522,11 @@ async function reconcileTrackingIntentWithVenue(env, intent) {
     position: {
       ...intent.position,
       entryOrderId: orderId,
-      sharesFilled: Number.isFinite(sharesFilled) && sharesFilled > 0
-        ? sharesFilled
-        : (intent.position?.sharesFilled ?? null),
+      sharesFilled: Number.isFinite(liveShares) && liveShares > 0
+        ? liveShares
+        : (Number.isFinite(sharesFilled) && sharesFilled > 0
+          ? sharesFilled
+          : (intent.position?.sharesFilled ?? null)),
       notionalSpent: Number.isFinite(notionalSpent) && notionalSpent > 0
         ? notionalSpent
         : (intent.position?.notionalSpent ?? null),
@@ -766,11 +768,10 @@ async function resolveTrackedProbability(env, intent) {
     };
   }
 
-  const event = await fetchEventByInput(env, intent.input ?? intent.eventSlug);
-  const { outcome } = findTrackedMarketOutcome(event, intent);
+  // US market price unavailable — return last known probability rather than falling back to international API.
   return {
-    currentProbability: toTrackedProbability(intent?.position?.entryIntent, outcome?.probability ?? null),
-    lastPolymarketQuoteAt: null
+    currentProbability: intent.monitoring?.currentProbability ?? null,
+    lastPolymarketQuoteAt: intent.monitoring?.lastPolymarketQuoteAt ?? null
   };
 }
 
