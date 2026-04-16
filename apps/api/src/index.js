@@ -28,6 +28,7 @@ app.get('/', (_request, response) => {
       '/api/sports/status',
       '/api/sports/events/inspect',
       '/api/sports/import/nba',
+      '/api/sports/import/mlb',
       '/api/sports/backtest',
       '/api/ai/status',
       '/api/ai/test',

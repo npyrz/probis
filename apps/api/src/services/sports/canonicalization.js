@@ -67,6 +67,39 @@ const NBA_TEAM_FALLBACKS = {
   'washington wizards': ['wizards']
 };
 
+const MLB_TEAM_FALLBACKS = {
+  'arizona diamondbacks': ['diamondbacks', 'd backs', 'dbacks'],
+  'atlanta braves': ['braves'],
+  'baltimore orioles': ['orioles', 'os'],
+  'boston red sox': ['red sox'],
+  'chicago cubs': ['cubs'],
+  'chicago white sox': ['white sox'],
+  'cincinnati reds': ['reds'],
+  'cleveland guardians': ['guardians'],
+  'colorado rockies': ['rockies'],
+  'detroit tigers': ['tigers'],
+  'houston astros': ['astros'],
+  'kansas city royals': ['royals'],
+  'los angeles angels': ['angels'],
+  'los angeles dodgers': ['dodgers'],
+  'miami marlins': ['marlins'],
+  'milwaukee brewers': ['brewers'],
+  'minnesota twins': ['twins'],
+  'new york mets': ['mets'],
+  'new york yankees': ['yankees'],
+  'oakland athletics': ['athletics', 'as', 'a s'],
+  'philadelphia phillies': ['phillies'],
+  'pittsburgh pirates': ['pirates'],
+  'san diego padres': ['padres'],
+  'san francisco giants': ['giants'],
+  'seattle mariners': ['mariners'],
+  'st louis cardinals': ['cardinals'],
+  'tampa bay rays': ['rays'],
+  'texas rangers': ['rangers'],
+  'toronto blue jays': ['blue jays', 'jays'],
+  'washington nationals': ['nationals', 'nats']
+};
+
 function normalizeText(value) {
   return ` ${String(value ?? '')
     .toLowerCase()
@@ -279,13 +312,17 @@ export function buildTeamUniverseIndex(snapshot) {
 }
 
 function resolveFallbackTeam(label, leagueHint) {
-  if (leagueHint !== 'NBA') {
+  const fallbackMap = leagueHint === 'NBA'
+    ? NBA_TEAM_FALLBACKS
+    : (leagueHint === 'MLB' ? MLB_TEAM_FALLBACKS : null);
+
+  if (!fallbackMap) {
     return null;
   }
 
   const normalized = normalizeTeamKey(label);
 
-  for (const [displayName, aliases] of Object.entries(NBA_TEAM_FALLBACKS)) {
+  for (const [displayName, aliases] of Object.entries(fallbackMap)) {
     const values = [displayName, ...aliases].map((value) => normalizeTeamKey(value));
 
     if (!values.includes(normalized)) {
@@ -293,8 +330,8 @@ function resolveFallbackTeam(label, leagueHint) {
     }
 
     return {
-      id: `NBA:${displayName.replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '')}`,
-      league: 'NBA',
+      id: `${leagueHint}:${displayName.replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '')}`,
+      league: leagueHint,
       displayName: displayName.replace(/\b\w/g, (char) => char.toUpperCase()),
       aliases: values
     };

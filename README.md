@@ -283,9 +283,12 @@ The first-pass sports implementation is deterministic and local.
   The first importer uses ESPN NBA scoreboard data and stores finalized games in `data/sports/team-history.json`.
   You can pass `SEASON=2023-24` or explicit `START_DATE` and `END_DATE`. The importer fetches date ranges in batches so full-season imports are practical.
   To load the full calibration sample from 2020 forward, run `npm run import:nba-history:all`.
-3. Populate or extend `data/sports/team-history.json`
+3. Import MLB history with `npm run import:mlb-history`
+  The MLB importer uses ESPN MLB scoreboard data, supports single-year seasons like `SEASON=2024`, and can load the full sample from 2020 forward with `npm run import:mlb-history:all`.
+  You can evaluate the same deterministic calibration stack with `npm run backtest:mlb`.
+4. Populate or extend `data/sports/team-history.json`
   The model expects rows like `league`, `date`, `homeTeamId`, `awayTeamId`, `homeScore`, and `awayScore`.
-4. Run normal event aggregation
+5. Run normal event aggregation
   Recognized team-vs-team markets get a `sportsContext` block plus Elo-derived fair probabilities that are blended into Model 3.
 
 If the local sports files are empty, Probis falls back to the existing market-only model.
@@ -296,6 +299,8 @@ If the local sports files are empty, Probis falls back to the existing market-on
   Returns local sports universe and history-store counts.
 - `POST /api/sports/import/nba`
   Imports NBA history with optional JSON body fields `season`, `startDate`, `endDate`, and `batchSize`.
+- `POST /api/sports/import/mlb`
+  Imports MLB history with optional JSON body fields `season`, `startDate`, `endDate`, and `batchSize`.
 - `GET /api/sports/events/inspect?input=...`
   Returns recognized sports markets plus derived Elo features for a Polymarket event.
 - `POST /api/sports/backtest`

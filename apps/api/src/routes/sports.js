@@ -4,6 +4,7 @@ import { getEnv } from '../config/env.js';
 import { resolveEventAnalytics } from '../services/polymarket/event-data.js';
 import { runSportsBacktest } from '../services/sports/backtest.js';
 import { loadPolymarketUsTeamUniverse, loadSportsHistoryStore } from '../services/sports/history-store.js';
+import { importMlbHistory } from '../services/sports/mlb-importer.js';
 import { importNbaHistory } from '../services/sports/nba-importer.js';
 
 const router = Router();
@@ -50,6 +51,27 @@ router.post('/api/sports/import/nba', async (request, response) => {
     response.status(400).json({
       ok: false,
       error: error instanceof Error ? error.message : 'Unable to import NBA history'
+    });
+  }
+});
+
+router.post('/api/sports/import/mlb', async (request, response) => {
+  try {
+    const result = await importMlbHistory({
+      season: request.body?.season,
+      startDate: request.body?.startDate,
+      endDate: request.body?.endDate,
+      batchSize: request.body?.batchSize
+    });
+
+    response.status(201).json({
+      ok: true,
+      result
+    });
+  } catch (error) {
+    response.status(400).json({
+      ok: false,
+      error: error instanceof Error ? error.message : 'Unable to import MLB history'
     });
   }
 });

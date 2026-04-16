@@ -496,6 +496,42 @@ function getMarketDisplayMetrics(market, aggregation, statisticalModel) {
   };
 }
 
+function getModelOutcome(modelMarket, outcomeLabel) {
+  return modelMarket?.outcomes?.find((outcome) => outcome.label === outcomeLabel) ?? null;
+}
+
+function getSportsMarketOutcome(modelMarket, outcomeLabel) {
+  return modelMarket?.sportsContext?.outcomes?.find((outcome) => outcome.label === outcomeLabel) ?? null;
+}
+
+function getSportsProbabilityBreakdown(market, modelMarket) {
+  if (!market || !modelMarket?.sportsContext) {
+    return [];
+  }
+
+  return (Array.isArray(market.outcomes) ? market.outcomes : [])
+    .map((outcome) => {
+      const sportsOutcome = getSportsMarketOutcome(modelMarket, outcome.label);
+      const modelOutcome = getModelOutcome(modelMarket, outcome.label);
+
+      if (!sportsOutcome || !modelOutcome) {
+        return null;
+      }
+
+      return {
+        label: outcome.label,
+        marketProbability: typeof outcome.probability === 'number' ? outcome.probability : modelOutcome.currentProbability,
+        rawSportsProbability: sportsOutcome.rawFairProbability ?? null,
+        calibratedSportsProbability: sportsOutcome.fairProbability ?? null,
+        finalModelProbability: modelOutcome.estimatedProbability ?? null,
+        edge: modelOutcome.edge ?? null,
+        confidence: modelOutcome.confidence ?? null
+      };
+    })
+    .filter(Boolean)
+    .sort((left, right) => (right.finalModelProbability ?? -1) - (left.finalModelProbability ?? -1));
+}
+
 function getRecommendedMarket(selectedEvent, decisionEngine) {
   if (!selectedEvent?.markets || !decisionEngine?.recommendation?.marketQuestion) {
     return null;
@@ -833,6 +869,14 @@ export default function App() {
   const recommendationHeadline = formatRecommendationHeadline(currentRecommendation);
   const recommendationExpectedValue = resolveRecommendationExpectedValue(currentRecommendation);
   const parsedOperatorNotes = parseOperatorNotes(analysis);
+  const selectedSportsProbabilityBreakdown = getSportsProbabilityBreakdown(selectedMarket, selectedModelMarket);
+  const recommendedModelMarket = recommendedMarket ? getModelMarket(statisticalModel, recommendedMarket.conditionId) : null;
+  const recommendedSportsOutcome = currentRecommendation
+    ? getSportsMarketOutcome(recommendedModelMarket, currentRecommendation.outcomeLabel)
+    : null;
+  const recommendedModelOutcome = currentRecommendation
+    ? getModelOutcome(recommendedModelMarket, currentRecommendation.outcomeLabel)
+    : null;
 
   function clearSelectedEventContext() {
     setSelectedEvent(null);
@@ -1882,6 +1926,60 @@ export default function App() {
                     </ul>
                   ) : null}
                 </section>
+
+                {recommendedSportsOutcome && recommendedModelOutcome ? (
+                  <section className="panel-card terminal-card compact-card ai-reasoning-card">
+                    <div className="panel-heading">
+                      <p className="eyebrow">Sports Pricing</p>
+                      <h2>Why This Team</h2>
+                    </div>
+                    <div className="decision-rationale-grid compact-preview-grid">
+                      <article>
+                        <span>Market Price</span>
+                        <strong>{formatPercent(currentRecommendation.currentProbability)}</strong>
+                      </article>
+                      <article>
+                        <span>Raw Sports Model</span>
+                        <strong>{formatPercent(recommendedSportsOutcome.rawFairProbability)}</strong>
+                      </article>
+                      <article>
+                        <span>Calibrated Sports Model</span>
+                        <strong>{formatPercent(recommendedSportsOutcome.fairProbability)}</strong>
+                      </article>
+                      <article>
+                        <span>Final Blended Model</span>
+                        <strong>{formatPercent(recommendedModelOutcome.estimatedProbability)}</strong>
+                      </article>
+                      <article>
+                        <span>Sports Confidence</span>
+                        <strong>{formatPercent(recommendedSportsOutcome.modelConfidence)}</strong>
+                      </article>
+                      <article>
+                        <span>Calibration Method</span>
+                        <strong>{recommendedModelMarket?.sportsContext?.features?.calibrationMethod ?? recommendedModelOutcome.features?.sportsModel ?? 'n/a'}</strong>
+                      </article>
+                    </div>
+                    <p className="terminal-copy">
+                      Raw Elo gives the uncalibrated matchup estimate. Calibrated sports probability compresses tail confidence using historical bucket performance, and the final blended model then mixes that with live Polymarket price history and market quality.
+                    </p>
+                  </section>
+                ) : null}
+
+                {selectedSportsProbabilityBreakdown.length > 0 ? (
+                  <section className="panel-card terminal-card compact-card ai-reasoning-card">
+                    <div className="panel-heading">
+                      <p className="eyebrow">Selected Market</p>
+                      <h2>Sports Probability Breakdown</h2>
+                    </div>
+                    <div className="operator-notes-copy">
+                      {selectedSportsProbabilityBreakdown.map((outcome) => (
+                        <p key={outcome.label}>
+                          {outcome.label}: market {formatPercent(outcome.marketProbability)} | raw {formatPercent(outcome.rawSportsProbability)} | calibrated {formatPercent(outcome.calibratedSportsProbability)} | final {formatPercent(outcome.finalModelProbability)} | edge {formatSignedPercent(outcome.edge)}
+                        </p>
+                      ))}
+                    </div>
+                  </section>
+                ) : null}
               </>
             ) : (
               <p className="empty-state">Run the decision engine to populate AI recommendations.</p>

@@ -283,6 +283,61 @@ function summarizePredictions(predictions, calibrationBucketSize, phase = 'all')
   };
 }
 
+function summarizeWalkForwardPredictions(
+  predictions,
+  calibrationBucketSize,
+  phase = 'all',
+  { minCalibrationSampleSize = 250 } = {}
+) {
+  const priorPredictions = [];
+  const walkForwardPredictions = predictions.map((prediction) => {
+    const profile = priorPredictions.length >= minCalibrationSampleSize
+      ? buildCalibrationProfile(priorPredictions, { bucketSize: calibrationBucketSize })
+      : null;
+    const walkForwardHomeProbability = applyCalibrationProfile(prediction.homeProbability, profile);
+    const nextPrediction = {
+      ...prediction,
+      walkForwardHomeProbability,
+      walkForwardAwayProbability: 1 - walkForwardHomeProbability,
+      walkForwardBrier: (walkForwardHomeProbability - prediction.actualHomeWin) ** 2,
+      walkForwardLogLoss: logLoss(walkForwardHomeProbability, prediction.actualHomeWin),
+      walkForwardCorrect: (walkForwardHomeProbability >= 0.5 ? 1 : 0) === prediction.actualHomeWin
+    };
+
+    priorPredictions.push(prediction);
+    return nextPrediction;
+  });
+
+  return {
+    phase,
+    method: 'walk-forward-logistic-compression-plus-isotonic-buckets',
+    minCalibrationSampleSize,
+    evaluationGameCount: walkForwardPredictions.length,
+    averageBrier: average(walkForwardPredictions.map((prediction) => prediction.walkForwardBrier)),
+    averageLogLoss: average(walkForwardPredictions.map((prediction) => prediction.walkForwardLogLoss)),
+    accuracy: average(walkForwardPredictions.map((prediction) => (prediction.walkForwardCorrect ? 1 : 0))),
+    meanPrediction: average(walkForwardPredictions.map((prediction) => prediction.walkForwardHomeProbability)),
+    meanActualHomeWinRate: average(walkForwardPredictions.map((prediction) => prediction.actualHomeWin)),
+    calibration: {
+      meanCalibrationGap: walkForwardPredictions.length
+        ? average(walkForwardPredictions.map((prediction) => prediction.actualHomeWin - prediction.walkForwardHomeProbability))
+        : null,
+      expectedWins: sum(walkForwardPredictions.map((prediction) => prediction.walkForwardHomeProbability)),
+      actualWins: sum(walkForwardPredictions.map((prediction) => prediction.actualHomeWin)),
+      buckets: buildCalibrationBuckets(
+        walkForwardPredictions.map((prediction) => ({
+          ...prediction,
+          homeProbability: prediction.walkForwardHomeProbability,
+          brier: prediction.walkForwardBrier,
+          logLoss: prediction.walkForwardLogLoss
+        })),
+        calibrationBucketSize
+      )
+    },
+    predictions: walkForwardPredictions
+  };
+}
+
 function getMarginMultiplier(scoreDiff, eloDiff) {
   const magnitude = Math.max(1, Math.abs(scoreDiff));
   return Math.log(magnitude + 1) * (2.2 / ((Math.abs(eloDiff) * 0.001) + 2.2));
@@ -523,7 +578,15 @@ export function buildTeamStrengthMarketContext({ event, market, historyStore, ph
 
 export function runTeamStrengthBacktest(
   historyStore,
-  { league, startDate, endDate, minTrainingGames = 10, calibrationBucketSize = 0.1, phase = 'all' } = {}
+  {
+    league,
+    startDate,
+    endDate,
+    minTrainingGames = 10,
+    calibrationBucketSize = 0.1,
+    phase = 'all',
+    walkForwardMinCalibrationSampleSize = 250
+  } = {}
 ) {
   if (!league) {
     throw new Error('league is required for sports backtesting.');
@@ -584,6 +647,9 @@ export function runTeamStrengthBacktest(
   }
 
   const overallSummary = summarizePredictions(predictions, calibrationBucketSize, phase);
+  const walkForwardSummary = summarizeWalkForwardPredictions(predictions, calibrationBucketSize, phase, {
+    minCalibrationSampleSize: walkForwardMinCalibrationSampleSize
+  });
   const regularPredictions = predictions.filter((prediction) => prediction.seasonPhase === 'regular');
   const playoffPredictions = predictions.filter((prediction) => prediction.seasonPhase === 'playoffs');
 
@@ -592,14 +658,26 @@ export function runTeamStrengthBacktest(
     phase,
     minTrainingGames,
     calibrationBucketSize,
+    walkForwardMinCalibrationSampleSize,
     totalLeagueGameCount: games.length,
     evaluationGameCount: overallSummary.evaluationGameCount,
     raw: overallSummary.raw,
     calibrated: overallSummary.calibrated,
+    walkForward: walkForwardSummary,
     phaseBreakdown: phase === 'all'
       ? {
-          regular: summarizePredictions(regularPredictions, calibrationBucketSize, 'regular'),
-          playoffs: summarizePredictions(playoffPredictions, calibrationBucketSize, 'playoffs')
+          regular: {
+            ...summarizePredictions(regularPredictions, calibrationBucketSize, 'regular'),
+            walkForward: summarizeWalkForwardPredictions(regularPredictions, calibrationBucketSize, 'regular', {
+              minCalibrationSampleSize: walkForwardMinCalibrationSampleSize
+            })
+          },
+          playoffs: {
+            ...summarizePredictions(playoffPredictions, calibrationBucketSize, 'playoffs'),
+            walkForward: summarizeWalkForwardPredictions(playoffPredictions, calibrationBucketSize, 'playoffs', {
+              minCalibrationSampleSize: walkForwardMinCalibrationSampleSize
+            })
+          }
         }
       : null,
     predictions: overallSummary.predictions.slice(-250)
