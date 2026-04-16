@@ -197,6 +197,72 @@ function pickUsdBalance(balances) {
     ?? null;
 }
 
+function extractUsdAccountSnapshot(usdBalance) {
+  if (!usdBalance || typeof usdBalance !== 'object') {
+    return null;
+  }
+
+  return {
+    totalAccountBudget: parseNumber(
+      usdBalance.currentBalance
+      ?? usdBalance.balance
+      ?? usdBalance.balance?.value
+    ),
+    buyingPower: parseNumber(
+      usdBalance.buyingPower
+      ?? usdBalance.availableBalance
+      ?? usdBalance.available
+      ?? usdBalance.available?.value
+    ),
+    assetNotional: parseNumber(
+      usdBalance.assetNotional
+      ?? usdBalance.assetValue
+      ?? usdBalance.assetValue?.value
+    ),
+    assetAvailable: parseNumber(
+      usdBalance.assetAvailable
+      ?? usdBalance.availableAsset
+      ?? usdBalance.availableAsset?.value
+    ),
+    pendingCredit: parseNumber(
+      usdBalance.pendingCredit
+      ?? usdBalance.pendingCredits
+      ?? usdBalance.pendingCredits?.value
+    ),
+    openOrders: parseNumber(
+      usdBalance.openOrders
+      ?? usdBalance.openOrderNotional
+      ?? usdBalance.openOrderNotional?.value
+    ),
+    unsettledFunds: parseNumber(
+      usdBalance.unsettledFunds
+      ?? usdBalance.unsettled
+      ?? usdBalance.unsettled?.value
+    ),
+    marginRequirement: parseNumber(
+      usdBalance.marginRequirement
+      ?? usdBalance.marginUsed
+      ?? usdBalance.marginUsed?.value
+    ),
+    budgetCurrency: String(usdBalance.currency ?? 'USD').toUpperCase(),
+    balanceLastUpdatedAt: typeof usdBalance.lastUpdated === 'string' && usdBalance.lastUpdated.trim().length > 0
+      ? usdBalance.lastUpdated
+      : null
+  };
+}
+
+async function fetchUsdAccountSnapshot(env) {
+  const path = '/v1/account/balances';
+  const client = createPolymarketUsClient(env);
+  const response = await client.get(path, {
+    headers: getSignedHeaders(env, 'GET', path)
+  });
+  const balances = getAccountBalances(response.data);
+  const usdBalance = pickUsdBalance(balances);
+
+  return extractUsdAccountSnapshot(usdBalance);
+}
+
 function getPositionOutcome(position) {
   return String(
     position?.outcome
@@ -1312,7 +1378,14 @@ export async function getPolymarketUsTradingStatus(env) {
     authenticated: false,
     totalAccountBudget: null,
     buyingPower: null,
+    assetNotional: null,
+    assetAvailable: null,
+    pendingCredit: null,
+    openOrders: null,
+    unsettledFunds: null,
+    marginRequirement: null,
     budgetCurrency: 'USD',
+    balanceLastUpdatedAt: null,
     error: null
   };
 
@@ -1324,37 +1397,21 @@ export async function getPolymarketUsTradingStatus(env) {
     return status;
   }
 
-  const path = '/v1/portfolio/positions';
-  const balancesPath = '/v1/account/balances';
-  const client = createPolymarketUsClient(env);
-
   try {
-    await client.get(path, {
-      headers: getSignedHeaders(env, 'GET', path)
-    });
+    const snapshot = await fetchUsdAccountSnapshot(env);
     status.authenticated = true;
 
-    try {
-      const balancesResponse = await client.get(balancesPath, {
-        headers: getSignedHeaders(env, 'GET', balancesPath)
-      });
-      const balances = getAccountBalances(balancesResponse.data);
-      const usdBalance = pickUsdBalance(balances);
-
-      status.totalAccountBudget = parseNumber(
-        usdBalance?.currentBalance
-        ?? usdBalance?.balance
-        ?? usdBalance?.balance?.value
-      );
-      status.buyingPower = parseNumber(
-        usdBalance?.buyingPower
-        ?? usdBalance?.availableBalance
-        ?? usdBalance?.available
-        ?? usdBalance?.available?.value
-      );
-      status.budgetCurrency = String(usdBalance?.currency ?? 'USD').toUpperCase();
-    } catch {
-      // Keep status reachable/authenticated even if account balance endpoint is temporarily unavailable.
+    if (snapshot) {
+      status.totalAccountBudget = snapshot.totalAccountBudget;
+      status.buyingPower = snapshot.buyingPower;
+      status.assetNotional = snapshot.assetNotional;
+      status.assetAvailable = snapshot.assetAvailable;
+      status.pendingCredit = snapshot.pendingCredit;
+      status.openOrders = snapshot.openOrders;
+      status.unsettledFunds = snapshot.unsettledFunds;
+      status.marginRequirement = snapshot.marginRequirement;
+      status.budgetCurrency = snapshot.budgetCurrency;
+      status.balanceLastUpdatedAt = snapshot.balanceLastUpdatedAt;
     }
   } catch (error) {
     status.error = getErrorMessage(error);
@@ -1369,8 +1426,16 @@ export async function getPolymarketUsAccountIdentity(env) {
     endpoint: env.polymarketUsBaseUrl,
     keyIdSuffix: env.polymarketUsKeyId ? String(env.polymarketUsKeyId).slice(-8) : null,
     authenticated: false,
+    totalAccountBudget: null,
     buyingPower: null,
+    assetNotional: null,
+    assetAvailable: null,
+    pendingCredit: null,
+    openOrders: null,
+    unsettledFunds: null,
+    marginRequirement: null,
     budgetCurrency: 'USD',
+    balanceLastUpdatedAt: null,
     openPositionsCount: 0,
     openPositions: [],
     error: null
@@ -1381,29 +1446,35 @@ export async function getPolymarketUsAccountIdentity(env) {
   }
 
   try {
-    const [positions, balancesResponse] = await Promise.all([
+    const [positionsResult, snapshotResult] = await Promise.allSettled([
       fetchPortfolioPositions(env),
-      (async () => {
-        const path = '/v1/account/balances';
-        const client = createPolymarketUsClient(env);
-        return client.get(path, {
-          headers: getSignedHeaders(env, 'GET', path)
-        });
-      })()
+      fetchUsdAccountSnapshot(env)
     ]);
 
-    identity.authenticated = true;
+    identity.authenticated = positionsResult.status === 'fulfilled' || snapshotResult.status === 'fulfilled';
 
-    const balances = getAccountBalances(balancesResponse.data);
-    const usdBalance = pickUsdBalance(balances);
+    if (snapshotResult.status === 'fulfilled' && snapshotResult.value) {
+      identity.totalAccountBudget = snapshotResult.value.totalAccountBudget;
+      identity.buyingPower = snapshotResult.value.buyingPower;
+      identity.assetNotional = snapshotResult.value.assetNotional;
+      identity.assetAvailable = snapshotResult.value.assetAvailable;
+      identity.pendingCredit = snapshotResult.value.pendingCredit;
+      identity.openOrders = snapshotResult.value.openOrders;
+      identity.unsettledFunds = snapshotResult.value.unsettledFunds;
+      identity.marginRequirement = snapshotResult.value.marginRequirement;
+      identity.budgetCurrency = snapshotResult.value.budgetCurrency;
+      identity.balanceLastUpdatedAt = snapshotResult.value.balanceLastUpdatedAt;
+    }
 
-    identity.buyingPower = parseNumber(
-      usdBalance?.buyingPower
-      ?? usdBalance?.availableBalance
-      ?? usdBalance?.available
-      ?? usdBalance?.available?.value
-    );
-    identity.budgetCurrency = String(usdBalance?.currency ?? 'USD').toUpperCase();
+    if (positionsResult.status !== 'fulfilled') {
+      if (snapshotResult.status === 'rejected') {
+        identity.error = getErrorMessage(positionsResult.reason);
+      }
+
+      return identity;
+    }
+
+    const positions = positionsResult.value;
 
     const summarizedPositions = positions
       .map((position) => {

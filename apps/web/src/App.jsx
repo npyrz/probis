@@ -1751,7 +1751,10 @@ export default function App() {
     try {
       const nextIntent = await sellTradeIntentRequest(intent.id);
       setTradeHistory((previous) => replaceIntentInList(previous, nextIntent));
+      const nextStatus = await fetchStatus();
+      setStatus(nextStatus);
       setLastTradeUpdate(new Date().toISOString());
+      setLastMarketUpdate(new Date().toISOString());
 
       if (tradeDraft?.id === nextIntent.id) {
         setTradeDraft(nextIntent);
