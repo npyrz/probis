@@ -77,6 +77,24 @@ function toDateKey(value) {
   return `${year}${month}${day}`;
 }
 
+function shiftDateKey(dateKey, offsetDays) {
+  if (!dateKey || typeof offsetDays !== 'number') {
+    return null;
+  }
+
+  const year = Number.parseInt(dateKey.slice(0, 4), 10);
+  const month = Number.parseInt(dateKey.slice(4, 6), 10);
+  const day = Number.parseInt(dateKey.slice(6, 8), 10);
+
+  if (![year, month, day].every(Number.isFinite)) {
+    return null;
+  }
+
+  const parsed = new Date(Date.UTC(year, month - 1, day));
+  parsed.setUTCDate(parsed.getUTCDate() + offsetDays);
+  return toDateKey(parsed.toISOString());
+}
+
 async function fetchJson(url) {
   const response = await fetch(url);
 
@@ -191,7 +209,9 @@ async function fetchLeagueNews(league) {
 
 async function fetchLeagueScoreboard(league, eventDate) {
   const baseUrl = getLeagueBaseUrl(league);
-  const dateKey = toDateKey(eventDate);
+  const dateKey = typeof eventDate === 'string' && /^\d{8}$/.test(eventDate)
+    ? eventDate
+    : toDateKey(eventDate);
 
   if (!baseUrl || !dateKey) {
     return [];
@@ -201,6 +221,21 @@ async function fetchLeagueScoreboard(league, eventDate) {
     const payload = await fetchJson(`${baseUrl}/scoreboard?dates=${encodeURIComponent(dateKey)}`);
     return Array.isArray(payload?.events) ? payload.events : [];
   });
+}
+
+async function fetchLeagueScoreboards(league, eventDate) {
+  const baseDateKey = toDateKey(eventDate);
+
+  if (!baseDateKey) {
+    return [];
+  }
+
+  const dateKeys = [-1, 0, 1]
+    .map((offsetDays) => shiftDateKey(baseDateKey, offsetDays))
+    .filter(Boolean);
+  const eventGroups = await Promise.all(dateKeys.map((dateKey) => fetchLeagueScoreboard(league, dateKey)));
+
+  return eventGroups.flat();
 }
 
 function normalizeArticle(article) {
@@ -237,6 +272,36 @@ function normalizeSocialPost(post) {
 
 function getArticleText(article) {
   return normalizeSportsTeamKey(`${article?.headline ?? ''} ${article?.description ?? ''}`);
+}
+
+function buildTeamMatchKeys(team) {
+  const aliasCandidates = [
+    team?.displayName,
+    team?.shortDisplayName,
+    team?.teamName,
+    team?.label,
+    team?.abbreviation
+  ].filter(Boolean);
+  const aliasSet = new Set(aliasCandidates.map((value) => normalizeSportsTeamKey(value)).filter(Boolean));
+
+  for (const value of aliasCandidates) {
+    const normalized = normalizeSportsTeamKey(value);
+    const parts = normalized.split(' ').filter(Boolean);
+
+    if (parts.length > 1) {
+      aliasSet.add(parts.slice(1).join(' '));
+      aliasSet.add(parts.at(-1));
+    }
+  }
+
+  return [...aliasSet];
+}
+
+function matchTeamsInText(text, teams) {
+  return teams
+    .filter((team) => (team.matchKeys ?? []).some((matchKey) => matchKey && text.includes(matchKey)))
+    .map((team) => team.displayName ?? team.teamName ?? team.label)
+    .filter(Boolean);
 }
 
 function matchesPattern(text, patterns) {
@@ -460,7 +525,19 @@ function getArticleImpactScore(article, matchedTeams, matchedPlayers, impactSign
   return score;
 }
 
-function rankArticles(articles, teamNames, roster) {
+function shouldKeepArticle(article, matchedTeams, matchedPlayers, impactSignals) {
+  if (article.sourceScope === 'team') {
+    return matchedTeams.length > 0 || matchedPlayers.length > 0 || impactSignals.length > 0;
+  }
+
+  if (matchedTeams.length > 0 || matchedPlayers.length > 0) {
+    return true;
+  }
+
+  return false;
+}
+
+function rankArticles(articles, teams, roster) {
   const unique = new Map();
 
   for (const article of articles) {
@@ -471,9 +548,14 @@ function rankArticles(articles, teamNames, roster) {
     }
 
     const text = getArticleText(normalized);
-    const matchedTeams = teamNames.filter((teamName) => text.includes(normalizeSportsTeamKey(teamName)));
+    const matchedTeams = matchTeamsInText(text, teams);
     const matchedPlayers = matchPlayersInArticle(normalized, roster);
     const impactSignals = detectImpactSignals(normalized);
+
+    if (!shouldKeepArticle(article, matchedTeams, matchedPlayers, impactSignals)) {
+      continue;
+    }
+
     const impactScore = getArticleImpactScore(normalized, matchedTeams, matchedPlayers, impactSignals);
 
     unique.set(normalized.id, {
@@ -581,7 +663,7 @@ async function fetchXPosts(env, queries, league) {
   });
 }
 
-function rankSocialPosts(posts, teamNames, roster) {
+function rankSocialPosts(posts, teams, roster) {
   const unique = new Map();
 
   for (const post of posts.map((entry) => normalizeSocialPost(entry))) {
@@ -590,9 +672,14 @@ function rankSocialPosts(posts, teamNames, roster) {
     }
 
     const text = getArticleText(post);
-    const matchedTeams = teamNames.filter((teamName) => text.includes(normalizeSportsTeamKey(teamName)));
+    const matchedTeams = matchTeamsInText(text, teams);
     const matchedPlayers = matchPlayersInArticle(post, roster);
     const impactSignals = detectImpactSignals(post);
+
+    if (matchedTeams.length === 0 && matchedPlayers.length === 0) {
+      continue;
+    }
+
     const impactScore = getArticleImpactScore(post, matchedTeams, matchedPlayers, impactSignals) + 1;
 
     unique.set(post.id, {
@@ -687,27 +774,33 @@ export async function buildEventIntelligence(env, event, sportsContext) {
         ...team,
         espnTeamId: espnTeam?.id ?? null,
         abbreviation: espnTeam?.abbreviation ?? null,
-        displayName: espnTeam?.displayName ?? team.teamName
+        displayName: espnTeam?.displayName ?? team.teamName,
+        shortDisplayName: espnTeam?.shortDisplayName ?? null
       };
     })
+    .map((team) => ({
+      ...team,
+      matchKeys: buildTeamMatchKeys(team)
+    }))
     .filter((team) => team.espnTeamId);
 
   const [leagueNews, scoreboardEvents, rosterGroups, teamNewsGroups] = await Promise.all([
     fetchLeagueNews(supportedLeague),
-    fetchLeagueScoreboard(supportedLeague, event?.startDate ?? event?.endDate ?? new Date().toISOString()),
+    fetchLeagueScoreboards(supportedLeague, event?.startDate ?? event?.endDate ?? new Date().toISOString()),
     Promise.all(teams.map((team) => fetchTeamRoster(supportedLeague, team.espnTeamId))),
     Promise.all(teams.map((team) => fetchTeamNews(supportedLeague, team.espnTeamId)))
   ]);
 
   const roster = rosterGroups.flat();
-  const teamNames = teams.map((team) => team.displayName);
-  const articles = rankArticles([...leagueNews, ...teamNewsGroups.flat()], teamNames, roster);
+  const scopedLeagueNews = leagueNews.map((article) => ({ ...article, sourceScope: 'league' }));
+  const scopedTeamNews = teamNewsGroups.flat().map((article) => ({ ...article, sourceScope: 'team' }));
+  const articles = rankArticles([...scopedTeamNews, ...scopedLeagueNews], teams, roster);
   const queries = buildSearchQueries(teams, roster);
   const [redditPosts, xPosts] = await Promise.all([
     fetchRedditPosts(env, queries, supportedLeague),
     fetchXPosts(env, queries, supportedLeague)
   ]);
-  const socialPosts = rankSocialPosts([...redditPosts, ...xPosts], teamNames, roster);
+  const socialPosts = rankSocialPosts([...redditPosts, ...xPosts], teams, roster);
   const playerMentions = [...new Map(
     [...articles, ...socialPosts]
       .flatMap((article) => article.matchedPlayers)
