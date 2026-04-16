@@ -12,6 +12,7 @@ import {
   pollTrackedTradeIntents,
   resolveEvent,
   resolveEventAggregation,
+  sellTradeIntent as sellTradeIntentRequest,
   stopTradeIntent as stopTradeIntentRequest,
   updateTradeIntent as updateTradeIntentRequest
 } from './lib/api.js';
@@ -1245,6 +1246,39 @@ export default function App() {
     }
   }
 
+  async function handleSellTrackedIntent(intent) {
+    setError('');
+    setNotice('');
+    setIsMutatingHistory(true);
+
+    try {
+      const nextIntent = await sellTradeIntentRequest(intent.id);
+      setTradeHistory((previous) => replaceIntentInList(previous, nextIntent));
+      setLastTradeUpdate(new Date().toISOString());
+
+      if (tradeDraft?.id === nextIntent.id) {
+        setTradeDraft(nextIntent);
+        saveStoredTradeDraft(nextIntent);
+      }
+
+      setNotice('Position sold and closed successfully.');
+    } catch (sellError) {
+      if (isTradeIntentNotFoundError(sellError)) {
+        await refreshTradeHistory();
+
+        if (tradeDraft?.id === intent.id) {
+          handleClearTradeDraft();
+        }
+
+        setNotice('That trade intent no longer exists. Refreshed history.');
+      } else {
+        setError(sellError instanceof Error ? sellError.message : 'Unable to sell position');
+      }
+    } finally {
+      setIsMutatingHistory(false);
+    }
+  }
+
   async function handleStopTrackedIntent(intent) {
     setError('');
     setNotice('');
@@ -2043,6 +2077,15 @@ export default function App() {
                           )}
                           <button
                             type="button"
+                            className="secondary-button"
+                            onClick={() => void handleSellTrackedIntent(intent)}
+                            disabled={isMutatingHistory}
+                            title="Sell all shares and close this position now."
+                          >
+                            Cash Out
+                          </button>
+                          <button
+                            type="button"
                             className="ghost-button"
                             onClick={() => void handleStopTrackedIntent(intent)}
                             disabled={isMutatingHistory}
@@ -2171,7 +2214,7 @@ export default function App() {
               <span>Rationale</span>
               <strong>{decisionEngine.recommendation.thesis}</strong>
               <p>Risk: {decisionEngine.recommendation.keyRisk}</p>
-              {decisionEngine.recommendation.reasons.length > 0 ? (
+              {decisionEngine.recommendation.reasons?.length > 0 ? (
                 <ul className="reason-list">
                   {decisionEngine.recommendation.reasons.map((reason) => (
                     <li key={reason}>{reason}</li>
