@@ -13,6 +13,7 @@ import {
   getSpentFromOrder,
   placeBuyOrderForIntent,
   placeSellOrderForIntent,
+  resolveIntentOrderFillState,
   resolveLivePositionShares
 } from './polymarket/us-orders.js';
 
@@ -113,6 +114,22 @@ function getExecutedEntryProbability(intent, buyOrder) {
   }
 
   return spent / shares;
+}
+
+function deriveRemainingPositionCostBasis({ entryShares, entryNotionalSpent, remainingShares }) {
+  if (!Number.isFinite(entryShares) || entryShares <= 0) {
+    return null;
+  }
+
+  if (!Number.isFinite(entryNotionalSpent) || entryNotionalSpent <= 0) {
+    return null;
+  }
+
+  if (!Number.isFinite(remainingShares) || remainingShares < 0) {
+    return null;
+  }
+
+  return (entryNotionalSpent / entryShares) * remainingShares;
 }
 
 function getPositionSideFromEntryIntent(entryIntent) {
@@ -413,7 +430,7 @@ async function reconcileTrackingIntentWithVenue(env, intent) {
       updatedAt: new Date().toISOString()
     }, {
       apiVerifiedFilledPosition: false,
-      method: 'order-by-id-plus-live-position',
+      method: 'order-by-id',
       reason: 'order-lookup-temporary-failure',
       orderId
     });
@@ -424,46 +441,10 @@ async function reconcileTrackingIntentWithVenue(env, intent) {
   const orderState = getTerminalOrderStateFromVenueOrder(venueOrder);
   const hasEntryFills = Number.isFinite(sharesFilled) && sharesFilled > 0;
 
-  let liveShares;
-  let livePositionFetchFailed = false;
+  let fillState;
 
   try {
-    liveShares = Number.parseFloat(await resolveLivePositionShares(env, intent) ?? NaN);
-  } catch (error) {
-    liveShares = NaN;
-    livePositionFetchFailed = true;
-  }
-
-  const hasLiveShares = Number.isFinite(liveShares) && liveShares > 0;
-
-  if (livePositionFetchFailed) {
-    return withApiVerification({
-      ...intent,
-      executionRequest: {
-        ...intent.executionRequest,
-        venueOrder: venueOrder
-      },
-      monitoring: {
-        ...intent.monitoring,
-        lastEvaluationAt: new Date().toISOString(),
-        notes: 'Venue sync warning: order history lookup failed temporarily. Keeping trade active and counters unchanged pending next poll.'
-      },
-      updatedAt: new Date().toISOString()
-    }, {
-      apiVerifiedFilledPosition: false,
-      method: 'order-by-id-plus-live-position',
-      reason: 'live-position-lookup-temporary-failure',
-      orderId
-    });
-  }
-
-  const hasNoLiveShares = !hasLiveShares;
-
-  // If the order has confirmed fills, the ORDER is the authoritative source — not the portfolio API.
-  // The portfolio endpoint may return empty for various reasons (propagation delay, API quirks, etc.).
-  // Never auto-close a position that the order API confirms was filled.
-  if (hasNoLiveShares && hasEntryFills) {
-    const externalSellOrder = await findRecentFilledSellOrderForIntent(env, {
+    fillState = await resolveIntentOrderFillState(env, {
       ...intent,
       executionRequest: {
         ...intent.executionRequest,
@@ -471,48 +452,81 @@ async function reconcileTrackingIntentWithVenue(env, intent) {
         venueOrder
       }
     });
-
-    if (externalSellOrder) {
-      const matchedSellOrderId = externalSellOrder?.id ?? null;
-      const matchedSellShares = Number.parseFloat(getSharesFromOrder(externalSellOrder) ?? NaN);
-      const closedIntent = finalizeTrackedIntent({
-        ...intent,
-        executionRequest: {
-          ...intent.executionRequest,
-          venueOrderId: orderId,
-          venueOrder
-        }
-      }, 'external-sell-detected', {
+  } catch {
+    return withApiVerification({
+      ...intent,
+      executionRequest: {
+        ...intent.executionRequest,
+        venueOrder
+      },
+      monitoring: {
         ...intent.monitoring,
-        state: 'venue-sell-detected',
         lastEvaluationAt: new Date().toISOString(),
-        exitReason: 'manual-sell',
-        notes: `Detected filled sell order ${matchedSellOrderId ?? 'unknown'} on the venue after entry order ${orderId}; marking position closed.`
-      });
+        notes: 'Venue sync warning: order history lookup failed temporarily. Keeping trade active pending next poll.'
+      },
+      updatedAt: new Date().toISOString()
+    }, {
+      apiVerifiedFilledPosition: false,
+      method: 'order-fills-authoritative',
+      reason: 'order-history-lookup-temporary-failure',
+      orderId
+    });
+  }
 
-      closedIntent.exitRequest = {
-        ...closedIntent.exitRequest,
-        venueOrderId: matchedSellOrderId,
-        venueOrder: externalSellOrder,
-        executedAt: externalSellOrder?.createTime ?? externalSellOrder?.insertTime ?? new Date().toISOString()
-      };
-      closedIntent.position = {
-        ...closedIntent.position,
-        exitOrderId: matchedSellOrderId,
-        exitSharesFilled: Number.isFinite(matchedSellShares) && matchedSellShares > 0
-          ? matchedSellShares
-          : (closedIntent.position?.sharesFilled ?? null),
-        lastExecutionAt: new Date().toISOString()
-      };
+  const remainingShares = Number.parseFloat(fillState?.remainingShares ?? NaN);
+  const hasRemainingShares = Number.isFinite(remainingShares) && remainingShares > 0;
+  const remainingNotionalSpent = Number.isFinite(remainingShares) && remainingShares >= 0
+    ? (deriveRemainingPositionCostBasis({
+        entryShares: sharesFilled,
+        entryNotionalSpent: notionalSpent,
+        remainingShares
+      }) ?? (intent.position?.notionalSpent ?? null))
+    : (Number.isFinite(notionalSpent) && notionalSpent > 0
+      ? notionalSpent
+      : (intent.position?.notionalSpent ?? null));
 
-      return withApiVerification(closedIntent, {
-        apiVerifiedFilledPosition: true,
-        method: 'entry-order-plus-external-sell-order',
-        reason: 'external-sell-detected',
-        orderId
-      });
-    }
+  if (!hasRemainingShares && hasEntryFills && fillState?.latestSellOrder) {
+    const matchedSellOrderId = fillState.latestSellOrder?.id ?? null;
+    const matchedSellShares = Number.parseFloat(getSharesFromOrder(fillState.latestSellOrder) ?? NaN);
+    const closedIntent = finalizeTrackedIntent({
+      ...intent,
+      executionRequest: {
+        ...intent.executionRequest,
+        venueOrderId: orderId,
+        venueOrder
+      }
+    }, 'external-sell-detected', {
+      ...intent.monitoring,
+      state: 'venue-sell-detected',
+      lastEvaluationAt: new Date().toISOString(),
+      exitReason: 'manual-sell',
+      notes: `Detected filled sell order ${matchedSellOrderId ?? 'unknown'} on the venue after entry order ${orderId}; marking position closed.`
+    });
 
+    closedIntent.exitRequest = {
+      ...closedIntent.exitRequest,
+      venueOrderId: matchedSellOrderId,
+      venueOrder: fillState.latestSellOrder,
+      executedAt: fillState.latestSellOrder?.createTime ?? fillState.latestSellOrder?.insertTime ?? new Date().toISOString()
+    };
+    closedIntent.position = {
+      ...closedIntent.position,
+      exitOrderId: matchedSellOrderId,
+      exitSharesFilled: Number.isFinite(matchedSellShares) && matchedSellShares > 0
+        ? matchedSellShares
+        : (closedIntent.position?.sharesFilled ?? null),
+      lastExecutionAt: new Date().toISOString()
+    };
+
+    return withApiVerification(closedIntent, {
+      apiVerifiedFilledPosition: true,
+      method: 'entry-order-plus-external-sell-order',
+      reason: 'external-sell-detected',
+      orderId
+    });
+  }
+
+  if (!hasRemainingShares && hasEntryFills) {
     return withApiVerification({
       ...intent,
       executionRequest: {
@@ -523,19 +537,15 @@ async function reconcileTrackingIntentWithVenue(env, intent) {
       position: {
         ...intent.position,
         entryOrderId: orderId,
-        sharesFilled: Number.isFinite(sharesFilled) && sharesFilled > 0
-          ? sharesFilled
-          : (intent.position?.sharesFilled ?? null),
-        notionalSpent: Number.isFinite(notionalSpent) && notionalSpent > 0
-          ? notionalSpent
-          : (intent.position?.notionalSpent ?? null),
+        sharesFilled: 0,
+        notionalSpent: 0,
         lastExecutionAt: new Date().toISOString()
       },
       monitoring: {
         ...intent.monitoring,
         lastEvaluationAt: new Date().toISOString(),
         syncNoLiveSharesCount: 0,
-        notes: `Order ${orderId} is ${orderState} with ${sharesFilled} shares filled. Using remaining shares inferred from order fills as the authoritative source.`
+        notes: `Order ${orderId} is ${orderState} with ${sharesFilled} entry shares filled. Remaining open shares inferred from order fills: 0.`
       },
       updatedAt: new Date().toISOString()
     }, {
@@ -546,60 +556,18 @@ async function reconcileTrackingIntentWithVenue(env, intent) {
     });
   }
 
-  // For orders WITHOUT confirmed fills: use threshold-based closure.
-  const previousNoLiveSharesCount = Number.parseInt(String(intent?.monitoring?.syncNoLiveSharesCount ?? '0'), 10);
-  const noLiveSharesCount = hasNoLiveShares
-    ? (Number.isFinite(previousNoLiveSharesCount) ? previousNoLiveSharesCount + 1 : 1)
-    : 0;
-
-  if (hasNoLiveShares && isTerminalUnfilledOrderState(orderState)) {
+  if (!hasEntryFills && isTerminalUnfilledOrderState(orderState)) {
     return buildVenueSyncClosedIntent(
       {
         ...intent,
         executionRequest: {
           ...intent.executionRequest,
-          venueOrder: venueOrder
+          venueOrder
         }
       },
       'sync-removed-unfilled',
       `Removed from tracking because venue order ${orderId} is ${orderState ?? 'terminal'} with no fills.`
     );
-  }
-
-  if (hasNoLiveShares) {
-    if (noLiveSharesCount >= 5) {
-      return buildVenueSyncClosedIntent(
-        {
-          ...intent,
-          executionRequest: {
-            ...intent.executionRequest,
-            venueOrder: venueOrder
-          }
-        },
-        'sync-removed-no-live-position-confirmed',
-        `Removed from tracking after ${noLiveSharesCount} consecutive confirmed polls with no live position shares for order ${orderId}.`
-      );
-    }
-
-    return withApiVerification({
-      ...intent,
-      executionRequest: {
-        ...intent.executionRequest,
-        venueOrder: venueOrder
-      },
-      monitoring: {
-        ...intent.monitoring,
-        lastEvaluationAt: new Date().toISOString(),
-        syncNoLiveSharesCount: noLiveSharesCount,
-        notes: `Venue sync warning: no remaining shares inferred from order fills for order ${orderId}. Keeping trade active (${noLiveSharesCount}/5 confirmed checks).`
-      },
-      updatedAt: new Date().toISOString()
-    }, {
-      apiVerifiedFilledPosition: false,
-      method: 'order-by-id-plus-live-position',
-      reason: 'no-live-shares-detected',
-      orderId
-    });
   }
 
   return withApiVerification({
@@ -612,25 +580,25 @@ async function reconcileTrackingIntentWithVenue(env, intent) {
     position: {
       ...intent.position,
       entryOrderId: orderId,
-      sharesFilled: Number.isFinite(liveShares) && liveShares > 0
-        ? liveShares
-        : (Number.isFinite(sharesFilled) && sharesFilled > 0
-          ? sharesFilled
+      sharesFilled: hasRemainingShares
+        ? remainingShares
+        : (Number.isFinite(fillState?.entryShares) && fillState.entryShares > 0
+          ? fillState.entryShares
           : (intent.position?.sharesFilled ?? null)),
-      notionalSpent: Number.isFinite(notionalSpent) && notionalSpent > 0
-        ? notionalSpent
-        : (intent.position?.notionalSpent ?? null),
+      notionalSpent: remainingNotionalSpent,
       lastExecutionAt: new Date().toISOString()
     },
     monitoring: {
       ...intent.monitoring,
-      syncNoLiveSharesCount: 0
+      lastEvaluationAt: new Date().toISOString(),
+      syncNoLiveSharesCount: 0,
+      notes: `Order ${orderId} is ${orderState} with ${sharesFilled} entry shares filled. Remaining open shares inferred from order fills: ${hasRemainingShares ? remainingShares : sharesFilled}.`
     },
     updatedAt: new Date().toISOString()
   }, {
     apiVerifiedFilledPosition: true,
-    method: 'order-by-id-plus-live-position',
-    reason: 'order-and-position-verified',
+    method: 'order-fills-authoritative',
+    reason: 'order-and-fill-history-verified',
     orderId
   });
 }
