@@ -60,7 +60,117 @@ function findModelOutcome(statisticalModel, marketQuestion, outcomeLabel) {
   };
 }
 
-function resolveRecommendedSelection(statisticalModel, aiRecommendation) {
+function normalizeMatchValue(value) {
+  return String(value ?? '')
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, ' ')
+    .trim();
+}
+
+function tokenizeMatchValue(value) {
+  return normalizeMatchValue(value)
+    .split(/\s+/)
+    .filter(Boolean);
+}
+
+function hasStrongTokenMatch(left, right) {
+  const leftTokens = tokenizeMatchValue(left);
+  const rightTokens = tokenizeMatchValue(right);
+
+  if (leftTokens.length === 0 || rightTokens.length === 0) {
+    return false;
+  }
+
+  const rightSet = new Set(rightTokens);
+  const overlap = leftTokens.filter((token) => rightSet.has(token)).length;
+  const needed = Math.max(1, Math.ceil(Math.min(leftTokens.length, rightTokens.length) * 0.5));
+
+  return overlap >= needed;
+}
+
+function getRawEventFallbackSelection(event, aiRecommendation) {
+  const normalizedThesis = normalizeMatchValue(
+    `${aiRecommendation?.marketQuestion ?? ''} ${aiRecommendation?.outcomeLabel ?? ''} ${aiRecommendation?.thesis ?? ''}`
+  );
+  const candidateMarkets = Array.isArray(event?.markets)
+    ? event.markets.filter((market) => Array.isArray(market.outcomes) && market.outcomes.length > 0)
+    : [];
+
+  if (candidateMarkets.length === 0) {
+    return {
+      market: null,
+      outcome: null
+    };
+  }
+
+  for (const market of candidateMarkets) {
+    const exactOutcome = market.outcomes.find((candidate) => {
+      const normalizedLabel = normalizeMatchValue(candidate.label);
+      return normalizedLabel.length > 0
+        && (normalizedThesis.includes(normalizedLabel) || hasStrongTokenMatch(candidate.label, normalizedThesis));
+    });
+
+    if (exactOutcome) {
+      return {
+        market,
+        outcome: {
+          ...exactOutcome,
+          currentProbability: exactOutcome.probability ?? exactOutcome.currentProbability ?? null,
+          estimatedProbability: exactOutcome.probability ?? exactOutcome.currentProbability ?? null,
+          edge: 0,
+          confidence: null
+        }
+      };
+    }
+  }
+
+  const fallbackMarket = candidateMarkets[0] ?? null;
+  const fallbackOutcome = [...(fallbackMarket?.outcomes ?? [])]
+    .sort((left, right) => {
+      const leftValue = typeof left.probability === 'number' ? left.probability : -1;
+      const rightValue = typeof right.probability === 'number' ? right.probability : -1;
+      return rightValue - leftValue;
+    })[0] ?? null;
+
+  return {
+    market: fallbackMarket,
+    outcome: fallbackOutcome
+      ? {
+          ...fallbackOutcome,
+          currentProbability: fallbackOutcome.probability ?? fallbackOutcome.currentProbability ?? null,
+          estimatedProbability: fallbackOutcome.probability ?? fallbackOutcome.currentProbability ?? null,
+          edge: 0,
+          confidence: null
+        }
+      : null
+  };
+}
+
+function getFallbackSelection(statisticalModel) {
+  const marketsByConfidence = [...statisticalModel.markets]
+    .filter((market) => Array.isArray(market.outcomes) && market.outcomes.length > 0)
+    .sort((left, right) => (right.confidence ?? 0) - (left.confidence ?? 0));
+  const fallbackMarket = marketsByConfidence[0] ?? null;
+  const fallbackOutcome = fallbackMarket?.outcomes
+    ?.filter((candidate) => typeof candidate.currentProbability === 'number' || typeof candidate.estimatedProbability === 'number')
+    .sort((left, right) => {
+      const leftValue = typeof left.estimatedProbability === 'number'
+        ? left.estimatedProbability
+        : (left.currentProbability ?? -1);
+      const rightValue = typeof right.estimatedProbability === 'number'
+        ? right.estimatedProbability
+        : (right.currentProbability ?? -1);
+
+      return rightValue - leftValue;
+    })[0] ?? null;
+
+  return {
+    market: fallbackMarket,
+    outcome: fallbackOutcome
+  };
+}
+
+function resolveRecommendedSelection(event, statisticalModel, aiRecommendation) {
   const rankedCandidates = statisticalModel.markets
     .filter((market) => market.opportunity)
     .sort((left, right) => right.opportunity.score - left.opportunity.score);
@@ -83,15 +193,25 @@ function resolveRecommendedSelection(statisticalModel, aiRecommendation) {
     ?? bestOpportunity
     ?? null;
 
-  return {
-    market: fallbackMarket,
-    outcome: fallbackOutcome
-  };
+  if (fallbackMarket && fallbackOutcome) {
+    return {
+      market: fallbackMarket,
+      outcome: fallbackOutcome
+    };
+  }
+
+  const modelFallback = getFallbackSelection(statisticalModel);
+
+  if (modelFallback.market && modelFallback.outcome) {
+    return modelFallback;
+  }
+
+  return getRawEventFallbackSelection(event, aiRecommendation);
 }
 
 export function combineDecisionRecommendation(event, aggregation, statisticalModel, aiRecommendation, rawAnalysis) {
   const bestOpportunity = statisticalModel.summary.bestOpportunity;
-  const validatedSelection = resolveRecommendedSelection(statisticalModel, aiRecommendation);
+  const validatedSelection = resolveRecommendedSelection(event, statisticalModel, aiRecommendation);
   const chosenMarket = validatedSelection.market;
   const chosenOutcome = validatedSelection.outcome;
   const recommendedMarketQuestion = chosenMarket?.question ?? bestOpportunity?.question ?? null;

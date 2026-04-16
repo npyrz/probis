@@ -69,8 +69,21 @@ export async function resolveEventAnalytics(env, input, options = {}) {
       id: event.id,
       slug: event.slug,
       title: event.title,
+      description: event.description ?? '',
+      active: Boolean(event.active),
+      closed: Boolean(event.closed),
+      endDate: event.endDate ?? null,
+      startDate: event.startDate ?? null,
+      liquidity: event.liquidity ?? null,
+      volume: event.volume ?? null,
+      markets: Array.isArray(event.markets) ? event.markets : [],
+      usFiltered: event.usFiltered ?? false,
+      usAvailableMarketCount: event.usAvailableMarketCount ?? (Array.isArray(event.markets) ? event.markets.length : 0),
+      usFilterFallbackRetainedOriginalMarkets: event.usFilterFallbackRetainedOriginalMarkets ?? false,
       resolvedFromFallback: event.resolvedFromFallback ?? false,
-      requestedSlug: event.requestedSlug ?? null
+      requestedSlug: event.requestedSlug ?? null,
+      resolvedFromUsMarketSlug: event.resolvedFromUsMarketSlug ?? false,
+      sourceMarketSlug: event.sourceMarketSlug ?? null
     },
     aggregation,
     statisticalModel

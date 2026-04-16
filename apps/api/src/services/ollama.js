@@ -147,20 +147,48 @@ export function buildEventAnalysisPrompt(event, aggregation, statisticalModel) {
 
 export function buildDecisionEnginePrompt(event, aggregation, statisticalModel) {
   const topMarkets = statisticalModel.markets
-    .filter((market) => market.opportunity)
-    .sort((left, right) => right.opportunity.score - left.opportunity.score)
+    .filter((market) => Array.isArray(market.outcomes) && market.outcomes.length > 0)
+    .sort((left, right) => {
+      const leftScore = typeof left.opportunity?.score === 'number' ? left.opportunity.score : -Infinity;
+      const rightScore = typeof right.opportunity?.score === 'number' ? right.opportunity.score : -Infinity;
+
+      if (leftScore !== rightScore) {
+        return rightScore - leftScore;
+      }
+
+      return (right.confidence ?? 0) - (left.confidence ?? 0);
+    })
     .slice(0, 3)
     .map((market) => {
-      const best = market.opportunity;
+      const best = market.opportunity
+        ?? [...market.outcomes]
+          .filter((candidate) => typeof candidate.currentProbability === 'number' || typeof candidate.estimatedProbability === 'number')
+          .sort((left, right) => {
+            const leftValue = typeof left.estimatedProbability === 'number'
+              ? left.estimatedProbability
+              : (left.currentProbability ?? -1);
+            const rightValue = typeof right.estimatedProbability === 'number'
+              ? right.estimatedProbability
+              : (right.currentProbability ?? -1);
+
+            return rightValue - leftValue;
+          })[0]
+        ?? null;
+
+      if (!best) {
+        return null;
+      }
+
       return {
         marketQuestion: market.question,
         outcomeLabel: best.label,
-        marketProbability: Number(best.currentProbability.toFixed(3)),
-        modelProbability: Number(best.estimatedProbability.toFixed(3)),
-        edge: Number(best.edge.toFixed(3)),
-        confidence: Number(best.confidence.toFixed(3))
+        marketProbability: typeof best.currentProbability === 'number' ? Number(best.currentProbability.toFixed(3)) : null,
+        modelProbability: typeof best.estimatedProbability === 'number' ? Number(best.estimatedProbability.toFixed(3)) : null,
+        edge: typeof best.edge === 'number' ? Number(best.edge.toFixed(3)) : 0,
+        confidence: typeof best.confidence === 'number' ? Number(best.confidence.toFixed(3)) : Number((market.confidence ?? 0.5).toFixed(3))
       };
-    });
+    })
+    .filter(Boolean);
 
   return [
     'You are a decision engine for a prediction-market trading assistant.',
@@ -168,6 +196,7 @@ export function buildDecisionEnginePrompt(event, aggregation, statisticalModel) 
     'The JSON schema is:',
     '{"marketQuestion":"string","outcomeLabel":"string","confidence":0.0,"agreeWithModel":true,"thesis":"string","keyRisk":"string","reasons":["string","string","string"]}',
     'Choose a recommendation from the provided model-ranked live markets only.',
+    'If no positive-edge opportunity is present, choose the strongest priced market from validCandidates anyway and keep confidence calibrated.',
     'Use the marketQuestion and outcomeLabel values exactly as provided in validCandidates.',
     `Event: ${event.title}`,
     `Slug: ${event.slug}`,

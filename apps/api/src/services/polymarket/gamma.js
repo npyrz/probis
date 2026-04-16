@@ -1,4 +1,5 @@
 import axios from 'axios';
+import { fetchUsMarketsBySlug, getUsMarketAvailabilityForEvent } from './us-orders.js';
 
 const TOKEN_ALIASES = {
   usho: ['house'],
@@ -53,13 +54,16 @@ function normalizeOutcomes(market) {
 }
 
 function normalizeMarket(market) {
+  const fallbackConditionId = market.conditionId ?? market.slug ?? market.id ?? null;
+
   return {
     id: market.id ?? null,
+    slug: market.slug ?? null,
     question: market.question ?? '',
     subtitle: market.subtitle ?? '',
     active: Boolean(market.active),
     closed: Boolean(market.closed),
-    conditionId: market.conditionId ?? null,
+    conditionId: fallbackConditionId,
     liquidity: toNumberOrNull(market.liquidity),
     volume: toNumberOrNull(market.volume),
     endDate: market.endDate ?? null,
@@ -83,9 +87,76 @@ function normalizeEvent(event) {
   };
 }
 
+async function filterEventMarketsToUs(env, event) {
+  const availability = await getUsMarketAvailabilityForEvent(env, event);
+  const slugs = availability.slugs;
+  const questions = availability.questions;
+
+  if (slugs.size === 0 && questions.size === 0) {
+    if (Array.isArray(event.markets) && event.markets.length > 0) {
+      return {
+        ...event,
+        usFiltered: false,
+        usAvailableMarketCount: event.markets.length,
+        usFilterFallbackRetainedOriginalMarkets: true
+      };
+    }
+
+    return {
+      ...event,
+      markets: [],
+      usFiltered: true,
+      usAvailableMarketCount: 0
+    };
+  }
+
+  const normalizeQuestion = (value) => String(value ?? '').toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim();
+
+  const markets = event.markets.filter((market) => {
+    const slug = String(market.slug ?? '').toLowerCase();
+    const question = normalizeQuestion(market.question);
+
+    if (slug.length > 0 && slugs.has(slug)) {
+      return true;
+    }
+
+    if (question.length > 0 && questions.has(question)) {
+      return true;
+    }
+
+    return false;
+  });
+
+  if (markets.length === 0 && Array.isArray(event.markets) && event.markets.length > 0) {
+    return {
+      ...event,
+      usFiltered: false,
+      usAvailableMarketCount: event.markets.length,
+      usFilterFallbackRetainedOriginalMarkets: true
+    };
+  }
+
+  return {
+    ...event,
+    markets,
+    usFiltered: true,
+    usAvailableMarketCount: markets.length
+  };
+}
+
 function createGammaClient(env) {
   return axios.create({
     baseURL: env.gammaBaseUrl,
+    timeout: 15000,
+    headers: {
+      Accept: 'application/json'
+    }
+  });
+}
+
+function createUsGatewayClient(env) {
+  return axios.create({
+    baseURL: env.polymarketUsGatewayUrl ?? 'https://gateway.polymarket.us',
     timeout: 15000,
     headers: {
       Accept: 'application/json'
@@ -166,6 +237,38 @@ async function findFallbackEvent(env, slug) {
   return ranked[0].event;
 }
 
+async function findUsEventByMarketSlug(env, slug) {
+  const usMarkets = await fetchUsMarketsBySlug(env, slug, { includeClosed: true });
+
+  if (usMarkets.length === 0) {
+    return null;
+  }
+
+  const primaryMarket = usMarkets[0];
+  const normalizedMarkets = usMarkets.map(normalizeMarket);
+  const firstMarket = normalizedMarkets[0];
+
+  return {
+    id: primaryMarket.id ?? `us:${slug}`,
+    slug,
+    title: primaryMarket.question ?? slug,
+    description: primaryMarket.description ?? '',
+    active: Boolean(primaryMarket.active),
+    closed: Boolean(primaryMarket.closed),
+    endDate: primaryMarket.endDate ?? null,
+    startDate: primaryMarket.startDate ?? null,
+    liquidity: toNumberOrNull(primaryMarket.liquidity),
+    volume: toNumberOrNull(primaryMarket.volume),
+    markets: normalizedMarkets,
+    usFiltered: true,
+    usAvailableMarketCount: normalizedMarkets.length,
+    resolvedFromFallback: true,
+    resolvedFromUsMarketSlug: true,
+    requestedSlug: slug,
+    sourceMarketSlug: firstMarket?.slug ?? slug
+  };
+}
+
 export function extractEventSlug(input) {
   if (typeof input !== 'string' || input.trim().length === 0) {
     throw new Error('A Polymarket event URL or slug is required.');
@@ -190,6 +293,28 @@ export function extractEventSlug(input) {
 }
 
 export async function fetchActiveEvents(env, { limit = 10, offset = 0 } = {}) {
+  // Prefer the Polymarket US public gateway for event browsing.
+  try {
+    const usClient = createUsGatewayClient(env);
+    const response = await usClient.get('/events', {
+      params: {
+        active: true,
+        closed: false,
+        limit,
+        offset
+      }
+    });
+    const events = Array.isArray(response.data)
+      ? response.data
+      : (Array.isArray(response.data?.events) ? response.data.events : []);
+
+    if (events.length > 0) {
+      return events.map(normalizeEvent);
+    }
+  } catch {
+    // Fall through to Gamma.
+  }
+
   const gammaClient = createGammaClient(env);
   const response = await gammaClient.get('/events', {
     params: {
@@ -206,8 +331,22 @@ export async function fetchActiveEvents(env, { limit = 10, offset = 0 } = {}) {
 }
 
 export async function fetchEventByInput(env, input) {
-  const gammaClient = createGammaClient(env);
   const slug = extractEventSlug(input);
+
+  // Prefer the Polymarket US public gateway.
+  try {
+    const usClient = createUsGatewayClient(env);
+    const response = await usClient.get(`/events/${encodeURIComponent(slug)}`);
+    const event = Array.isArray(response.data) ? response.data[0] : (response.data?.event ?? response.data);
+
+    if (event && (event.title || event.slug || event.markets)) {
+      return filterEventMarketsToUs(env, normalizeEvent(event));
+    }
+  } catch {
+    // Fall through to Gamma / US market slug / fallback chain.
+  }
+
+  const gammaClient = createGammaClient(env);
 
   try {
     const response = await gammaClient.get(`/events/slug/${encodeURIComponent(slug)}`);
@@ -217,12 +356,18 @@ export async function fetchEventByInput(env, input) {
       throw new Error(`No Polymarket event was found for slug "${slug}".`);
     }
 
-    return normalizeEvent(event);
+    return filterEventMarketsToUs(env, normalizeEvent(event));
   } catch (error) {
     const status = axios.isAxiosError(error) ? error.response?.status : undefined;
 
     if (status && status !== 404) {
       throw error;
+    }
+
+    const usEvent = await findUsEventByMarketSlug(env, slug);
+
+    if (usEvent) {
+      return usEvent;
     }
 
     const fallbackEvent = await findFallbackEvent(env, slug);
@@ -231,10 +376,10 @@ export async function fetchEventByInput(env, input) {
       throw new Error(`No Polymarket event was found for slug "${slug}".`);
     }
 
-    return {
+    return filterEventMarketsToUs(env, {
       ...fallbackEvent,
       requestedSlug: slug,
       resolvedFromFallback: true
-    };
+    });
   }
 }

@@ -2,7 +2,7 @@
 
 ## Overview
 
-Probis is a low-latency, AI-assisted trading system built for real-time prediction markets on Polymarket US. It combines live market data, probabilistic modeling, and LLM-based signal extraction to identify mispriced events and assist users in executing trades.
+Probis is a predictive trading and execution-assistant system for Polymarket US. It combines live market data, deterministic probability modeling, and LLM signal extraction to identify potential mispricings, assist execution, and monitor risk in real time.
 
 ---
 
@@ -10,9 +10,9 @@ Probis is a low-latency, AI-assisted trading system built for real-time predicti
 
 * Fetch and display real-time prediction market data
 * Analyze all outcomes for a given event
-* Identify the most mispriced opportunity
+* Identify the highest-conviction risk-adjusted opportunity
 * Assist user in executing and managing trades
-* Provide automated monitoring with optional exit strategies
+* Provide automated monitoring with configurable exits and manual overrides
 
 ---
 
@@ -23,10 +23,14 @@ Probis is a low-latency, AI-assisted trading system built for real-time predicti
 * LLM: Ollama (Gemma model)
 * Data Sources:
 
-  * Polymarket US API
+  * Polymarket US authenticated API
+  * Gamma / market metadata sources
   * Live news APIs (optional)
   * Social sentiment feeds (optional)
-* Storage: PostgreSQL (optional for tracking trades)
+* Storage:
+
+  * Current: local JSON store for intents
+  * Planned: PostgreSQL for durable tracking and analytics
 
 ---
 
@@ -34,26 +38,28 @@ Probis is a low-latency, AI-assisted trading system built for real-time predicti
 
 ### Step 1 — Environment Setup
 
-* Create `.env` file:
+* Configure `.env`:
 
-  * `POLYMARKET_API_KEY=`
-  * `POLYMARKET_PRIVATE_KEY=`
-* Install dependencies:
-
-  * Polymarket US SDK
-  * Axios / Fetch
-  * WebSocket client (if available)
+  * `POLYMARKET_US_KEY_ID=`
+  * `POLYMARKET_US_SECRET_KEY=`
+  * `POLYMARKET_US_BASE_URL=`
+  * `OLLAMA_BASE_URL=`
+  * `OLLAMA_MODEL=`
+* Verify Node/Ollama runtime and API connectivity
+* Install dependencies and run local dev stack
 
 ---
 
 ### Step 2 — Connect to Polymarket API
 
-* Authenticate using API key
-* Test endpoints:
+* Authenticate using signed Ed25519 headers
+* Validate endpoints:
 
-  * Fetch all markets
-  * Fetch single event by URL
-* Validate response structure
+  * Markets list and market-by-slug
+  * Orders create
+  * Portfolio positions
+  * Account balances and buying power
+* Validate payload shape and fallback parsing for schema variations
 
 ---
 
@@ -61,13 +67,14 @@ Probis is a low-latency, AI-assisted trading system built for real-time predicti
 
 * User inputs:
 
-  * Polymarket event URL
+  * Polymarket event URL or slug
 * Parse:
 
-  * Event ID
+  * Event slug
 * Fetch:
 
-  * All market options (teams, players, etc.)
+  * Event markets and outcomes
+* Add robust slug canonicalization (for example, prefixed slug variants)
 
 ---
 
@@ -75,12 +82,13 @@ Probis is a low-latency, AI-assisted trading system built for real-time predicti
 
 * Display:
 
-  * Event title
-  * All outcomes
-  * Current prices (YES/NO or probabilities)
+  * Event title and description
+  * Outcomes and current probabilities
+  * Liquidity/volume snapshots
 * Handle:
 
-  * Multi-outcome markets cleanly
+  * Binary and multi-outcome markets cleanly
+  * Monitoring-first mode when active positions exist
 
 ---
 
@@ -88,10 +96,11 @@ Probis is a low-latency, AI-assisted trading system built for real-time predicti
 
 * Collect:
 
-  * Historical price data (if available)
+  * Historical price data
   * Volume / liquidity
-  * External signals (news, sentiment)
-* Normalize into structured format
+  * Market-quality features
+  * Optional external signals (news, sentiment)
+* Normalize into structured feature objects with cache support
 
 ---
 
@@ -99,34 +108,45 @@ Probis is a low-latency, AI-assisted trading system built for real-time predicti
 
 #### 6.1 Statistical Model
 
-* Estimate “true probability” using:
+* Estimate fair probability using:
 
-  * Price inefficiencies
-  * Market trends
-  * Historical behavior
+  * Current price and momentum
+  * Historical anchor behavior
+  * Volatility penalties
+  * Quality and sample-strength weighting
 
 #### 6.2 LLM Signal Extraction (Ollama Gemma)
 
 * Input:
 
-  * Market data
-  * News summaries
-  * Social sentiment
+  * Aggregated market state
+  * Optional external context
 * Output:
 
-  * Confidence score per outcome
-  * Reasoning
+  * Structured recommendation reasoning
+  * Confidence and key risk summary
 
 #### 6.3 Decision Engine
 
 * Combine:
 
-  * Statistical probability
-  * LLM confidence
+  * Statistical estimate
+  * LLM confidence/agreement
 * Output:
 
-  * Best trade opportunity
-  * Expected value (EV)
+  * Recommended opportunity
+  * EV and edge
+  * Action (`buy`, `watch`, `avoid`)
+
+#### 6.4 Calibration + Uncertainty
+
+* Add probability calibration (rolling)
+* Track confidence reliability and uncertainty bands
+
+#### 6.5 Backtesting + Walk-Forward Validation
+
+* Evaluate strategy on historical windows
+* Report EV, hit rate, drawdown, and robustness by regime
 
 ---
 
@@ -134,36 +154,54 @@ Probis is a low-latency, AI-assisted trading system built for real-time predicti
 
 * Display:
 
-  * Recommended option
-  * Reasoning
-  * Confidence level
+  * Recommended outcome
+  * Reasoning and confidence
+  * Current price and projected P/L metrics
 * Prompt user:
 
-  * “Enter amount to invest”
+  * Enter stake and review trade suggestion
 
 ---
 
 ### Step 8 — Risk Management System
 
-* Automatically suggest:
+* Suggest:
 
-  * Stop-loss price
-  * Take-profit price
+  * Stop-loss probability
+  * Take-profit probability
 * Allow user to:
 
   * Edit values
   * Accept defaults
 
+### Step 8.1 — Portfolio Risk Limits
+
+* Enforce:
+
+  * Max per-position exposure
+  * Max concurrent positions
+  * Max daily loss / session kill-switch
+
 ---
 
 ### Step 9 — Trade Execution
 
-* Place trade via Polymarket API (if permitted)
-* Store:
+* Place trades via Polymarket US API
+* Persist:
 
-  * Entry price
-  * Position size
+  * Entry order metadata
+  * Position size and notional spent
   * Risk parameters
+* Implement fallback execution paths (for example, market-to-limit fallback when required)
+
+### Step 9.1 — Execution Quality
+
+* Measure:
+
+  * Fill quality
+  * Slippage
+  * Time-to-fill
+  * Partial fill behavior
 
 ---
 
@@ -171,23 +209,34 @@ Probis is a low-latency, AI-assisted trading system built for real-time predicti
 
 * Continuously track:
 
-  * Market price
+  * Current probability
+  * Drift and unrealized P/L
 * Trigger:
 
-  * Sell at take-profit
-  * Sell at stop-loss
+  * Take-profit exits
+  * Stop-loss exits
+
+### Step 10.1 — Monitoring + Alerting
+
+* Add alerts for:
+
+  * Poll failures
+  * Stale data
+  * API/auth errors
+  * Model drift signals
 
 ---
 
 ### Step 11 — Optional Automation Features
 
-* Light auto-trading:
+* Light automation:
 
-  * Scale in/out positions
+  * Rule-based scaling in/out
 * Manual override:
 
-  * “Sell Now” button
-  * “Stop Bot” button
+  * Sell Now
+  * Stop Trade
+  * Close Intent
 
 ---
 
@@ -195,31 +244,42 @@ Probis is a low-latency, AI-assisted trading system built for real-time predicti
 
 * Sections:
 
-  * Active trades
-  * Market explorer
-  * AI recommendations
-* Real-time updates
+  * Trade Center (all/tracking/closed filters)
+  * Event analysis + recommendations
+  * Active monitoring metrics
+* Frequent updates and monitor-first workflow after execution
+
+---
+
+### Step 13 — Post-Trade Analytics + Feedback Loop
+
+* Attribute outcomes by:
+
+  * Model signal quality
+  * Execution quality
+  * Timing decisions
+* Feed insights back into model/risk tuning
 
 ---
 
 ## Future Features
 
-* Polymarket account linking UI
+* PostgreSQL migration for durable intent/position history
 * Live news + social feed integration
-* Advanced probability models
-* Multi-market scanning
-* Portfolio analytics
-* Fully automated trading (if API allows)
+* Advanced calibration and regime-aware ensembles
+* Multi-market scanning and ranking
+* Portfolio analytics and exposure dashboards
+* Canary rollouts and rollback controls for model updates
 
 ---
 
 ## Risks & Considerations
 
 * API trading restrictions (Polymarket US)
-* Market liquidity issues
-* Model overfitting / bad signals
-* Latency vs execution timing
-* Regulatory compliance
+* Market liquidity and fill-quality risk
+* Model overfitting / calibration drift
+* Execution timing vs signal latency
+* Regulatory and compliance requirements
 
 ---
 
@@ -227,11 +287,11 @@ Probis is a low-latency, AI-assisted trading system built for real-time predicti
 
 A working MVP includes:
 
-* Event input
-* Market display
-* AI-based recommendation
-* Manual trade execution
-* Basic monitoring
+* Event input and resolution
+* Market display and recommendation generation
+* Live trade execution via API
+* Trade Center monitoring with manual overrides
+* Basic stop-loss / take-profit handling
 
 ---
 
@@ -239,9 +299,8 @@ A working MVP includes:
 
 Probis evolves into a semi-autonomous trading assistant that:
 
-* Continuously scans markets
-* Identifies inefficiencies
-* Assists users in making high-quality probabilistic trades
+* Continuously scans and ranks opportunities
+* Quantifies edge with calibrated probabilities
+* Assists users with execution and disciplined risk control
 
 ---
-`

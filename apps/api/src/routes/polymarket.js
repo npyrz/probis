@@ -4,6 +4,7 @@ import { getEnv } from '../config/env.js';
 import { getPolymarketStatus } from '../services/polymarket/client.js';
 import { fetchActiveEvents, fetchEventByInput } from '../services/polymarket/gamma.js';
 import { invalidateEventAnalyticsCache, resolveEventAnalytics } from '../services/polymarket/event-data.js';
+import { getPolymarketUsAccountIdentity } from '../services/polymarket/us-orders.js';
 
 const router = Router();
 
@@ -20,6 +21,23 @@ router.get('/api/polymarket/status', async (_request, response) => {
     response.status(502).json({
       ok: false,
       error: error instanceof Error ? error.message : 'Unknown Polymarket error'
+    });
+  }
+});
+
+router.get('/api/polymarket/account-identity', async (_request, response) => {
+  try {
+    const env = getEnv();
+    const identity = await getPolymarketUsAccountIdentity(env);
+
+    response.json({
+      ok: true,
+      identity
+    });
+  } catch (error) {
+    response.status(502).json({
+      ok: false,
+      error: error instanceof Error ? error.message : 'Unable to fetch Polymarket account identity'
     });
   }
 });
