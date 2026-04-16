@@ -1,4 +1,5 @@
 import { createPolymarketClient } from './client.js';
+import { buildSportsContext } from '../sports/aggregation.js';
 
 const HISTORY_WINDOW_SECONDS = 7 * 24 * 60 * 60;
 const HISTORY_FIDELITY_MINUTES = 1440;
@@ -178,6 +179,11 @@ export async function buildEventAggregation(env, event) {
     })
   );
 
+  const sportsContext = await buildSportsContext(event);
+  const sportsMarketsByConditionId = new Map(
+    (Array.isArray(sportsContext.markets) ? sportsContext.markets : []).map((market) => [market.conditionId, market])
+  );
+
   return {
     generatedAt: new Date().toISOString(),
     historyWindow: {
@@ -214,10 +220,12 @@ export async function buildEventAggregation(env, event) {
         ? aggregatedMarkets.reduce((sum, market) => sum + (market.volume ?? 0), 0) / aggregatedMarkets.length
         : null
     },
+    sportsContext,
     historicalPrices: {
       markets: aggregatedMarkets.map((market) => ({
         conditionId: market.conditionId,
         question: market.question,
+        sportsContext: sportsMarketsByConditionId.get(market.conditionId) ?? null,
         leader: market.leader
           ? {
               label: market.leader.label,

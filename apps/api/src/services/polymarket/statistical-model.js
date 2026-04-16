@@ -32,7 +32,15 @@ function normalizeProbabilities(outcomes) {
   });
 }
 
-function scoreOutcome(outcome, marketSnapshot) {
+function getSportsOutcome(outcome, sportsMarket) {
+  if (!sportsMarket || !Array.isArray(sportsMarket.outcomes)) {
+    return null;
+  }
+
+  return sportsMarket.outcomes.find((candidate) => candidate.label === outcome.label) ?? null;
+}
+
+function scoreOutcome(outcome, marketSnapshot, sportsMarket) {
   const summary = outcome.historySummary ?? {};
   const currentProbability = outcome.currentProbability ?? 0;
   const momentum = summary.absoluteChange ?? 0;
@@ -49,6 +57,9 @@ function scoreOutcome(outcome, marketSnapshot) {
       (value) => typeof value === 'number'
     )
   ) ?? currentProbability;
+  const sportsOutcome = getSportsOutcome(outcome, sportsMarket);
+  const sportsFairProbability = sportsOutcome?.fairProbability ?? null;
+  const sportsConfidence = sportsOutcome?.modelConfidence ?? sportsMarket?.marketConfidence ?? null;
 
   const trendWeight = 0.25 + quality * 0.35 + sampleStrength * 0.1;
   const anchorWeight = 0.18 + sampleStrength * 0.12;
@@ -59,7 +70,17 @@ function scoreOutcome(outcome, marketSnapshot) {
   rawEstimate += (historicalAnchor - currentProbability) * anchorWeight;
   rawEstimate = rawEstimate * (1 - volatilityPenalty) + 0.5 * volatilityPenalty;
 
-  const confidence = clamp(0.15 + quality * 0.45 + sampleStrength * 0.3 - volatility * 0.25, 0.05, 0.95);
+  if (typeof sportsFairProbability === 'number') {
+    const sportsBlendWeight = clamp((sportsConfidence ?? 0.45) * 0.65, 0.2, 0.75);
+    rawEstimate = rawEstimate * (1 - sportsBlendWeight) + sportsFairProbability * sportsBlendWeight;
+  }
+
+  const baseConfidence = clamp(0.15 + quality * 0.45 + sampleStrength * 0.3 - volatility * 0.25, 0.05, 0.95);
+  const confidence = clamp(
+    average([baseConfidence, sportsConfidence].filter((value) => typeof value === 'number')) ?? baseConfidence,
+    0.05,
+    0.97
+  );
 
   return {
     label: outcome.label,
@@ -73,7 +94,11 @@ function scoreOutcome(outcome, marketSnapshot) {
       volatility,
       quality,
       sampleStrength,
-      historicalAnchor
+      historicalAnchor,
+      sportsFairProbability,
+      sportsConfidence,
+      sportsModel: sportsMarket?.model?.name ?? null,
+      sportsLeague: sportsMarket?.league ?? null
     }
   };
 }
@@ -93,10 +118,12 @@ function getMarketOpportunity(outcomes) {
 export function buildStatisticalModel(event, aggregation) {
   const marketSnapshots = aggregation?.liquiditySnapshot?.markets ?? [];
   const historicalMarkets = aggregation?.historicalPrices?.markets ?? [];
+  const sportsMarkets = aggregation?.sportsContext?.markets ?? [];
 
   const markets = historicalMarkets.map((market) => {
     const marketSnapshot = marketSnapshots.find((candidate) => candidate.conditionId === market.conditionId);
-    const scoredOutcomes = market.outcomes.map((outcome) => scoreOutcome(outcome, marketSnapshot));
+    const sportsMarket = sportsMarkets.find((candidate) => candidate.conditionId === market.conditionId) ?? market.sportsContext ?? null;
+    const scoredOutcomes = market.outcomes.map((outcome) => scoreOutcome(outcome, marketSnapshot, sportsMarket));
     const normalizedOutcomes = normalizeProbabilities(scoredOutcomes).sort(
       (left, right) => right.estimatedProbability - left.estimatedProbability
     );
@@ -106,6 +133,7 @@ export function buildStatisticalModel(event, aggregation) {
     return {
       conditionId: market.conditionId,
       question: market.question,
+      sportsContext: sportsMarket,
       confidence: marketConfidence,
       opportunity: bestOpportunity,
       outcomes: normalizedOutcomes
@@ -125,10 +153,20 @@ export function buildStatisticalModel(event, aggregation) {
   return {
     generatedAt: new Date().toISOString(),
     methodology: {
-      name: 'first-pass-statistical-model',
-      inputs: ['current_probability', '7d_price_history', 'liquidity_share', 'volume_share'],
+      name: 'hybrid-market-and-sports-statistical-model',
+      inputs: [
+        'current_probability',
+        '7d_price_history',
+        'liquidity_share',
+        'volume_share',
+        'team_elo',
+        'home_edge',
+        'recent_form',
+        'rest_days',
+        'rolling_score_differential'
+      ],
       description:
-        'Adjusts current market probabilities with short-horizon momentum, a historical anchor, and a volatility penalty weighted by market quality.'
+        'Adjusts current market probabilities with short-horizon market behavior and, for recognized team-vs-team sports markets, blends in an Elo-based fair probability built from local team history.'
     },
     summary: {
       eventSlug: event.slug,

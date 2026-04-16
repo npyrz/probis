@@ -6,6 +6,7 @@ import { logStartup } from './lib/logger.js';
 import aiRouter from './routes/ai.js';
 import healthRouter from './routes/health.js';
 import polymarketRouter from './routes/polymarket.js';
+import sportsRouter from './routes/sports.js';
 import tradesRouter from './routes/trades.js';
 
 const env = getEnv();
@@ -24,6 +25,10 @@ app.get('/', (_request, response) => {
       '/api/polymarket/events',
       '/api/polymarket/events/resolve',
       '/api/polymarket/events/aggregation',
+      '/api/sports/status',
+      '/api/sports/events/inspect',
+      '/api/sports/import/nba',
+      '/api/sports/backtest',
       '/api/ai/status',
       '/api/ai/test',
       '/api/ai/analyze-event',
@@ -34,6 +39,7 @@ app.get('/', (_request, response) => {
 
 app.use(healthRouter);
 app.use(polymarketRouter);
+app.use(sportsRouter);
 app.use(aiRouter);
 app.use(tradesRouter);
 

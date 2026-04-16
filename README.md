@@ -6,6 +6,8 @@ Probis is a local-first Polymarket analysis and trade-monitoring system. It comb
 
 The recommendation path stays deterministic-first. The LLM helps explain the setup and choose within allowed candidates, but event resolution, aggregation, scoring, trade shaping, and tracking are handled in code.
 
+The sports path follows the same rule. Team history and matchup features live in the deterministic aggregation and pricing pipeline, not in the Ollama prompt layer.
+
 ## Quick Start
 
 You only need Node.js 20+, Ollama, and the default local API URL for a first run.
@@ -62,6 +64,8 @@ The API signs Polymarket US requests with Ed25519 using the standard `timestamp 
 - Resolves events from a Polymarket URL or slug.
 - Pulls active event and market data, with US-market-aware fallback handling.
 - Builds 7-day market history and aggregation snapshots.
+- Recognizes supported team-vs-team sports markets from a local Polymarket US team universe snapshot.
+- Loads local team history and derives Elo-style matchup features for recognized sports markets.
 - Scores markets and outcomes with a deterministic statistical model.
 - Uses Ollama for event analysis and constrained recommendation selection.
 - Produces a single decision payload with action, edge, EV, confidence, and risk targets.
@@ -109,6 +113,9 @@ The API signs Polymarket US requests with Ed25519 using the standard `timestamp 
 │           └── styles.css
 ├── data/
 │   └── trade-intents.json
+│   └── sports/
+│       ├── polymarket-us-teams.json
+│       └── team-history.json
 ├── .env.example
 ├── package.json
 └── plan.md
@@ -231,12 +238,14 @@ Implemented in `apps/api/src/services/polymarket/aggregation.js`.
 Purpose:
 
 - Build a short-horizon analytics snapshot from live market state and 7-day history.
+- Enrich recognized sports matchups with deterministic team-history features from the local sports store.
 
 Outputs include:
 
 - `liquiditySnapshot`
 - `derivedMetrics`
 - `historicalPrices`
+- `sportsContext`
 
 ### Model 3: Statistical Pricing Model
 
@@ -246,6 +255,7 @@ Purpose:
 
 - Estimate fair probability for each outcome.
 - Quantify edge and confidence from observable market behavior.
+- Blend sports fair probabilities into recognized team-vs-team markets without involving the LLM.
 
 Core inputs:
 
@@ -255,8 +265,47 @@ Core inputs:
 - volatility
 - liquidity share
 - volume share
+- team Elo
+- home edge when matchup orientation is known
+- recent form
+- rest days
+- rolling score differential
 
 For each outcome, the model returns estimated probability, edge, confidence, and feature diagnostics.
+
+## Sports Data Pipeline
+
+The first-pass sports implementation is deterministic and local.
+
+1. `npm run sync:sports-universe`
+  Reads active Polymarket US markets from signed `/v1/markets` and snapshots recognized team outcomes into `data/sports/polymarket-us-teams.json`.
+2. Import NBA history with `npm run import:nba-history`
+  The first importer uses ESPN NBA scoreboard data and stores finalized games in `data/sports/team-history.json`.
+3. Populate or extend `data/sports/team-history.json`
+  The model expects rows like `league`, `date`, `homeTeamId`, `awayTeamId`, `homeScore`, and `awayScore`.
+4. Run normal event aggregation
+  Recognized team-vs-team markets get a `sportsContext` block plus Elo-derived fair probabilities that are blended into Model 3.
+
+If the local sports files are empty, Probis falls back to the existing market-only model.
+
+### Sports Endpoints
+
+- `GET /api/sports/status`
+  Returns local sports universe and history-store counts.
+- `POST /api/sports/import/nba`
+  Imports NBA history with optional JSON body fields `startDate` and `endDate`.
+- `GET /api/sports/events/inspect?input=...`
+  Returns recognized sports markets plus derived Elo features for a Polymarket event.
+- `POST /api/sports/backtest`
+  Runs deterministic backtesting on the local history store. Accepts `league`, `startDate`, `endDate`, and `minTrainingGames`.
+
+### Sports Backtesting
+
+The initial backtest scaffolding evaluates the same Elo-based team strength model used during live aggregation.
+
+- Prediction target: home-team win probability
+- Metrics: accuracy, Brier score, and log loss
+- Warm-up: controlled by `minTrainingGames` so very early-season games do not dominate the evaluation
 
 Conceptually, the model starts from the current market price and adjusts it with trend and anchor terms:
 

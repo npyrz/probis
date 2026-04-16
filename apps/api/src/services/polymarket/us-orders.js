@@ -451,6 +451,10 @@ async function listUsMarkets(env, { limit = 200, maxPages = 20 } = {}) {
   return collected;
 }
 
+export async function listUsActiveMarkets(env, options = {}) {
+  return listUsMarkets(env, options);
+}
+
 export async function getUsMarketSlugsForEvent(env, eventSlug) {
   const normalizedEventSlug = String(eventSlug ?? '').trim().toLowerCase();
 
