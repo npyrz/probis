@@ -238,6 +238,34 @@ async function fetchLeagueScoreboards(league, eventDate) {
   return eventGroups.flat();
 }
 
+function resolveGameFeedTargetDate(event) {
+  const start = new Date(String(event?.startDate ?? ''));
+  const end = new Date(String(event?.endDate ?? ''));
+  const startValid = Number.isFinite(start.getTime());
+  const endValid = Number.isFinite(end.getTime());
+
+  if (startValid && endValid) {
+    const diffMs = Math.abs(end.getTime() - start.getTime());
+
+    // Polymarket startDate can reflect listing time rather than tip-off/first pitch.
+    if (diffMs > 36 * 60 * 60 * 1000) {
+      return end.toISOString();
+    }
+
+    return start.toISOString();
+  }
+
+  if (endValid) {
+    return end.toISOString();
+  }
+
+  if (startValid) {
+    return start.toISOString();
+  }
+
+  return new Date().toISOString();
+}
+
 function normalizeArticle(article) {
   return {
     id: article?.id ? String(article.id) : null,
@@ -702,13 +730,31 @@ function rankSocialPosts(posts, teams, roster) {
     .slice(0, MAX_SOCIAL_POSTS);
 }
 
-function buildGameFeed(events, teams) {
+function buildGameFeed(events, teams, targetDate) {
   const teamIds = new Set(teams.map((team) => team.espnTeamId).filter(Boolean));
-  const matching = events.find((event) => {
-    const competitors = event?.competitions?.[0]?.competitors ?? [];
-    const competitorIds = new Set(competitors.map((competitor) => String(competitor?.team?.id ?? '')));
-    return [...teamIds].every((teamId) => competitorIds.has(String(teamId)));
-  }) ?? null;
+
+  if (teamIds.size === 0) {
+    return null;
+  }
+
+  const targetTimestamp = Date.parse(String(targetDate ?? ''));
+  const matching = events
+    .filter((event) => {
+      const competitors = event?.competitions?.[0]?.competitors ?? [];
+      const competitorIds = new Set(competitors.map((competitor) => String(competitor?.team?.id ?? '')));
+      return [...teamIds].every((teamId) => competitorIds.has(String(teamId)));
+    })
+    .sort((left, right) => {
+      if (!Number.isFinite(targetTimestamp)) {
+        return Date.parse(right?.date ?? 0) - Date.parse(left?.date ?? 0);
+      }
+
+      const leftDiff = Math.abs(Date.parse(left?.date ?? 0) - targetTimestamp);
+      const rightDiff = Math.abs(Date.parse(right?.date ?? 0) - targetTimestamp);
+
+      return leftDiff - rightDiff;
+    })[0]
+    ?? null;
 
   if (!matching) {
     return null;
@@ -786,7 +832,7 @@ export async function buildEventIntelligence(env, event, sportsContext) {
 
   const [leagueNews, scoreboardEvents, rosterGroups, teamNewsGroups] = await Promise.all([
     fetchLeagueNews(supportedLeague),
-    fetchLeagueScoreboards(supportedLeague, event?.startDate ?? event?.endDate ?? new Date().toISOString()),
+    fetchLeagueScoreboards(supportedLeague, resolveGameFeedTargetDate(event)),
     Promise.all(teams.map((team) => fetchTeamRoster(supportedLeague, team.espnTeamId))),
     Promise.all(teams.map((team) => fetchTeamNews(supportedLeague, team.espnTeamId)))
   ]);
@@ -812,7 +858,7 @@ export async function buildEventIntelligence(env, event, sportsContext) {
     available: true,
     league: supportedLeague,
     teams,
-    gameFeed: buildGameFeed(scoreboardEvents, teams),
+    gameFeed: buildGameFeed(scoreboardEvents, teams, resolveGameFeedTargetDate(event)),
     articles,
     socialPosts,
     playerMentions,

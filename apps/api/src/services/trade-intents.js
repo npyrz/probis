@@ -1254,19 +1254,16 @@ export async function pollTradeIntent(env, id) {
 export async function pollTrackingTradeIntents(env) {
   const intents = await readTradeIntents();
   const syncedIntents = await syncTrackingIntentsWithVenue(env, intents);
-  const nextIntents = [];
-
-  for (const intent of syncedIntents) {
+  const nextIntents = await Promise.all(syncedIntents.map(async (intent) => {
     if (intent.status !== 'tracking') {
-      nextIntents.push(intent);
-      continue;
+      return intent;
     }
 
     try {
       const trackedProbability = await resolveTrackedProbability(env, intent);
-      nextIntents.push(await evaluateMonitoringState(env, intent, trackedProbability));
+      return await evaluateMonitoringState(env, intent, trackedProbability);
     } catch {
-      nextIntents.push({
+      return {
         ...intent,
         monitoring: {
           ...intent.monitoring,
@@ -1274,9 +1271,9 @@ export async function pollTrackingTradeIntents(env) {
           notes: 'Monitoring refresh failed on the last poll attempt.'
         },
         updatedAt: new Date().toISOString()
-      });
+      };
     }
-  }
+  }));
 
   await writeTradeIntents(nextIntents);
   return nextIntents.filter((intent) => intent.status === 'tracking');

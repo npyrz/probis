@@ -748,6 +748,10 @@ export async function buildTeamStrengthMarketContext({ event, market, historySto
     conditionId: market.conditionId,
     question: market.question,
     league: market.league,
+    labelMappings: market.labelMappings,
+    homeTeamId: market.homeTeamId,
+    awayTeamId: market.awayTeamId,
+    homeAwaySource: market.homeAwaySource,
     model: {
       name: market.league === 'MLB' ? 'team-strength-elo-plus-starters-v2' : 'team-strength-elo-v2',
       description: market.league === 'MLB'

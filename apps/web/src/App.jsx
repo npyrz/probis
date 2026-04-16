@@ -13,7 +13,6 @@ import {
   resolveEvent,
   resolveEventAggregation,
   sellTradeIntent as sellTradeIntentRequest,
-  stopTradeIntent as stopTradeIntentRequest,
   updateTradeIntent as updateTradeIntentRequest
 } from './lib/api.js';
 
@@ -304,6 +303,25 @@ function formatRecommendationHeadline(recommendation) {
   }
 
   return 'No specific market recommendation available yet.';
+}
+
+function formatRecommendationActionLabel(action, outcomeLabel) {
+  const normalizedAction = String(action ?? '').trim().toLowerCase();
+  const normalizedOutcome = String(outcomeLabel ?? '').trim();
+
+  if (normalizedAction === 'buy') {
+    return normalizedOutcome ? `Back ${normalizedOutcome}` : 'Buy';
+  }
+
+  if (normalizedAction === 'avoid') {
+    return normalizedOutcome ? `Avoid ${normalizedOutcome}` : 'Avoid';
+  }
+
+  if (normalizedAction === 'watch') {
+    return normalizedOutcome ? `Watch ${normalizedOutcome}` : 'Watch';
+  }
+
+  return normalizedOutcome || 'Recommendation';
 }
 
 function resolveRecommendationExpectedValue(recommendation) {
@@ -903,7 +921,7 @@ export default function App() {
   const [isSavingTradeIntent, setIsSavingTradeIntent] = useState(false);
   const [isMutatingHistory, setIsMutatingHistory] = useState(false);
   const [isPollingTracking, setIsPollingTracking] = useState(false);
-  const [tradeCenterFilter, setTradeCenterFilter] = useState('all');
+  const [tradeCenterFilter, setTradeCenterFilter] = useState('tracking');
   const [editingActiveTradeId, setEditingActiveTradeId] = useState(null);
   const [activeTradeRiskInputs, setActiveTradeRiskInputs] = useState({});
   const [hasLoadedInitialData, setHasLoadedInitialData] = useState(false);
@@ -930,12 +948,16 @@ export default function App() {
       return intent.status === 'closed';
     }
 
-    return true;
+    return intent.status === 'tracking';
   });
   const lastPolledAge = formatRelativeAge(lastTradeUpdate, liveClock);
   const selectedLeader = selectedMarket ? getMarketLeader(selectedMarket) : null;
+  const marketControlsOutcomes = Array.isArray(selectedMarket?.outcomes)
+    ? sortOutcomes(selectedMarket.outcomes).filter((outcome) => typeof outcome?.probability === 'number')
+    : [];
   const currentRecommendation = decisionEngine?.recommendation ?? null;
   const recommendationHeadline = formatRecommendationHeadline(currentRecommendation);
+  const recommendationActionLabel = formatRecommendationActionLabel(decisionEngine?.action, currentRecommendation?.outcomeLabel);
   const recommendationExpectedValue = resolveRecommendationExpectedValue(currentRecommendation);
   const parsedOperatorNotes = parseOperatorNotes(analysis);
   const selectedSportsProbabilityBreakdown = getSportsProbabilityBreakdown(selectedMarket, selectedModelMarket);
@@ -950,6 +972,25 @@ export default function App() {
   const recommendationSource = getRecommendationSource(recommendedModelMarket);
   const recommendedStarterContext = getRecommendedStarterContext(recommendedModelMarket);
   const eventIntelligence = getEventIntelligenceSummary(aggregation);
+  const statusPopup = error
+    ? { kind: 'error', message: error, dismiss: () => setError('') }
+    : notice
+      ? { kind: 'notice', message: notice, dismiss: () => setNotice('') }
+      : null;
+
+  useEffect(() => {
+    if (!statusPopup) {
+      return undefined;
+    }
+
+    const timeoutId = window.setTimeout(() => {
+      statusPopup.dismiss();
+    }, 5000);
+
+    return () => {
+      window.clearTimeout(timeoutId);
+    };
+  }, [statusPopup?.kind, statusPopup?.message]);
 
   function clearSelectedEventContext() {
     setSelectedEvent(null);
@@ -962,6 +1003,12 @@ export default function App() {
     setTradeDraft(null);
     setRiskInputs({ stopLossProbability: '', takeProfitProbability: '' });
     setIsTradeModalOpen(false);
+  }
+
+  function handleClearSelectedEvent() {
+    setError('');
+    setNotice('');
+    clearSelectedEventContext();
   }
 
   useEffect(() => {
@@ -1191,7 +1238,7 @@ export default function App() {
           // Ignore background polling failures and keep the last known state in the UI.
         }
       })();
-    }, 3000);
+    }, 5000);
 
     return () => {
       window.clearInterval(intervalId);
@@ -1462,7 +1509,11 @@ export default function App() {
         saveStoredTradeDraft(nextIntent);
       }
 
-      setNotice('Position sold and closed successfully.');
+      setNotice(
+        nextIntent.status === 'closed'
+          ? 'Position sold and closed successfully.'
+          : 'Cash out submitted to Polymarket US. Trade stays active until the venue confirms the full close.'
+      );
     } catch (sellError) {
       if (isTradeIntentNotFoundError(sellError)) {
         await refreshTradeHistory();
@@ -1474,39 +1525,6 @@ export default function App() {
         setNotice('That trade intent no longer exists. Refreshed history.');
       } else {
         setError(sellError instanceof Error ? sellError.message : 'Unable to sell position');
-      }
-    } finally {
-      setIsMutatingHistory(false);
-    }
-  }
-
-  async function handleStopTrackedIntent(intent) {
-    setError('');
-    setNotice('');
-    setIsMutatingHistory(true);
-
-    try {
-      const nextIntent = await stopTradeIntentRequest(intent.id);
-      setTradeHistory((previous) => replaceIntentInList(previous, nextIntent));
-      setLastTradeUpdate(new Date().toISOString());
-
-      if (tradeDraft?.id === nextIntent.id) {
-        setTradeDraft(nextIntent);
-        saveStoredTradeDraft(nextIntent);
-      }
-
-      setNotice('Trade stopped and moved out of active tracking.');
-    } catch (stopError) {
-      if (isTradeIntentNotFoundError(stopError)) {
-        await refreshTradeHistory();
-
-        if (tradeDraft?.id === intent.id) {
-          handleClearTradeDraft();
-        }
-
-        setNotice('That trade intent no longer exists. Refreshed history.');
-      } else {
-        setError(stopError instanceof Error ? stopError.message : 'Unable to stop trade monitoring');
       }
     } finally {
       setIsMutatingHistory(false);
@@ -1692,6 +1710,17 @@ export default function App() {
 
   return (
     <main className="app-shell terminal-shell">
+      {statusPopup ? (
+        <section
+          className={`status-toast ${statusPopup.kind === 'error' ? 'status-toast-error' : 'status-toast-notice'}`}
+          role={statusPopup.kind === 'error' ? 'alert' : 'status'}
+          aria-live={statusPopup.kind === 'error' ? 'assertive' : 'polite'}
+        >
+          <p className="eyebrow">{statusPopup.kind === 'error' ? 'Error' : 'Notice'}</p>
+          <p className="status-toast-message">{statusPopup.message}</p>
+        </section>
+      ) : null}
+
       <header className="terminal-topbar">
         <div className="terminal-brand-block">
           <div className="brand-row">
@@ -1729,38 +1758,6 @@ export default function App() {
 
       <section className="dashboard-grid dashboard-grid-no-explorer">
         <aside className="dashboard-sidebar">
-          {error ? (
-            <section className="status-popup status-popup-error" role="alert" aria-live="assertive">
-              <div>
-                <p className="eyebrow">Notice</p>
-                <p className="status-popup-message">{error}</p>
-              </div>
-              <button
-                type="button"
-                className="ghost-button status-popup-dismiss"
-                onClick={() => setError('')}
-              >
-                Exit
-              </button>
-            </section>
-          ) : null}
-
-          {notice ? (
-            <section className="status-popup status-popup-notice" role="status" aria-live="polite">
-              <div>
-                <p className="eyebrow">Notice</p>
-                <p className="status-popup-message">{notice}</p>
-              </div>
-              <button
-                type="button"
-                className="ghost-button status-popup-dismiss"
-                onClick={() => setNotice('')}
-              >
-                Exit
-              </button>
-            </section>
-          ) : null}
-
           <section className="control-card terminal-card compact-card">
             <div className="panel-heading">
               <p className="eyebrow">Market Controls</p>
@@ -1810,11 +1807,22 @@ export default function App() {
                     {eventSportsLeagues.length === 0 ? (
                       <span className="market-chip market-chip-market-only">MARKET ONLY</span>
                     ) : null}
+                    <button
+                      type="button"
+                      className="market-chip-button"
+                      onClick={handleClearSelectedEvent}
+                      title="Clear the current event and reset the panel."
+                    >
+                      Clear
+                    </button>
                     {selectedEvent.resolvedFromFallback ? (
                       <span className="market-chip market-chip-muted">matched from {selectedEvent.requestedSlug}</span>
                     ) : null}
                   </div>
-                  <h3>{selectedEvent.title}</h3>
+                  <div className="market-controls-title-wrap">
+                    <h3 className="market-controls-title">{selectedEvent.title}</h3>
+                    <p className="market-controls-subtitle">{selectedMarket?.question ?? 'Live market snapshot'}</p>
+                  </div>
                 </div>
 
                 <div className="event-summary-stats compact-status-grid market-controls-stats">
@@ -1826,10 +1834,13 @@ export default function App() {
                     <span>Liquidity</span>
                     <strong>{formatCompactNumber(selectedEvent.liquidity)}</strong>
                   </article>
-                  <article>
-                    <span>End Date</span>
-                    <strong>{formatDate(selectedEvent.endDate)}</strong>
-                  </article>
+                  {marketControlsOutcomes.map((outcome) => (
+                    <article key={outcome.label} className="market-outcome-stat">
+                      <span>{outcome.label}</span>
+                      <strong>{formatPercent(outcome.probability)}</strong>
+                      <small>{formatMarketPrice(outcome.probability)}</small>
+                    </article>
+                  ))}
                 </div>
 
                 {selectedEvent.usFiltered && tradableMarkets.length === 0 ? (
@@ -1861,14 +1872,32 @@ export default function App() {
               <>
                 <div className="decision-highlight ai-primary-card ai-subsection">
                   <span>Current recommendation</span>
-                  <strong>{recommendationHeadline}</strong>
-                  <p>
-                    Confidence {formatPercent(currentRecommendation.combinedConfidence)} · EV {formatSignedPercent(recommendationExpectedValue)} · Edge {formatSignedPercent(currentRecommendation.edge)}
-                  </p>
-                  <div className="market-chip-row">
-                    <span className={recommendationSource.className}>{recommendationSource.detail}</span>
+                  <strong>{recommendationActionLabel}</strong>
+                  <p className="recommendation-market-copy">{recommendationHeadline}</p>
+                  <div className="decision-rationale-grid compact-preview-grid recommendation-summary-grid">
+                    <article>
+                      <span className="label-with-tooltip" data-tooltip="Overall confidence in this recommendation after combining the sports model, market behavior, and agreement checks." tabIndex={0}>Confidence</span>
+                      <strong>{formatPercent(currentRecommendation.combinedConfidence)}</strong>
+                    </article>
+                    <article>
+                      <span className="label-with-tooltip" data-tooltip="Estimated value versus the current market price. Higher positive expected value means the recommendation looks more favorable." tabIndex={0}>Expected Value</span>
+                      <strong>{formatSignedPercent(recommendationExpectedValue)}</strong>
+                    </article>
+                    <article>
+                      <span className="label-with-tooltip" data-tooltip="The gap between the model's probability and the current market probability for this outcome." tabIndex={0}>Edge</span>
+                      <strong>{formatSignedPercent(currentRecommendation.edge)}</strong>
+                    </article>
                   </div>
-                  <p>{currentRecommendation.thesis ?? 'No model thesis available yet for this event.'}</p>
+                  <div className="market-chip-row recommendation-source-row">
+                    <span
+                      className={recommendationSource.className}
+                      title={recommendationSource.detail === 'sports model'
+                        ? 'This recommendation is driven by the sports model layer for this matchup.'
+                        : 'This recommendation is being driven by market pricing without sports-model support.'}
+                    >
+                      {recommendationSource.detail}
+                    </span>
+                  </div>
                 </div>
 
                 {recommendedMarket ? (
@@ -1994,30 +2023,22 @@ export default function App() {
                   </div>
                   <div className="decision-rationale-grid compact-preview-grid">
                     <article>
-                      <span>Combined Confidence</span>
+                      <span className="label-with-tooltip" data-tooltip="Overall confidence after combining the sports model, market data, and agreement checks." tabIndex={0}>Combined Confidence</span>
                       <strong>{formatPercent(currentRecommendation.combinedConfidence)}</strong>
                     </article>
                     <article>
-                      <span>Expected Value</span>
+                      <span className="label-with-tooltip" data-tooltip="Estimated edge versus the current market price. Higher positive expected value means the recommendation looks more favorable." tabIndex={0}>Expected Value</span>
                       <strong>{formatSignedPercent(recommendationExpectedValue)}</strong>
                     </article>
                     <article>
-                      <span>Model Probability</span>
+                      <span className="label-with-tooltip" data-tooltip="The model's probability estimate for the recommended outcome before your trade sizing is applied." tabIndex={0}>Model Probability</span>
                       <strong>{formatPercent(currentRecommendation.modelProbability)}</strong>
                     </article>
                     <article>
-                      <span>Agreement</span>
+                      <span className="label-with-tooltip" data-tooltip="Whether the live market and the model are pointing in the same direction for this recommendation." tabIndex={0}>Agreement</span>
                       <strong>{currentRecommendation.agreementWithModel ? 'Aligned' : 'Divergent'}</strong>
                     </article>
                   </div>
-                  <p className="terminal-copy">{currentRecommendation.keyRisk ?? 'No key risk summary provided.'}</p>
-                  {currentRecommendation.reasons?.length ? (
-                    <ul className="reason-list compact-reason-list">
-                      {currentRecommendation.reasons.map((reason) => (
-                        <li key={reason}>{reason}</li>
-                      ))}
-                    </ul>
-                  ) : null}
                 </section>
 
                 {recommendedSportsOutcome && recommendedModelOutcome ? (
@@ -2028,37 +2049,22 @@ export default function App() {
                     </div>
                     <div className="decision-rationale-grid compact-preview-grid">
                       <article>
-                        <span>Market Price</span>
+                        <span className="label-with-tooltip" data-tooltip="The live Polymarket probability for this outcome right now." tabIndex={0}>Market Price</span>
                         <strong>{formatPercent(currentRecommendation.currentProbability)}</strong>
                       </article>
                       <article>
-                        <span>Raw Sports Model</span>
-                        <strong>{formatPercent(recommendedSportsOutcome.rawFairProbability)}</strong>
-                      </article>
-                      <article>
-                        <span>Calibrated Sports Model</span>
+                        <span className="label-with-tooltip" data-tooltip="The sports-only estimate after calibration. This is the cleaner pre-market model view to compare against the live market." tabIndex={0}>Sports Model</span>
                         <strong>{formatPercent(recommendedSportsOutcome.fairProbability)}</strong>
                       </article>
                       <article>
-                        <span>Final Blended Model</span>
+                        <span className="label-with-tooltip" data-tooltip="The final probability after blending the sports model with live market behavior and market quality signals." tabIndex={0}>Final Blended Model</span>
                         <strong>{formatPercent(recommendedModelOutcome.estimatedProbability)}</strong>
                       </article>
                       <article>
-                        <span>Sports Confidence</span>
+                        <span className="label-with-tooltip" data-tooltip="How reliable the sports model believes this matchup estimate is. Higher confidence means the model sees a cleaner signal." tabIndex={0}>Sports Confidence</span>
                         <strong>{formatPercent(recommendedSportsOutcome.modelConfidence)}</strong>
                       </article>
-                      <article>
-                        <span>Calibration Method</span>
-                        <strong>{recommendedModelMarket?.sportsContext?.features?.calibrationMethod ?? recommendedModelOutcome.features?.sportsModel ?? 'n/a'}</strong>
-                      </article>
-                      <article>
-                        <span>League Source</span>
-                        <strong>{recommendationSource.detail}</strong>
-                      </article>
                     </div>
-                    <p className="terminal-copy">
-                      Raw Elo gives the uncalibrated matchup estimate. Calibrated sports probability compresses tail confidence using historical bucket performance, and the final blended model then mixes that with live Polymarket price history and market quality.
-                    </p>
                   </section>
                 ) : null}
 
@@ -2166,11 +2172,35 @@ export default function App() {
                       <p className="eyebrow">Selected Market</p>
                       <h2>Sports Probability Breakdown</h2>
                     </div>
-                    <div className="operator-notes-copy">
+                    <div className="sports-breakdown-list">
                       {selectedSportsProbabilityBreakdown.map((outcome) => (
-                        <p key={outcome.label}>
-                          {outcome.label}: market {formatPercent(outcome.marketProbability)} | raw {formatPercent(outcome.rawSportsProbability)} | calibrated {formatPercent(outcome.calibratedSportsProbability)} | final {formatPercent(outcome.finalModelProbability)} | edge {formatSignedPercent(outcome.edge)}
-                        </p>
+                        <section key={outcome.label} className="sports-breakdown-row">
+                          <div className="sports-breakdown-row-header">
+                            <h3>{outcome.label}</h3>
+                          </div>
+                          <div className="decision-rationale-grid compact-preview-grid sports-breakdown-grid">
+                            <article>
+                              <span className="label-with-tooltip" data-tooltip="The live market probability for this team right now." tabIndex={0}>Market</span>
+                              <strong>{formatPercent(outcome.marketProbability)}</strong>
+                            </article>
+                            <article>
+                              <span className="label-with-tooltip" data-tooltip="The raw sports-only estimate before calibration." tabIndex={0}>Raw Model</span>
+                              <strong>{formatPercent(outcome.rawSportsProbability)}</strong>
+                            </article>
+                            <article>
+                              <span className="label-with-tooltip" data-tooltip="The calibrated sports model after historical reliability adjustments." tabIndex={0}>Calibrated</span>
+                              <strong>{formatPercent(outcome.calibratedSportsProbability)}</strong>
+                            </article>
+                            <article>
+                              <span className="label-with-tooltip" data-tooltip="The final blended estimate after combining sports and market context." tabIndex={0}>Final</span>
+                              <strong>{formatPercent(outcome.finalModelProbability)}</strong>
+                            </article>
+                            <article>
+                              <span className="label-with-tooltip" data-tooltip="The difference between the final model and the current market price." tabIndex={0}>Edge</span>
+                              <strong>{formatSignedPercent(outcome.edge)}</strong>
+                            </article>
+                          </div>
+                        </section>
                       ))}
                     </div>
                   </section>
@@ -2213,18 +2243,7 @@ export default function App() {
               <h2>Trade Center</h2>
             </div>
             <div className="action-row">
-              <span className="market-chip">{activeTradeIntents.length} tracking</span>
-              <span className="market-chip">{tradeHistory.length} saved</span>
-              <span className="market-chip">{filteredTradeHistory.length} shown</span>
               <span className="market-chip market-chip-muted">Last polled {lastPolledAge}</span>
-              <button
-                type="button"
-                className="secondary-button secondary-button-muted"
-                onClick={() => void handlePollActivePositions()}
-                disabled={activeTradeIntents.length === 0 || isPollingTracking}
-              >
-                {isPollingTracking ? 'Polling...' : 'Poll Now'}
-              </button>
             </div>
           </div>
 
@@ -2232,20 +2251,11 @@ export default function App() {
             <button
               type="button"
               role="tab"
-              aria-selected={tradeCenterFilter === 'all'}
-              className={tradeCenterFilter === 'all' ? 'filter-chip filter-chip-active' : 'filter-chip'}
-              onClick={() => setTradeCenterFilter('all')}
-            >
-              All
-            </button>
-            <button
-              type="button"
-              role="tab"
               aria-selected={tradeCenterFilter === 'tracking'}
               className={tradeCenterFilter === 'tracking' ? 'filter-chip filter-chip-active' : 'filter-chip'}
               onClick={() => setTradeCenterFilter('tracking')}
             >
-              Tracking
+              Active
             </button>
             <button
               type="button"
@@ -2352,22 +2362,6 @@ export default function App() {
                             <strong>{formatPercent(takeProfitProbability)}</strong>
                           </article>
                           <article className={getTradeMetricClass('ok')}>
-                            <span>Last evaluation</span>
-                            <strong>{formatDateTime(intent.monitoring?.lastEvaluationAt)}</strong>
-                          </article>
-                          <article className={getTradeMetricClass('ok')}>
-                            <span>Last Polymarket Quote</span>
-                            <strong>{formatDateTime(intent.monitoring?.lastPolymarketQuoteAt)}</strong>
-                          </article>
-                          <article className={getTradeMetricClass('ok')}>
-                            <span>Entry order</span>
-                            <strong>{formatOrderId(intent.executionRequest?.venueOrderId)}</strong>
-                          </article>
-                          <article className={getTradeMetricClass('good')}>
-                            <span>Shares filled</span>
-                            <strong>{typeof intent.position?.sharesFilled === 'number' ? intent.position.sharesFilled.toFixed(2) : 'n/a'}</strong>
-                          </article>
-                          <article className={getTradeMetricClass('ok')}>
                             <span>Cost basis</span>
                             <strong>{formatCurrency(costBasis)}</strong>
                           </article>
@@ -2376,6 +2370,22 @@ export default function App() {
                             <strong>{typeof currentValue === 'number'
                               ? formatCurrency(currentValue)
                               : 'n/a'}</strong>
+                          </article>
+                          <article className="trade-metric-card trade-metric-card-neutral">
+                            <span>Last evaluation</span>
+                            <strong>{formatDateTime(intent.monitoring?.lastEvaluationAt)}</strong>
+                          </article>
+                          <article className="trade-metric-card trade-metric-card-neutral">
+                            <span>Last Polymarket Quote</span>
+                            <strong>{formatDateTime(intent.monitoring?.lastPolymarketQuoteAt)}</strong>
+                          </article>
+                          <article className="trade-metric-card trade-metric-card-neutral">
+                            <span>Entry order</span>
+                            <strong>{formatOrderId(intent.executionRequest?.venueOrderId)}</strong>
+                          </article>
+                          <article className="trade-metric-card trade-metric-card-neutral">
+                            <span>Shares filled</span>
+                            <strong>{typeof intent.position?.sharesFilled === 'number' ? intent.position.sharesFilled.toFixed(2) : 'n/a'}</strong>
                           </article>
                         </>
                       ) : (
@@ -2408,15 +2418,13 @@ export default function App() {
                       )}
                     </div>
 
-                    {isTracking ? (
-                      <p className="trade-status-copy">{intent.monitoring?.notes ?? 'Monitoring live price movement.'}</p>
-                    ) : (
+                    {!isTracking ? (
                       <p className="trade-status-copy">
                         {intent.executionRequest?.readyForExecution
                           ? `Request ready · ${intent.executionRequest.orderType} · ${intent.executionRequest.side}`
                           : precheckMessage ?? 'Intent is ready for review.'}
                       </p>
-                    )}
+                    ) : null}
 
                     <div className="trade-history-actions">
                       {isTracking ? (
@@ -2455,17 +2463,9 @@ export default function App() {
                             className="secondary-button"
                             onClick={() => void handleSellTrackedIntent(intent)}
                             disabled={isMutatingHistory}
-                            title="Sell all shares and close this position now."
+                            title="Sell all shares via Polymarket US and close this trade when the venue fill completes."
                           >
-                            Cash Out
-                          </button>
-                          <button
-                            type="button"
-                            className="ghost-button"
-                            onClick={() => void handleStopTrackedIntent(intent)}
-                            disabled={isMutatingHistory}
-                          >
-                            Stop Trade
+                            Cash Out & Stop
                           </button>
                         </>
                       ) : (

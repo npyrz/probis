@@ -2,6 +2,7 @@ import axios from 'axios';
 import nacl from 'tweetnacl';
 
 const US_MARKETS_CACHE_TTL_MS = 60_000;
+const QUOTE_REQUEST_TIMEOUT_MS = 2_500;
 const usMarketsCache = new Map();
 const MARKET_MATCH_STOP_WORDS = new Set([
   'the',
@@ -59,10 +60,10 @@ function createAuthSignature({ timestamp, method, path, secretKey }) {
   return Buffer.from(signature).toString('base64');
 }
 
-function createPolymarketUsClient(env) {
+function createPolymarketUsClient(env, timeout = 30000) {
   return axios.create({
     baseURL: env.polymarketUsBaseUrl,
-    timeout: 30000,
+    timeout,
     headers: {
       'Content-Type': 'application/json'
     }
@@ -247,7 +248,7 @@ function getUsMarketsFromPayload(payload) {
   return [];
 }
 
-export async function fetchUsMarketsBySlug(env, slug, { includeClosed = true } = {}) {
+export async function fetchUsMarketsBySlug(env, slug, { includeClosed = true, timeoutMs = 30000 } = {}) {
   const normalizedSlug = String(slug ?? '').trim().toLowerCase();
 
   if (!normalizedSlug) {
@@ -259,7 +260,7 @@ export async function fetchUsMarketsBySlug(env, slug, { includeClosed = true } =
   }
 
   const path = '/v1/markets';
-  const client = createPolymarketUsClient(env);
+  const client = createPolymarketUsClient(env, timeoutMs);
   const candidateSlugs = [
     normalizedSlug,
     normalizedSlug.startsWith('aec-') ? normalizedSlug.slice(4) : `aec-${normalizedSlug}`
@@ -943,7 +944,10 @@ async function submitLimitSellOrder(env, { marketSlug, orderIntent, shares, limi
 }
 
 async function resolveOutcomeMarketQuote(env, marketSlug, outcomeLabel) {
-  const markets = await fetchUsMarketsBySlug(env, marketSlug, { includeClosed: true });
+  const markets = await fetchUsMarketsBySlug(env, marketSlug, {
+    includeClosed: true,
+    timeoutMs: QUOTE_REQUEST_TIMEOUT_MS
+  });
   const market = markets.find((candidate) => String(candidate?.slug ?? '').toLowerCase() === String(marketSlug).toLowerCase())
     ?? markets[0]
     ?? null;
@@ -976,6 +980,7 @@ async function resolveOutcomeMarketQuote(env, marketSlug, outcomeLabel) {
 
   return {
     resolvedMarketSlug: market.slug ?? marketSlug,
+    matchingIndex,
     outcomePrice
   };
 }
@@ -985,23 +990,24 @@ export async function getLiveOutcomeProbabilityFromUsMarket(env, marketSlug, out
     return null;
   }
 
-  // Prefer BBO endpoint for real-time prices.
-  try {
-    const bboPrice = await fetchBboMidpointForOutcome(env, marketSlug, outcomeLabel);
+  const [bboResult, quoteResult] = await Promise.allSettled([
+    fetchBboForMarket(env, marketSlug),
+    resolveOutcomeMarketQuote(env, marketSlug, outcomeLabel)
+  ]);
 
-    if (typeof bboPrice === 'number') {
-      return bboPrice;
-    }
-  } catch {
-    // Fall through to market metadata.
+  const bboPrice = bboResult.status === 'fulfilled' && quoteResult.status === 'fulfilled'
+    ? getBboExecutablePriceForOutcome(bboResult.value, quoteResult.value.matchingIndex)
+    : null;
+
+  if (typeof bboPrice === 'number') {
+    return bboPrice;
   }
 
-  try {
-    const quote = await resolveOutcomeMarketQuote(env, marketSlug, outcomeLabel);
-    return typeof quote?.outcomePrice === 'number' ? quote.outcomePrice : null;
-  } catch {
-    return null;
+  if (quoteResult.status === 'fulfilled') {
+    return typeof quoteResult.value?.outcomePrice === 'number' ? quoteResult.value.outcomePrice : null;
   }
+
+  return null;
 }
 
 async function fetchBboForMarket(env, marketSlug) {
@@ -1011,54 +1017,62 @@ async function fetchBboForMarket(env, marketSlug) {
     return null;
   }
 
-  const encodedSlug = encodeURIComponent(normalizedSlug);
-  const path = `/v1/markets/${encodedSlug}/bbo`;
-  const client = createPolymarketUsClient(env);
+  const candidateSlugs = [
+    normalizedSlug,
+    normalizedSlug.startsWith('aec-') ? normalizedSlug.slice(4) : `aec-${normalizedSlug}`
+  ];
+  const dedupedCandidates = [...new Set(candidateSlugs.filter(Boolean))];
+  const client = createPolymarketUsClient(env, QUOTE_REQUEST_TIMEOUT_MS);
 
-  try {
-    const response = await client.get(path, {
-      headers: getSignedHeaders(env, 'GET', path)
-    });
+  for (const candidateSlug of dedupedCandidates) {
+    const encodedSlug = encodeURIComponent(candidateSlug);
+    const path = `/v1/markets/${encodedSlug}/bbo`;
 
-    return response.data ?? null;
-  } catch {
-    return null;
+    try {
+      const response = await client.get(path, {
+        headers: getSignedHeaders(env, 'GET', path)
+      });
+
+      return response.data ?? null;
+    } catch {
+      // Try the next candidate slug.
+    }
   }
+
+  return null;
 }
 
-async function fetchBboMidpointForOutcome(env, marketSlug, outcomeLabel) {
-  const bbo = await fetchBboForMarket(env, marketSlug);
+function getBboExecutablePriceForOutcome(bbo, outcomeIndex) {
+  const marketData = bbo?.marketData ?? bbo;
 
-  if (!bbo || typeof bbo !== 'object') {
+  if (!marketData || typeof marketData !== 'object') {
     return null;
   }
 
-  const bestBid = parseNumber(bbo.bestBid?.price?.value ?? bbo.bestBid?.price ?? bbo.bestBid ?? bbo.bid?.price?.value ?? bbo.bid?.price ?? bbo.bid);
-  const bestAsk = parseNumber(bbo.bestAsk?.price?.value ?? bbo.bestAsk?.price ?? bbo.bestAsk ?? bbo.ask?.price?.value ?? bbo.ask?.price ?? bbo.ask);
+  const bestBid = parseNumber(marketData.bestBid?.price?.value ?? marketData.bestBid?.price ?? marketData.bestBid?.value ?? marketData.bestBid ?? marketData.bid?.price?.value ?? marketData.bid?.price ?? marketData.bid);
+  const bestAsk = parseNumber(marketData.bestAsk?.price?.value ?? marketData.bestAsk?.price ?? marketData.bestAsk?.value ?? marketData.bestAsk ?? marketData.ask?.price?.value ?? marketData.ask?.price ?? marketData.ask);
 
-  let longPrice = null;
+  if (outcomeIndex === 1) {
+    if (typeof bestAsk === 'number' && bestAsk > 0) {
+      return normalizeLimitPrice(1 - bestAsk);
+    }
 
-  if (typeof bestBid === 'number' && typeof bestAsk === 'number' && bestBid > 0 && bestAsk > 0) {
-    longPrice = (bestBid + bestAsk) / 2;
-  } else if (typeof bestAsk === 'number' && bestAsk > 0) {
-    longPrice = bestAsk;
-  } else if (typeof bestBid === 'number' && bestBid > 0) {
-    longPrice = bestBid;
-  }
+    if (typeof bestBid === 'number' && bestBid > 0) {
+      return normalizeLimitPrice(1 - bestBid);
+    }
 
-  if (typeof longPrice !== 'number') {
     return null;
   }
 
-  // BBO always reports the long (YES) side price.
-  // For short (NO) outcomes, invert.
-  const normalized = normalizeOutcomeLabel(outcomeLabel);
-
-  if (normalized === 'no') {
-    return normalizeLimitPrice(1 - longPrice);
+  if (typeof bestBid === 'number' && bestBid > 0) {
+    return normalizeLimitPrice(bestBid);
   }
 
-  return normalizeLimitPrice(longPrice);
+  if (typeof bestAsk === 'number' && bestAsk > 0) {
+    return normalizeLimitPrice(bestAsk);
+  }
+
+  return null;
 }
 
 async function resolveOrderIntentsForOutcome(env, marketSlug, outcomeLabel) {
