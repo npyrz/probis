@@ -36,8 +36,10 @@ router.get('/api/sports/status', async (_request, response) => {
 router.post('/api/sports/import/nba', async (request, response) => {
   try {
     const result = await importNbaHistory({
+      season: request.body?.season,
       startDate: request.body?.startDate,
-      endDate: request.body?.endDate
+      endDate: request.body?.endDate,
+      batchSize: request.body?.batchSize
     });
 
     response.status(201).json({
@@ -111,7 +113,8 @@ router.post('/api/sports/backtest', async (request, response) => {
       league: String(request.body?.league ?? 'NBA').toUpperCase(),
       startDate: request.body?.startDate,
       endDate: request.body?.endDate,
-      minTrainingGames: Number.parseInt(request.body?.minTrainingGames ?? '10', 10)
+      minTrainingGames: Number.parseInt(request.body?.minTrainingGames ?? '10', 10),
+      calibrationBucketSize: Number.parseFloat(request.body?.calibrationBucketSize ?? '0.1')
     });
 
     response.json({

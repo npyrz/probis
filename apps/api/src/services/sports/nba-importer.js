@@ -4,6 +4,22 @@ import { buildTeamUniverseIndex, normalizeSportsTeamKey } from './canonicalizati
 import { loadPolymarketUsTeamUniverse, mergeSportsHistoryGames } from './history-store.js';
 
 const ESPN_NBA_SCOREBOARD_URL = 'https://site.api.espn.com/apis/site/v2/sports/basketball/nba/scoreboard';
+const DEFAULT_BATCH_SIZE = 7;
+
+const NBA_SEASON_RANGES = {
+  '2023-24': {
+    startDate: '2023-10-24',
+    endDate: '2024-06-17'
+  },
+  '2024-25': {
+    startDate: '2024-10-22',
+    endDate: '2025-06-22'
+  },
+  '2025-26': {
+    startDate: '2025-10-21',
+    endDate: '2026-06-21'
+  }
+};
 
 const NBA_TEAM_ALIASES = {
   'atlanta hawks': ['hawks'],
@@ -64,6 +80,22 @@ function parseInputDate(value) {
   }
 
   return new Date(Date.UTC(parsed.getUTCFullYear(), parsed.getUTCMonth(), parsed.getUTCDate()));
+}
+
+function resolveSeasonRange(season) {
+  const normalizedSeason = String(season ?? '').trim();
+
+  if (!normalizedSeason) {
+    return null;
+  }
+
+  const range = NBA_SEASON_RANGES[normalizedSeason];
+
+  if (!range) {
+    throw new Error(`Unsupported NBA season "${normalizedSeason}".`);
+  }
+
+  return range;
 }
 
 function eachDate(startDate, endDate) {
@@ -222,9 +254,28 @@ async function fetchGamesForDate(client, dateKey, teamLookup) {
     .filter(Boolean);
 }
 
+async function fetchGamesForDates(client, dates, teamLookup, batchSize) {
+  const importedGames = [];
+
+  for (let index = 0; index < dates.length; index += batchSize) {
+    const batch = dates.slice(index, index + batchSize);
+    const dailyBatches = await Promise.all(
+      batch.map((date) => fetchGamesForDate(client, toDateKey(date), teamLookup))
+    );
+
+    for (const games of dailyBatches) {
+      importedGames.push(...games);
+    }
+  }
+
+  return importedGames;
+}
+
 export async function importNbaHistory(options = {}) {
-  const startDate = parseInputDate(options.startDate ?? '2023-10-24');
-  const endDate = parseInputDate(options.endDate ?? new Date().toISOString().slice(0, 10));
+  const seasonRange = resolveSeasonRange(options.season);
+  const startDate = parseInputDate(options.startDate ?? seasonRange?.startDate ?? '2023-10-24');
+  const endDate = parseInputDate(options.endDate ?? seasonRange?.endDate ?? new Date().toISOString().slice(0, 10));
+  const batchSize = Math.max(1, Number.parseInt(options.batchSize ?? String(DEFAULT_BATCH_SIZE), 10) || DEFAULT_BATCH_SIZE);
 
   if (endDate < startDate) {
     throw new Error('endDate must be on or after startDate.');
@@ -236,12 +287,7 @@ export async function importNbaHistory(options = {}) {
   const teamLookup = buildResolvedTeamLookup(snapshot);
   const client = createEspnClient();
   const dates = eachDate(startDate, endDate);
-  const importedGames = [];
-
-  for (const date of dates) {
-    const dailyGames = await fetchGamesForDate(client, toDateKey(date), teamLookup);
-    importedGames.push(...dailyGames);
-  }
+  const importedGames = await fetchGamesForDates(client, dates, teamLookup, batchSize);
 
   const merged = await mergeSportsHistoryGames(importedGames, {
     generatedAt: new Date().toISOString()
@@ -250,8 +296,10 @@ export async function importNbaHistory(options = {}) {
   return {
     league: 'NBA',
     source: 'espn-scoreboard',
+    season: options.season ?? null,
     startDate: startDate.toISOString().slice(0, 10),
     endDate: endDate.toISOString().slice(0, 10),
+    batchSize,
     fetchedGameCount: importedGames.length,
     insertedCount: merged.insertedCount,
     totalStoredGameCount: merged.totalCount

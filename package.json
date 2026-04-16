@@ -16,8 +16,8 @@
     "build": "npm run build --workspaces",
     "start": "npm run start --workspace @probis/api",
     "sync:sports-universe": "node scripts/sync-polymarket-us-sports-universe.js",
-    "import:nba-history": "node --input-type=module -e \"import { importNbaHistory } from './apps/api/src/services/sports/nba-importer.js'; const result = await importNbaHistory({ startDate: process.env.START_DATE ?? '2023-10-24', endDate: process.env.END_DATE ?? new Date().toISOString().slice(0, 10) }); console.log(JSON.stringify(result, null, 2));\"",
-    "backtest:nba": "node --input-type=module -e \"import { runSportsBacktest } from './apps/api/src/services/sports/backtest.js'; const result = await runSportsBacktest({ league: 'NBA', startDate: process.env.START_DATE, endDate: process.env.END_DATE, minTrainingGames: Number.parseInt(process.env.MIN_TRAINING_GAMES ?? '10', 10) }); console.log(JSON.stringify(result, null, 2));\""
+    "import:nba-history": "node --input-type=module -e \"import { importNbaHistory } from './apps/api/src/services/sports/nba-importer.js'; const result = await importNbaHistory({ season: process.env.SEASON, startDate: process.env.START_DATE, endDate: process.env.END_DATE, batchSize: process.env.BATCH_SIZE }); console.log(JSON.stringify(result, null, 2));\"",
+    "backtest:nba": "node --input-type=module -e \"import { runSportsBacktest } from './apps/api/src/services/sports/backtest.js'; const result = await runSportsBacktest({ league: 'NBA', startDate: process.env.START_DATE, endDate: process.env.END_DATE, minTrainingGames: Number.parseInt(process.env.MIN_TRAINING_GAMES ?? '10', 10), calibrationBucketSize: Number.parseFloat(process.env.CALIBRATION_BUCKET_SIZE ?? '0.1') }); console.log(JSON.stringify(result, null, 2));\""
   },
   "devDependencies": {
     "concurrently": "^9.2.1"

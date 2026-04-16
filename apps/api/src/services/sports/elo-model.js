@@ -6,6 +6,14 @@ function average(values) {
   return values.reduce((sum, value) => sum + value, 0) / values.length;
 }
 
+function sum(values) {
+  if (values.length === 0) {
+    return 0;
+  }
+
+  return values.reduce((total, value) => total + value, 0);
+}
+
 function clamp(value, min = 0, max = 1) {
   return Math.min(max, Math.max(min, value));
 }
@@ -56,6 +64,49 @@ function expectedScore(eloA, eloB) {
 function logLoss(probability, outcome) {
   const clipped = clamp(probability, 0.001, 0.999);
   return -(outcome * Math.log(clipped) + (1 - outcome) * Math.log(1 - clipped));
+}
+
+function buildCalibrationBuckets(predictions, bucketSize = 0.1) {
+  const buckets = new Map();
+
+  for (const prediction of predictions) {
+    const probability = clamp(prediction.homeProbability, 0, 0.999999);
+    const bucketIndex = Math.min(Math.floor(probability / bucketSize), Math.floor(1 / bucketSize) - 1);
+    const bucketStart = Number((bucketIndex * bucketSize).toFixed(2));
+    const bucketEnd = Number((bucketStart + bucketSize).toFixed(2));
+    const key = `${bucketStart.toFixed(2)}-${bucketEnd.toFixed(2)}`;
+    const bucket = buckets.get(key) ?? {
+      bucket: key,
+      bucketStart,
+      bucketEnd,
+      count: 0,
+      predictedProbabilitySum: 0,
+      actualWinSum: 0,
+      brierSum: 0,
+      logLossSum: 0
+    };
+
+    bucket.count += 1;
+    bucket.predictedProbabilitySum += prediction.homeProbability;
+    bucket.actualWinSum += prediction.actualHomeWin;
+    bucket.brierSum += prediction.brier;
+    bucket.logLossSum += prediction.logLoss;
+    buckets.set(key, bucket);
+  }
+
+  return [...buckets.values()]
+    .sort((left, right) => left.bucketStart - right.bucketStart)
+    .map((bucket) => ({
+      bucket: bucket.bucket,
+      bucketStart: bucket.bucketStart,
+      bucketEnd: bucket.bucketEnd,
+      count: bucket.count,
+      averagePredictedProbability: bucket.count ? bucket.predictedProbabilitySum / bucket.count : null,
+      empiricalWinRate: bucket.count ? bucket.actualWinSum / bucket.count : null,
+      calibrationGap: bucket.count ? (bucket.actualWinSum / bucket.count) - (bucket.predictedProbabilitySum / bucket.count) : null,
+      averageBrier: bucket.count ? bucket.brierSum / bucket.count : null,
+      averageLogLoss: bucket.count ? bucket.logLossSum / bucket.count : null
+    }));
 }
 
 function getMarginMultiplier(scoreDiff, eloDiff) {
@@ -271,7 +322,10 @@ export function buildTeamStrengthMarketContext({ event, market, historyStore }) 
   };
 }
 
-export function runTeamStrengthBacktest(historyStore, { league, startDate, endDate, minTrainingGames = 10 } = {}) {
+export function runTeamStrengthBacktest(
+  historyStore,
+  { league, startDate, endDate, minTrainingGames = 10, calibrationBucketSize = 0.1 } = {}
+) {
   if (!league) {
     throw new Error('league is required for sports backtesting.');
   }
@@ -337,10 +391,22 @@ export function runTeamStrengthBacktest(historyStore, { league, startDate, endDa
   return {
     league,
     minTrainingGames,
+    calibrationBucketSize,
+    totalLeagueGameCount: games.length,
     evaluationGameCount: predictions.length,
     averageBrier: average(predictions.map((prediction) => prediction.brier)),
     averageLogLoss: average(predictions.map((prediction) => prediction.logLoss)),
     accuracy: average(predictions.map((prediction) => (prediction.correct ? 1 : 0))),
+    meanPrediction: average(predictions.map((prediction) => prediction.homeProbability)),
+    meanActualHomeWinRate: average(predictions.map((prediction) => prediction.actualHomeWin)),
+    calibration: {
+      meanCalibrationGap: predictions.length
+        ? average(predictions.map((prediction) => prediction.actualHomeWin - prediction.homeProbability))
+        : null,
+      expectedWins: sum(predictions.map((prediction) => prediction.homeProbability)),
+      actualWins: sum(predictions.map((prediction) => prediction.actualHomeWin)),
+      buckets: buildCalibrationBuckets(predictions, calibrationBucketSize)
+    },
     predictions: predictions.slice(-250)
   };
 }

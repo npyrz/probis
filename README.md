@@ -281,6 +281,7 @@ The first-pass sports implementation is deterministic and local.
   Reads active Polymarket US markets from signed `/v1/markets` and snapshots recognized team outcomes into `data/sports/polymarket-us-teams.json`.
 2. Import NBA history with `npm run import:nba-history`
   The first importer uses ESPN NBA scoreboard data and stores finalized games in `data/sports/team-history.json`.
+  You can pass `SEASON=2023-24` or explicit `START_DATE` and `END_DATE`. The importer fetches date ranges in batches so full-season imports are practical.
 3. Populate or extend `data/sports/team-history.json`
   The model expects rows like `league`, `date`, `homeTeamId`, `awayTeamId`, `homeScore`, and `awayScore`.
 4. Run normal event aggregation
@@ -293,11 +294,11 @@ If the local sports files are empty, Probis falls back to the existing market-on
 - `GET /api/sports/status`
   Returns local sports universe and history-store counts.
 - `POST /api/sports/import/nba`
-  Imports NBA history with optional JSON body fields `startDate` and `endDate`.
+  Imports NBA history with optional JSON body fields `season`, `startDate`, `endDate`, and `batchSize`.
 - `GET /api/sports/events/inspect?input=...`
   Returns recognized sports markets plus derived Elo features for a Polymarket event.
 - `POST /api/sports/backtest`
-  Runs deterministic backtesting on the local history store. Accepts `league`, `startDate`, `endDate`, and `minTrainingGames`.
+  Runs deterministic backtesting on the local history store. Accepts `league`, `startDate`, `endDate`, `minTrainingGames`, and `calibrationBucketSize`.
 
 ### Sports Backtesting
 
@@ -306,6 +307,7 @@ The initial backtest scaffolding evaluates the same Elo-based team strength mode
 - Prediction target: home-team win probability
 - Metrics: accuracy, Brier score, and log loss
 - Warm-up: controlled by `minTrainingGames` so very early-season games do not dominate the evaluation
+- Calibration output: probability buckets with average prediction, empirical win rate, and calibration gap
 
 Conceptually, the model starts from the current market price and adjusts it with trend and anchor terms:
 
