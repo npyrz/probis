@@ -712,6 +712,26 @@ async function executeTriggeredExit(env, intent, exitReason, monitoringState) {
     conditionId: resolvedMarket.conditionId
   };
   const sellOrder = await placeSellOrderForIntent(env, executableIntent);
+
+  if (!sellOrder.fullyClosed) {
+    return {
+      ...executableIntent,
+      exitRequest: {
+        ...executableIntent.exitRequest,
+        venueOrderId: sellOrder.orderId,
+        venueOrder: sellOrder.response,
+        submission: sellOrder.request,
+        executedAt: new Date().toISOString()
+      },
+      monitoring: {
+        ...monitoringState,
+        state: 'exit-submitted-awaiting-fill',
+        notes: `Exit order ${sellOrder.orderId ?? 'unknown'} submitted via close-position endpoint with state ${sellOrder.orderState ?? 'unknown'}. Keeping trade active until the venue confirms all shares are closed.`
+      },
+      updatedAt: new Date().toISOString()
+    };
+  }
+
   const closedIntent = finalizeTrackedIntent(executableIntent, exitReason, monitoringState);
 
   closedIntent.exitRequest = {
@@ -734,6 +754,7 @@ async function executeTriggeredExit(env, intent, exitReason, monitoringState) {
 async function evaluateMonitoringState(env, intent, trackedQuote) {
   const currentProbability = trackedQuote?.currentProbability ?? null;
   const lastPolymarketQuoteAt = trackedQuote?.lastPolymarketQuoteAt ?? null;
+  const currentMonitoringState = String(intent.monitoring?.state ?? '').trim();
   const baseMonitoring = {
     ...intent.monitoring,
     lastEvaluationAt: new Date().toISOString(),
@@ -744,9 +765,27 @@ async function evaluateMonitoringState(env, intent, trackedQuote) {
   };
   const stopLossProbability = baseMonitoring.stopLossProbability;
   const takeProfitProbability = baseMonitoring.takeProfitProbability;
-  const previousExitAttempts = Number.parseInt(String(intent.monitoring?.exitAttemptFailures ?? '0'), 10) || 0;
+  const hasSubmittedExitOrder = Boolean(intent.exitRequest?.venueOrderId);
+  const legacyFailedExitState = currentMonitoringState === 'stop-loss-triggered-exit-failed'
+    || currentMonitoringState === 'take-profit-triggered-exit-failed'
+    || currentMonitoringState === 'exit-failed-needs-manual-sell';
+  const previousExitAttempts = legacyFailedExitState && !hasSubmittedExitOrder
+    ? 0
+    : (Number.parseInt(String(intent.monitoring?.exitAttemptFailures ?? '0'), 10) || 0);
   const MAX_EXIT_ATTEMPTS = 3;
   const exitAttemptsExhausted = previousExitAttempts >= MAX_EXIT_ATTEMPTS;
+
+  if (intent.monitoring?.state === 'exit-submitted-awaiting-fill') {
+    return {
+      ...intent,
+      monitoring: {
+        ...baseMonitoring,
+        state: 'exit-submitted-awaiting-fill',
+        notes: intent.monitoring?.notes ?? 'Exit has been submitted. Waiting for the venue to confirm the position is closed.'
+      },
+      updatedAt: new Date().toISOString()
+    };
+  }
 
   if (typeof currentProbability === 'number' && typeof stopLossProbability === 'number' && currentProbability <= stopLossProbability) {
     if (exitAttemptsExhausted) {
@@ -1174,6 +1213,31 @@ export async function sellTradeIntent(env, id) {
     conditionId: resolvedMarket.conditionId
   };
   const sellOrder = await placeSellOrderForIntent(env, executableIntent);
+
+  if (!sellOrder.fullyClosed) {
+    const nextIntent = {
+      ...executableIntent,
+      status: 'tracking',
+      monitoring: {
+        ...executableIntent.monitoring,
+        state: 'exit-submitted-awaiting-fill',
+        lastEvaluationAt: new Date().toISOString(),
+        exitReason: 'manual-sell',
+        notes: `Cash Out order ${sellOrder.orderId ?? 'unknown'} submitted via close-position endpoint with state ${sellOrder.orderState ?? 'unknown'}. Keeping trade active until fully closed on the venue.`
+      },
+      exitRequest: {
+        ...executableIntent.exitRequest,
+        venueOrderId: sellOrder.orderId,
+        venueOrder: sellOrder.response,
+        submission: sellOrder.request,
+        executedAt: new Date().toISOString()
+      },
+      updatedAt: new Date().toISOString()
+    };
+
+    await writeTradeIntents(replaceTradeIntent(intents, nextIntent));
+    return nextIntent;
+  }
 
   let nextIntent = finalizeTrackedIntent(executableIntent, 'manual-sell', {
     ...executableIntent.monitoring,

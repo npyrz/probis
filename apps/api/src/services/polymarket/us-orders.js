@@ -1106,7 +1106,7 @@ function sellIntentForEntryIntent(entryIntent, outcomeLabel) {
 
 function getOrderId(orderResponse) {
   const order = orderResponse?.order ?? orderResponse;
-  return order?.id ?? null;
+  return order?.id ?? orderResponse?.id ?? null;
 }
 
 export function getOrderState(orderResponse) {
@@ -1208,6 +1208,21 @@ export async function findRecentFilledSellOrderForIntent(env, intent) {
 
 export async function createPolymarketUsOrder(env, body) {
   const path = '/v1/orders';
+  const client = createPolymarketUsClient(env);
+
+  try {
+    const response = await client.post(path, body, {
+      headers: getSignedHeaders(env, 'POST', path)
+    });
+
+    return response.data;
+  } catch (error) {
+    throw new Error(getErrorMessage(error));
+  }
+}
+
+export async function createPolymarketUsClosePositionOrder(env, body) {
+  const path = '/v1/order/close-position';
   const client = createPolymarketUsClient(env);
 
   try {
@@ -1496,33 +1511,28 @@ export async function placeSellOrderForIntent(env, intent) {
     orderIntent = orderIntents.sell;
   }
 
-  // Polymarket US does not support ORDER_TYPE_MARKET for sell — it requires cashOrderQty.
-  // Always use limit orders at the current BBO price with IOC to sell shares directly.
-  const quote = await resolveOutcomeMarketQuote(env, marketSlug, intent.outcomeLabel);
-  const limitPrice = quote.outcomePrice;
-
+  const maxSlippageBps = Number.parseInt(intent.executionRequest?.maxSlippageBps ?? '100', 10);
   const orderBody = {
-    marketSlug: quote.resolvedMarketSlug ?? marketSlug,
-    intent: orderIntent,
-    type: 'ORDER_TYPE_LIMIT',
-    tif: 'TIME_IN_FORCE_IMMEDIATE_OR_CANCEL',
-    price: {
-      value: limitPrice.toFixed(3),
-      currency: 'USD'
-    },
-    quantity: shares,
+    marketSlug,
     manualOrderIndicator: 'MANUAL_ORDER_INDICATOR_AUTOMATIC',
     synchronousExecution: true,
-    maxBlockTime: '10'
+    maxBlockTime: '10',
+    slippageTolerance: {
+      bips: Number.isFinite(maxSlippageBps) ? maxSlippageBps : 100
+    }
   };
 
-  const orderResponse = await createPolymarketUsOrder(env, orderBody);
+  const orderResponse = await createPolymarketUsClosePositionOrder(env, orderBody);
+  const orderState = String(getOrderState(orderResponse) ?? '').trim().toUpperCase();
 
   return {
     request: orderBody,
     response: orderResponse,
     orderId: getOrderId(orderResponse),
     sharesFilled: getSharesFromOrder(orderResponse),
+    sharesRequested: shares,
+    fullyClosed: orderState === 'ORDER_STATE_FILLED',
+    orderState,
     entryIntent: orderIntent
   };
 }
