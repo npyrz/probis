@@ -17,6 +17,7 @@ import {
 } from './lib/api.js';
 
 const TRADE_DRAFT_STORAGE_KEY = 'probis.tradeDraft';
+const TRACKED_PROBABILITY_HISTORY_LIMIT = 36;
 
 function formatCompactNumber(value) {
   if (typeof value !== 'number' || Number.isNaN(value)) {
@@ -882,6 +883,213 @@ function buildSparklinePath(history) {
     .join(' ');
 }
 
+function buildTrackedProbabilityPoint(intent, fallbackTimestamp = new Date().toISOString()) {
+  const price = intent?.monitoring?.currentProbability;
+
+  if (typeof price !== 'number' || Number.isNaN(price)) {
+    return null;
+  }
+
+  return {
+    price,
+    timestamp: intent?.monitoring?.lastPolymarketQuoteAt ?? intent?.monitoring?.lastEvaluationAt ?? fallbackTimestamp,
+    monitoringState: intent?.monitoring?.state ?? 'active'
+  };
+}
+
+function mergeTrackedProbabilityHistory(previousHistoryByIntent, intents) {
+  const nextHistoryByIntent = {};
+  let hasChanged = false;
+
+  for (const intent of intents) {
+    if (intent?.status !== 'tracking') {
+      continue;
+    }
+
+    const previousHistory = Array.isArray(previousHistoryByIntent[intent.id])
+      ? previousHistoryByIntent[intent.id]
+      : [];
+    const nextPoint = buildTrackedProbabilityPoint(intent);
+
+    if (!nextPoint) {
+      nextHistoryByIntent[intent.id] = previousHistory;
+      continue;
+    }
+
+    const lastPoint = previousHistory[previousHistory.length - 1] ?? null;
+    const isDuplicatePoint = lastPoint
+      && lastPoint.timestamp === nextPoint.timestamp
+      && lastPoint.price === nextPoint.price
+      && lastPoint.monitoringState === nextPoint.monitoringState;
+
+    if (isDuplicatePoint) {
+      nextHistoryByIntent[intent.id] = previousHistory;
+      continue;
+    }
+
+    const nextHistory = [...previousHistory, nextPoint].slice(-TRACKED_PROBABILITY_HISTORY_LIMIT);
+    nextHistoryByIntent[intent.id] = nextHistory;
+    hasChanged = true;
+  }
+
+  const previousIds = Object.keys(previousHistoryByIntent);
+
+  if (previousIds.length !== Object.keys(nextHistoryByIntent).length) {
+    hasChanged = true;
+  }
+
+  return hasChanged ? nextHistoryByIntent : previousHistoryByIntent;
+}
+
+function getProbabilityChartBounds(values) {
+  if (!Array.isArray(values) || values.length === 0) {
+    return null;
+  }
+
+  let minValue = Math.min(...values);
+  let maxValue = Math.max(...values);
+
+  if (!Number.isFinite(minValue) || !Number.isFinite(maxValue)) {
+    return null;
+  }
+
+  const range = maxValue - minValue;
+
+  if (range < 0.08) {
+    const midpoint = (maxValue + minValue) / 2;
+    minValue = midpoint - 0.04;
+    maxValue = midpoint + 0.04;
+  } else {
+    const padding = range * 0.18;
+    minValue -= padding;
+    maxValue += padding;
+  }
+
+  minValue = Math.max(0, minValue);
+  maxValue = Math.min(1, maxValue);
+
+  if (maxValue - minValue < 0.04) {
+    if (maxValue >= 1) {
+      minValue = Math.max(0, maxValue - 0.04);
+    } else {
+      maxValue = Math.min(1, minValue + 0.04);
+    }
+  }
+
+  return { minValue, maxValue };
+}
+
+function getProbabilityChartY(value, bounds) {
+  if (typeof value !== 'number' || !bounds) {
+    return 50;
+  }
+
+  const range = bounds.maxValue - bounds.minValue || 1;
+  return 100 - ((value - bounds.minValue) / range) * 100;
+}
+
+function TrackingProbabilityChart({
+  history,
+  currentProbability,
+  entryProbability,
+  stopLossProbability,
+  takeProfitProbability,
+  monitoringState,
+  lastQuoteAt
+}) {
+  const baseHistory = Array.isArray(history) ? history.filter((point) => typeof point?.price === 'number') : [];
+  const chartHistory = baseHistory.length > 0
+    ? baseHistory
+    : typeof currentProbability === 'number'
+      ? [{ price: currentProbability, timestamp: lastQuoteAt ?? null, monitoringState }]
+      : [];
+
+  if (chartHistory.length === 0) {
+    return <div className="sparkline-empty tracking-chart-empty">No live probability history yet.</div>;
+  }
+
+  const bounds = getProbabilityChartBounds([
+    ...chartHistory.map((point) => point.price),
+    entryProbability,
+    stopLossProbability,
+    takeProfitProbability
+  ].filter((value) => typeof value === 'number'));
+
+  const chartPoints = chartHistory.map((point, index) => ({
+    x: chartHistory.length === 1 ? 50 : (index / (chartHistory.length - 1)) * 100,
+    y: getProbabilityChartY(point.price, bounds),
+    price: point.price,
+    timestamp: point.timestamp
+  }));
+  const latestPoint = chartPoints[chartPoints.length - 1] ?? null;
+  const isSelling = monitoringState === 'exit-submitted-awaiting-fill';
+  const referenceLines = [
+    {
+      key: 'entry',
+      label: 'Entry',
+      value: entryProbability,
+      className: 'tracking-chart-threshold-entry'
+    },
+    {
+      key: 'stop',
+      label: 'Stop Exit',
+      value: stopLossProbability,
+      className: 'tracking-chart-threshold-stop'
+    },
+    {
+      key: 'take',
+      label: 'Take Exit',
+      value: takeProfitProbability,
+      className: 'tracking-chart-threshold-take'
+    }
+  ].filter((line) => typeof line.value === 'number');
+
+  return (
+    <div className="tracking-chart-shell">
+      <div className="tracking-chart-header">
+        <div>
+          <span className="eyebrow">Live Polling</span>
+          <strong>{formatPercent(currentProbability)}</strong>
+        </div>
+        <span className="tracking-chart-meta">{chartHistory.length} pts · {formatRelativeAge(lastQuoteAt)}</span>
+      </div>
+      <svg className="tracking-chart" viewBox="0 0 100 100" preserveAspectRatio="none" aria-hidden="true">
+        {referenceLines.map((line) => {
+          const y = getProbabilityChartY(line.value, bounds);
+
+          return (
+            <line
+              key={line.key}
+              className={`tracking-chart-threshold ${line.className}`}
+              x1="0"
+              y1={y}
+              x2="100"
+              y2={y}
+            />
+          );
+        })}
+        {latestPoint ? (
+          <line
+            className={isSelling ? 'tracking-chart-current-line tracking-chart-current-line-selling' : 'tracking-chart-current-line'}
+            x1="0"
+            y1={latestPoint.y}
+            x2="100"
+            y2={latestPoint.y}
+          />
+        ) : null}
+      </svg>
+      <div className="tracking-chart-legend">
+        {referenceLines.map((line) => (
+          <span key={line.key} className="tracking-chart-legend-item">
+            <span className={`tracking-chart-legend-swatch ${line.className}`} aria-hidden="true" />
+            {line.label} {formatPercent(line.value)}
+          </span>
+        ))}
+      </div>
+    </div>
+  );
+}
+
 function OutcomeSparkline({ history, className = 'sparkline' }) {
   const path = buildSparklinePath(history);
 
@@ -928,6 +1136,7 @@ export default function App() {
   const [tradeCenterFilter, setTradeCenterFilter] = useState('tracking');
   const [editingActiveTradeId, setEditingActiveTradeId] = useState(null);
   const [activeTradeRiskInputs, setActiveTradeRiskInputs] = useState({});
+  const [trackedProbabilityHistory, setTrackedProbabilityHistory] = useState({});
   const [hasLoadedInitialData, setHasLoadedInitialData] = useState(false);
   const [isPending, startTransition] = useTransition();
   const tradableMarkets = selectedEvent?.markets ?? [];
@@ -988,6 +1197,10 @@ export default function App() {
     : notice
       ? { kind: 'notice', message: notice, dismiss: () => setNotice('') }
       : null;
+
+  useEffect(() => {
+    setTrackedProbabilityHistory((previousHistoryByIntent) => mergeTrackedProbabilityHistory(previousHistoryByIntent, tradeHistory));
+  }, [tradeHistory]);
 
   useEffect(() => {
     if (!statusPopup) {
@@ -2367,6 +2580,7 @@ export default function App() {
                     : null,
                   0.01
                 );
+                const liveProbabilityHistory = trackedProbabilityHistory[intent.id] ?? [];
 
                   return (
                     <article key={intent.id} className="trade-history-item trade-center-item">
@@ -2385,62 +2599,64 @@ export default function App() {
                       </div>
                     </div>
 
-                    <div className="trade-preview-grid">
+                    <div className={isTracking ? 'tracked-trade-layout' : 'trade-preview-grid'}>
                       {isTracking ? (
                         <>
-                          <article className={getTradeMetricClass(probabilityTone)}>
-                            <span>Current probability</span>
-                            <strong>{formatPercent(currentProbability)}</strong>
-                          </article>
-                          <article className={getTradeMetricClass('ok')}>
-                            <span>Entry probability</span>
-                            <strong>{formatPercent(entryProbability)}</strong>
-                          </article>
-                          <article className={getTradeMetricClass(driftTone)}>
-                            <span>Drift from entry</span>
-                            <strong>{formatSignedPercent(drift)}</strong>
-                          </article>
-                          <article className={getTradeMetricClass(pnlTone)}>
-                            <span>Unrealized P/L</span>
-                            <strong className={pnlClassName}>
-                              {formatSignedCurrency(unrealizedPnl.dollars)}
-                              {typeof unrealizedPnl.percent === 'number' ? ` (${formatSignedPercent(unrealizedPnl.percent)})` : ''}
-                            </strong>
-                          </article>
-                          <article className={getTradeMetricClass('bad')}>
-                            <span>Stop-loss</span>
-                            <strong>{formatPercent(stopLossProbability)}</strong>
-                          </article>
-                          <article className={getTradeMetricClass('good')}>
-                            <span>Take-profit</span>
-                            <strong>{formatPercent(takeProfitProbability)}</strong>
-                          </article>
-                          <article className={getTradeMetricClass('ok')}>
-                            <span>Cost basis</span>
-                            <strong>{formatCurrency(costBasis)}</strong>
-                          </article>
-                          <article className={getTradeMetricClass(currentValueTone)}>
-                            <span>Current value</span>
-                            <strong>{typeof currentValue === 'number'
-                              ? formatCurrency(currentValue)
-                              : 'n/a'}</strong>
-                          </article>
-                          <article className="trade-metric-card trade-metric-card-neutral">
-                            <span>Last evaluation</span>
-                            <strong>{formatDateTime(intent.monitoring?.lastEvaluationAt)}</strong>
-                          </article>
-                          <article className="trade-metric-card trade-metric-card-neutral">
-                            <span>Last Polymarket Quote</span>
-                            <strong>{formatDateTime(intent.monitoring?.lastPolymarketQuoteAt)}</strong>
-                          </article>
-                          <article className="trade-metric-card trade-metric-card-neutral">
-                            <span>Entry order</span>
-                            <strong>{formatOrderId(intent.executionRequest?.venueOrderId)}</strong>
-                          </article>
-                          <article className="trade-metric-card trade-metric-card-neutral">
-                            <span>Shares filled</span>
-                            <strong>{typeof intent.position?.sharesFilled === 'number' ? intent.position.sharesFilled.toFixed(2) : 'n/a'}</strong>
-                          </article>
+                          <div className="tracked-trade-summary">
+                            <div className="tracked-trade-summary-list">
+                              <article className={`tracked-trade-summary-row ${getTradeMetricClass(probabilityTone)}`}>
+                                <span>Current</span>
+                                <strong>{formatPercent(currentProbability)}</strong>
+                              </article>
+                              <article className={`tracked-trade-summary-row ${getTradeMetricClass('ok')}`}>
+                                <span>Entry</span>
+                                <strong>{formatPercent(entryProbability)}</strong>
+                              </article>
+                              <article className={`tracked-trade-summary-row ${getTradeMetricClass(driftTone)}`}>
+                                <span>Drift</span>
+                                <strong>{formatSignedPercent(drift)}</strong>
+                              </article>
+                              <article className={`tracked-trade-summary-row ${getTradeMetricClass(pnlTone)}`}>
+                                <span>P/L</span>
+                                <strong className={pnlClassName}>
+                                  {formatSignedCurrency(unrealizedPnl.dollars)}
+                                  {typeof unrealizedPnl.percent === 'number' ? ` (${formatSignedPercent(unrealizedPnl.percent)})` : ''}
+                                </strong>
+                              </article>
+                              <article className={`tracked-trade-summary-row ${getTradeMetricClass('bad')}`}>
+                                <span>Stop</span>
+                                <strong>{formatPercent(stopLossProbability)}</strong>
+                              </article>
+                              <article className={`tracked-trade-summary-row ${getTradeMetricClass('good')}`}>
+                                <span>Take</span>
+                                <strong>{formatPercent(takeProfitProbability)}</strong>
+                              </article>
+                              <article className={`tracked-trade-summary-row ${getTradeMetricClass('ok')}`}>
+                                <span>Shares</span>
+                                <strong>{typeof intent.position?.sharesFilled === 'number' ? intent.position.sharesFilled.toFixed(2) : 'n/a'}</strong>
+                              </article>
+                              <article className={`tracked-trade-summary-row ${getTradeMetricClass(currentValueTone)}`}>
+                                <span>Value</span>
+                                <strong>{typeof currentValue === 'number' ? formatCurrency(currentValue) : 'n/a'}</strong>
+                              </article>
+                            </div>
+                            <div className="tracked-trade-meta-row">
+                              <span className="market-chip market-chip-muted">Basis {formatCurrency(costBasis)}</span>
+                              <span className="market-chip market-chip-muted">Quote {formatDateTime(intent.monitoring?.lastPolymarketQuoteAt)}</span>
+                              <span className="market-chip market-chip-muted">Order {formatOrderId(intent.executionRequest?.venueOrderId)}</span>
+                            </div>
+                          </div>
+                          <div className="tracked-trade-chart-panel">
+                            <TrackingProbabilityChart
+                              history={liveProbabilityHistory}
+                              currentProbability={currentProbability}
+                              entryProbability={entryProbability}
+                              stopLossProbability={stopLossProbability}
+                              takeProfitProbability={takeProfitProbability}
+                              monitoringState={monitoringState}
+                              lastQuoteAt={intent.monitoring?.lastPolymarketQuoteAt}
+                            />
+                          </div>
                         </>
                       ) : (
                         <>
