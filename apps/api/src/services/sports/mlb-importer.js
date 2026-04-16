@@ -5,6 +5,8 @@ import { loadPolymarketUsTeamUniverse, mergeSportsHistoryGames } from './history
 
 const ESPN_MLB_SCOREBOARD_URL = 'https://site.api.espn.com/apis/site/v2/sports/baseball/mlb/scoreboard';
 const DEFAULT_BATCH_SIZE = 7;
+const LIVE_SCOREBOARD_CACHE_TTL_MS = 5 * 60 * 1000;
+const liveScoreboardEventsByDate = new Map();
 
 const MLB_SEASON_RANGES = {
   '2020': { startDate: '2020-07-23', endDate: '2020-10-28' },
@@ -103,6 +105,48 @@ function eachDate(startDate, endDate) {
   }
 
   return dates;
+}
+
+function pruneExpiredLiveScoreboardCache(now = Date.now()) {
+  for (const [dateKey, entry] of liveScoreboardEventsByDate.entries()) {
+    if ((entry?.expiresAt ?? 0) <= now) {
+      liveScoreboardEventsByDate.delete(dateKey);
+    }
+  }
+}
+
+async function fetchCachedLiveScoreboardEvents(client, dateKey) {
+  const now = Date.now();
+  pruneExpiredLiveScoreboardCache(now);
+
+  const cached = liveScoreboardEventsByDate.get(dateKey);
+
+  if (cached && cached.expiresAt > now) {
+    return cached.promise;
+  }
+
+  const promise = client.get('', {
+    params: {
+      dates: dateKey,
+      limit: 200
+    }
+  }).then((response) => (Array.isArray(response.data?.events) ? response.data.events : []))
+    .catch((error) => {
+      const current = liveScoreboardEventsByDate.get(dateKey);
+
+      if (current?.promise === promise) {
+        liveScoreboardEventsByDate.delete(dateKey);
+      }
+
+      throw error;
+    });
+
+  liveScoreboardEventsByDate.set(dateKey, {
+    expiresAt: now + LIVE_SCOREBOARD_CACHE_TTL_MS,
+    promise
+  });
+
+  return promise;
 }
 
 function buildFallbackMlbIndex() {
@@ -421,13 +465,8 @@ export async function resolveMlbProbablePitcherMatchup({ eventDate, homeTeamId, 
   ]);
   const teamLookup = buildResolvedTeamLookup(snapshot);
   const client = createEspnClient();
-  const response = await client.get('', {
-    params: {
-      dates: toDateKey(parseInputDate(eventDate)),
-      limit: 200
-    }
-  });
-  const events = Array.isArray(response.data?.events) ? response.data.events : [];
+  const dateKey = toDateKey(parseInputDate(eventDate));
+  const events = await fetchCachedLiveScoreboardEvents(client, dateKey);
 
   for (const event of events) {
     const matchup = normalizeEspnMatchup(event, teamLookup);

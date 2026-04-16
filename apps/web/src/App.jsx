@@ -558,6 +558,41 @@ function getRecommendationSource(modelMarket) {
   };
 }
 
+function formatSignedDecimal(value, digits = 2) {
+  if (typeof value !== 'number' || Number.isNaN(value)) {
+    return 'n/a';
+  }
+
+  const prefix = value > 0 ? '+' : '';
+  return `${prefix}${value.toFixed(digits)}`;
+}
+
+function formatStarterSummary(pitcher) {
+  if (!pitcher?.name) {
+    return 'n/a';
+  }
+
+  const record = String(pitcher.record ?? '').trim();
+  return record ? `${pitcher.name} ${record}` : pitcher.name;
+}
+
+function getRecommendedStarterContext(modelMarket) {
+  const features = modelMarket?.sportsContext?.features;
+  const probablePitchers = features?.probablePitchers ?? null;
+
+  if (!probablePitchers?.home && !probablePitchers?.away) {
+    return null;
+  }
+
+  return {
+    source: features?.probablePitcherSource ?? null,
+    diff: features?.probablePitcherDiff ?? null,
+    home: probablePitchers.home ?? null,
+    away: probablePitchers.away ?? null,
+    recentForm: features?.probablePitcherRecentForm ?? null
+  };
+}
+
 function getRecommendedMarket(selectedEvent, decisionEngine) {
   if (!selectedEvent?.markets || !decisionEngine?.recommendation?.marketQuestion) {
     return null;
@@ -905,6 +940,7 @@ export default function App() {
     : null;
   const eventSportsLeagues = getSportsLeagues(statisticalModel);
   const recommendationSource = getRecommendationSource(recommendedModelMarket);
+  const recommendedStarterContext = getRecommendedStarterContext(recommendedModelMarket);
 
   function clearSelectedEventContext() {
     setSelectedEvent(null);
@@ -2004,14 +2040,49 @@ export default function App() {
                         <span>League Source</span>
                         <strong>{recommendationSource.detail}</strong>
                       </article>
-                      <article>
-                        <span>Starter Input</span>
-                        <strong>{recommendedModelMarket?.sportsContext?.features?.probablePitcherSource ?? 'n/a'}</strong>
-                      </article>
                     </div>
                     <p className="terminal-copy">
-                      Raw Elo gives the uncalibrated matchup estimate. Calibrated sports probability compresses tail confidence using historical bucket performance, and the final blended model then mixes that with live Polymarket price history and market quality. For MLB, probable starters are folded in when ESPN exposes them.
+                      Raw Elo gives the uncalibrated matchup estimate. Calibrated sports probability compresses tail confidence using historical bucket performance, and the final blended model then mixes that with live Polymarket price history and market quality.
                     </p>
+                  </section>
+                ) : null}
+
+                {recommendedStarterContext ? (
+                  <section className="panel-card terminal-card compact-card ai-reasoning-card">
+                    <div className="panel-heading">
+                      <p className="eyebrow">MLB Starter Context</p>
+                      <h2>Probable Starters</h2>
+                    </div>
+                    <div className="decision-rationale-grid compact-preview-grid">
+                      <article>
+                        <span>Starter Source</span>
+                        <strong>{recommendedStarterContext.source ?? 'n/a'}</strong>
+                      </article>
+                      <article>
+                        <span>Starter Signal</span>
+                        <strong>{formatSignedDecimal(recommendedStarterContext.diff)}</strong>
+                      </article>
+                      <article>
+                        <span>Home Starter</span>
+                        <strong>{formatStarterSummary(recommendedStarterContext.home)}</strong>
+                      </article>
+                      <article>
+                        <span>Away Starter</span>
+                        <strong>{formatStarterSummary(recommendedStarterContext.away)}</strong>
+                      </article>
+                    </div>
+                    <div className="operator-notes-copy">
+                      <p>
+                        Home recent form: {recommendedStarterContext.recentForm?.home
+                          ? `${recommendedStarterContext.recentForm.home.startCount} starts, ${formatSignedDecimal(recommendedStarterContext.recentForm.home.decayedScoreDiff)} score diff, ${formatPercent(recommendedStarterContext.recentForm.home.decayedWinRate)}`
+                          : 'n/a'}
+                      </p>
+                      <p>
+                        Away recent form: {recommendedStarterContext.recentForm?.away
+                          ? `${recommendedStarterContext.recentForm.away.startCount} starts, ${formatSignedDecimal(recommendedStarterContext.recentForm.away.decayedScoreDiff)} score diff, ${formatPercent(recommendedStarterContext.recentForm.away.decayedWinRate)}`
+                          : 'n/a'}
+                      </p>
+                    </div>
                   </section>
                 ) : null}
 
