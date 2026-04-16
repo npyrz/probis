@@ -154,6 +154,22 @@ function getPortfolioPositions(payload) {
   return positions;
 }
 
+function getOrdersFromPayload(payload) {
+  if (Array.isArray(payload)) {
+    return payload;
+  }
+
+  if (Array.isArray(payload?.orders)) {
+    return payload.orders;
+  }
+
+  if (Array.isArray(payload?.data?.orders)) {
+    return payload.data.orders;
+  }
+
+  return [];
+}
+
 function getAccountBalances(payload) {
   if (Array.isArray(payload)) {
     return payload;
@@ -188,6 +204,31 @@ function getPositionOutcome(position) {
     ?? position?.side
     ?? ''
   ).trim() || null;
+}
+
+function getOrderMarketSlug(order) {
+  if (!order || typeof order !== 'object') {
+    return null;
+  }
+
+  return order.marketSlug
+    ?? order.market?.slug
+    ?? order.marketMetadata?.slug
+    ?? null;
+}
+
+function getOrderOutcome(order) {
+  return String(
+    order?.outcome
+    ?? order?.outcomeLabel
+    ?? order?.marketMetadata?.outcome
+    ?? ''
+  ).trim() || null;
+}
+
+function getOrderTimestampMs(order) {
+  const timestamp = Date.parse(String(order?.createTime ?? order?.insertTime ?? ''));
+  return Number.isFinite(timestamp) ? timestamp : null;
 }
 
 function getUsMarketsFromPayload(payload) {
@@ -503,6 +544,65 @@ function marketSlugsMatch(left, right) {
   return normalizedLeft.length > 0 && normalizedLeft === normalizedRight;
 }
 
+async function fetchUsOrders(env) {
+  const path = '/v1/orders';
+  const client = createPolymarketUsClient(env);
+  const response = await client.get(path, {
+    headers: getSignedHeaders(env, 'GET', path)
+  });
+
+  return getOrdersFromPayload(response.data);
+}
+
+function isFilledOrder(order) {
+  const orderState = String(getOrderState(order) ?? '').trim().toUpperCase();
+  const sharesFilled = Number.parseFloat(getSharesFromOrder(order) ?? NaN);
+
+  return orderState === 'ORDER_STATE_FILLED' || (Number.isFinite(sharesFilled) && sharesFilled > 0);
+}
+
+function getMatchingFilledSellOrdersForIntent(orders, intent, { entryOrderId, entryCreatedAtMs, expectedSellIntent }) {
+  const normalizedRequestedSlug = normalizeMarketSlugValue(intent?.marketSlug);
+  const normalizedOutcome = normalizeOutcomeLabel(intent?.outcomeLabel);
+
+  return orders
+    .filter((candidate) => {
+      const candidateId = String(candidate?.id ?? '').trim();
+
+      if (!candidateId || candidateId === entryOrderId) {
+        return false;
+      }
+
+      const candidateIntent = String(candidate?.intent ?? '').trim().toUpperCase();
+      const candidateAction = String(candidate?.action ?? '').trim().toUpperCase();
+      const candidateSlug = getOrderMarketSlug(candidate);
+      const candidateOutcome = normalizeOutcomeLabel(getOrderOutcome(candidate));
+      const candidateCreatedAtMs = getOrderTimestampMs(candidate);
+      const isSellIntentMatch = expectedSellIntent
+        ? candidateIntent === expectedSellIntent
+        : candidateIntent.startsWith('ORDER_INTENT_SELL_');
+      const isSellAction = candidateAction === 'ORDER_ACTION_SELL';
+      const isSameMarket = marketSlugsMatch(candidateSlug, normalizedRequestedSlug);
+      const isSameOutcome = normalizedOutcome.length === 0
+        || candidateOutcome.length === 0
+        || candidateOutcome === normalizedOutcome;
+      const isAfterEntry = !Number.isFinite(entryCreatedAtMs)
+        || !Number.isFinite(candidateCreatedAtMs)
+        || candidateCreatedAtMs >= entryCreatedAtMs;
+
+      return isSameMarket
+        && isSameOutcome
+        && isAfterEntry
+        && isFilledOrder(candidate)
+        && (isSellIntentMatch || isSellAction);
+    })
+    .sort((left, right) => {
+      const leftTs = getOrderTimestampMs(left) ?? 0;
+      const rightTs = getOrderTimestampMs(right) ?? 0;
+      return rightTs - leftTs;
+    });
+}
+
 async function fetchPortfolioPositions(env) {
   const path = '/v1/portfolio/positions';
   const client = createPolymarketUsClient(env);
@@ -513,38 +613,60 @@ async function fetchPortfolioPositions(env) {
   return getPortfolioPositions(response.data);
 }
 
-export async function resolveLivePositionShares(env, intent) {
-  const marketSlug = intent.marketSlug;
+export async function resolveIntentOrderFillState(env, intent) {
+  const marketSlug = String(intent?.marketSlug ?? '').trim();
+  const entryOrderId = String(intent?.executionRequest?.venueOrderId ?? intent?.position?.entryOrderId ?? '').trim();
 
   if (!marketSlug) {
-    return null;
+    return {
+      entryOrder: null,
+      entryShares: null,
+      soldShares: 0,
+      remainingShares: null,
+      latestSellOrder: null
+    };
   }
 
-  const positions = await fetchPortfolioPositions(env);
+  let entryOrder = intent?.executionRequest?.venueOrder ?? null;
 
-  if (positions.length === 0) {
-    console.log(`[resolveLivePositionShares] Portfolio returned 0 positions for slug "${marketSlug}".`);
+  if (entryOrderId && String(entryOrder?.id ?? '').trim() !== entryOrderId) {
+    entryOrder = await getPolymarketUsOrderById(env, entryOrderId);
   }
 
-  const matches = positions.filter((position) => marketSlugsMatch(getPositionMarketSlug(position), marketSlug));
+  const orders = await fetchUsOrders(env);
+  const expectedSellIntent = sellIntentForEntryIntent(intent?.position?.entryIntent, intent?.outcomeLabel);
+  const entryCreatedAtMs = getOrderTimestampMs(entryOrder)
+    ?? Date.parse(String(intent?.confirmedAt ?? intent?.createdAt ?? ''));
+  const matchingSellOrders = getMatchingFilledSellOrdersForIntent(orders, intent, {
+    entryOrderId,
+    entryCreatedAtMs,
+    expectedSellIntent
+  });
+  const entryShares = Number.parseFloat(
+    getSharesFromOrder(entryOrder) ?? intent?.position?.sharesFilled ?? intent?.executionRequest?.sharesEstimate ?? NaN
+  );
+  const soldShares = matchingSellOrders.reduce((sum, order) => {
+    const shares = Number.parseFloat(getSharesFromOrder(order) ?? NaN);
+    return Number.isFinite(shares) && shares > 0 ? sum + shares : sum;
+  }, 0);
+  const remainingShares = Number.isFinite(entryShares) && entryShares > 0
+    ? Math.max(0, entryShares - soldShares)
+    : null;
 
-  if (matches.length === 0) {
-    if (positions.length > 0) {
-      const slugs = positions.map((p) => getPositionMarketSlug(p)).filter(Boolean);
-      console.log(`[resolveLivePositionShares] No slug match for "${marketSlug}". Portfolio slugs: ${JSON.stringify(slugs)}`);
-    }
-    return null;
-  }
+  return {
+    entryOrder,
+    entryShares: Number.isFinite(entryShares) && entryShares > 0 ? entryShares : null,
+    soldShares,
+    remainingShares,
+    latestSellOrder: matchingSellOrders[0] ?? null
+  };
+}
 
-  const byOutcome = matches.find((position) => {
-    const outcome = String(
-      position.outcome ?? position.marketMetadata?.outcome ?? position.side ?? ''
-    ).trim().toLowerCase();
-    const desired = normalizeOutcomeLabel(intent.outcomeLabel);
-    return outcome === desired;
-  }) ?? matches[0];
-
-  return extractNumericQuantity(byOutcome);
+export async function resolveLivePositionShares(env, intent) {
+  const fillState = await resolveIntentOrderFillState(env, intent);
+  return Number.isFinite(fillState.remainingShares) && fillState.remainingShares > 0
+    ? fillState.remainingShares
+    : null;
 }
 
 function normalizeOutcomeLabel(label) {
@@ -1072,6 +1194,11 @@ export async function getPolymarketUsOrderById(env, orderId) {
   }
 }
 
+export async function findRecentFilledSellOrderForIntent(env, intent) {
+  const fillState = await resolveIntentOrderFillState(env, intent);
+  return fillState.latestSellOrder ?? null;
+}
+
 export async function createPolymarketUsOrder(env, body) {
   const path = '/v1/orders';
   const client = createPolymarketUsClient(env);
@@ -1337,16 +1464,19 @@ export async function placeSellOrderForIntent(env, intent) {
   const marketSlug = orderIntents.resolvedMarketSlug ?? requestedMarketSlug;
 
   const localShares = parseNumber(intent.position?.sharesFilled ?? intent.executionRequest?.sharesEstimate);
-  let liveShares;
+  let resolvedShares;
 
   try {
-    liveShares = await resolveLivePositionShares(env, intent);
+    const fillState = await resolveIntentOrderFillState(env, intent);
+    resolvedShares = Number.isFinite(fillState.remainingShares)
+      ? fillState.remainingShares
+      : null;
   } catch {
-    liveShares = null;
+    resolvedShares = null;
   }
 
-  const shares = Number.isFinite(liveShares) && liveShares > 0
-    ? liveShares
+  const shares = Number.isFinite(resolvedShares)
+    ? resolvedShares
     : localShares;
 
   if (!shares || shares <= 0) {

@@ -5,6 +5,7 @@ import { fileURLToPath } from 'node:url';
 
 import { fetchEventByInput } from './polymarket/gamma.js';
 import {
+  findRecentFilledSellOrderForIntent,
   getLiveOutcomeProbabilityFromUsMarket,
   getOrderState,
   getPolymarketUsOrderById,
@@ -335,7 +336,7 @@ async function reconcilePassiveIntentVerificationWithVenue(env, intent) {
   if (!intent?.marketSlug) {
     return withApiVerification(intent, {
       apiVerifiedFilledPosition: false,
-      method: 'live-position-only',
+      method: 'order-fills-only',
       reason: 'missing-market-slug',
       orderId: intent?.executionRequest?.venueOrderId ?? intent?.position?.entryOrderId ?? null
     });
@@ -365,8 +366,8 @@ async function reconcilePassiveIntentVerificationWithVenue(env, intent) {
       updatedAt: new Date().toISOString()
     }, {
       apiVerifiedFilledPosition: true,
-      method: 'live-position-only',
-      reason: 'live-position-detected',
+      method: 'order-fills-only',
+      reason: 'remaining-shares-detected',
       orderId,
       verifiedAt: intent?.verification?.verifiedAt ?? null
     });
@@ -374,8 +375,8 @@ async function reconcilePassiveIntentVerificationWithVenue(env, intent) {
 
   return withApiVerification(intent, {
     apiVerifiedFilledPosition: false,
-    method: 'live-position-only',
-    reason: 'no-live-position-detected',
+    method: 'order-fills-only',
+    reason: 'no-remaining-shares-detected',
     orderId
   });
 }
@@ -445,7 +446,7 @@ async function reconcileTrackingIntentWithVenue(env, intent) {
       monitoring: {
         ...intent.monitoring,
         lastEvaluationAt: new Date().toISOString(),
-        notes: 'Venue sync warning: portfolio position lookup failed temporarily. Keeping trade active and counters unchanged pending next poll.'
+        notes: 'Venue sync warning: order history lookup failed temporarily. Keeping trade active and counters unchanged pending next poll.'
       },
       updatedAt: new Date().toISOString()
     }, {
@@ -462,6 +463,56 @@ async function reconcileTrackingIntentWithVenue(env, intent) {
   // The portfolio endpoint may return empty for various reasons (propagation delay, API quirks, etc.).
   // Never auto-close a position that the order API confirms was filled.
   if (hasNoLiveShares && hasEntryFills) {
+    const externalSellOrder = await findRecentFilledSellOrderForIntent(env, {
+      ...intent,
+      executionRequest: {
+        ...intent.executionRequest,
+        venueOrderId: orderId,
+        venueOrder
+      }
+    });
+
+    if (externalSellOrder) {
+      const matchedSellOrderId = externalSellOrder?.id ?? null;
+      const matchedSellShares = Number.parseFloat(getSharesFromOrder(externalSellOrder) ?? NaN);
+      const closedIntent = finalizeTrackedIntent({
+        ...intent,
+        executionRequest: {
+          ...intent.executionRequest,
+          venueOrderId: orderId,
+          venueOrder
+        }
+      }, 'external-sell-detected', {
+        ...intent.monitoring,
+        state: 'venue-sell-detected',
+        lastEvaluationAt: new Date().toISOString(),
+        exitReason: 'manual-sell',
+        notes: `Detected filled sell order ${matchedSellOrderId ?? 'unknown'} on the venue after entry order ${orderId}; marking position closed.`
+      });
+
+      closedIntent.exitRequest = {
+        ...closedIntent.exitRequest,
+        venueOrderId: matchedSellOrderId,
+        venueOrder: externalSellOrder,
+        executedAt: externalSellOrder?.createTime ?? externalSellOrder?.insertTime ?? new Date().toISOString()
+      };
+      closedIntent.position = {
+        ...closedIntent.position,
+        exitOrderId: matchedSellOrderId,
+        exitSharesFilled: Number.isFinite(matchedSellShares) && matchedSellShares > 0
+          ? matchedSellShares
+          : (closedIntent.position?.sharesFilled ?? null),
+        lastExecutionAt: new Date().toISOString()
+      };
+
+      return withApiVerification(closedIntent, {
+        apiVerifiedFilledPosition: true,
+        method: 'entry-order-plus-external-sell-order',
+        reason: 'external-sell-detected',
+        orderId
+      });
+    }
+
     return withApiVerification({
       ...intent,
       executionRequest: {
@@ -484,7 +535,7 @@ async function reconcileTrackingIntentWithVenue(env, intent) {
         ...intent.monitoring,
         lastEvaluationAt: new Date().toISOString(),
         syncNoLiveSharesCount: 0,
-        notes: `Order ${orderId} is ${orderState} with ${sharesFilled} shares filled. Portfolio API shows no live position — using order fills as authoritative source.`
+        notes: `Order ${orderId} is ${orderState} with ${sharesFilled} shares filled. Using remaining shares inferred from order fills as the authoritative source.`
       },
       updatedAt: new Date().toISOString()
     }, {
@@ -540,7 +591,7 @@ async function reconcileTrackingIntentWithVenue(env, intent) {
         ...intent.monitoring,
         lastEvaluationAt: new Date().toISOString(),
         syncNoLiveSharesCount: noLiveSharesCount,
-        notes: `Venue sync warning: no live position shares found for order ${orderId}. Keeping trade active (${noLiveSharesCount}/5 confirmed checks).`
+        notes: `Venue sync warning: no remaining shares inferred from order fills for order ${orderId}. Keeping trade active (${noLiveSharesCount}/5 confirmed checks).`
       },
       updatedAt: new Date().toISOString()
     }, {
