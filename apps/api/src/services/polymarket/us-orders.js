@@ -129,28 +129,108 @@ function extractNumericQuantity(candidate) {
   return null;
 }
 
+function extractSignedQuantity(candidate) {
+  if (!candidate || typeof candidate !== 'object') {
+    return null;
+  }
+
+  const directKeys = [
+    'netPosition',
+    'qtyAvailable',
+    'quantity',
+    'qty',
+    'size',
+    'shares',
+    'position',
+    'netQuantity',
+    'availableQuantity'
+  ];
+
+  for (const key of directKeys) {
+    const numeric = parseNumber(candidate[key]);
+    if (typeof numeric === 'number' && numeric !== 0) {
+      return numeric;
+    }
+  }
+
+  const nestedKeys = ['quantity', 'qty', 'size', 'shares', 'position', 'netPosition'];
+
+  for (const key of nestedKeys) {
+    const numeric = parseNumber(candidate[key]?.value);
+    if (typeof numeric === 'number' && numeric !== 0) {
+      return numeric;
+    }
+  }
+
+  return null;
+}
+
+function extractPositionCashValue(position) {
+  if (!position || typeof position !== 'object') {
+    return null;
+  }
+
+  return parseNumber(
+    position.cashValue?.value
+    ?? position.cashValue
+    ?? position.marketValue?.value
+    ?? position.marketValue
+    ?? position.notionalValue?.value
+    ?? position.notionalValue
+  );
+}
+
+function summarizePortfolioPositions(positions) {
+  const summarizedPositions = (Array.isArray(positions) ? positions : [])
+    .map((position) => {
+      const signedQuantity = extractSignedQuantity(position);
+
+      if (!Number.isFinite(signedQuantity) || signedQuantity === 0) {
+        return null;
+      }
+
+      return {
+        marketSlug: getPositionMarketSlug(position),
+        outcome: getPositionOutcome(position),
+        quantity: Math.abs(signedQuantity),
+        signedQuantity,
+        side: signedQuantity > 0 ? 'long' : 'short',
+        cashValue: extractPositionCashValue(position),
+        avgPrice: parseNumber(position.avgPx?.value ?? position.avgPx),
+        updatedAt: typeof position.updateTime === 'string' ? position.updateTime : null
+      };
+    })
+    .filter(Boolean);
+
+  const totalCashValue = summarizedPositions.reduce((sum, position) => {
+    return typeof position.cashValue === 'number' ? sum + position.cashValue : sum;
+  }, 0);
+
+  return {
+    positions: summarizedPositions,
+    totalCashValue
+  };
+}
+
 function getPortfolioPositions(payload) {
   const positions = [];
 
-  if (Array.isArray(payload)) {
-    positions.push(...payload);
-  }
+  const pushPositionCollection = (value) => {
+    if (Array.isArray(value)) {
+      positions.push(...value);
+      return;
+    }
 
-  if (Array.isArray(payload?.positions)) {
-    positions.push(...payload.positions);
-  }
+    if (value && typeof value === 'object') {
+      positions.push(...Object.values(value));
+    }
+  };
 
-  if (Array.isArray(payload?.availablePositions)) {
-    positions.push(...payload.availablePositions);
-  }
-
-  if (Array.isArray(payload?.data?.positions)) {
-    positions.push(...payload.data.positions);
-  }
-
-  if (Array.isArray(payload?.data?.availablePositions)) {
-    positions.push(...payload.data.availablePositions);
-  }
+  pushPositionCollection(payload);
+  pushPositionCollection(payload?.positions);
+  pushPositionCollection(payload?.availablePositions);
+  pushPositionCollection(payload?.data?.positions);
+  pushPositionCollection(payload?.data?.availablePositions);
 
   return positions;
 }
@@ -1377,7 +1457,9 @@ export async function getPolymarketUsTradingStatus(env) {
     secretKeyValid: Boolean(decodeSecretSeed(env.polymarketUsSecretKey)),
     authenticated: false,
     totalAccountBudget: null,
+    reportedCurrentBalance: null,
     buyingPower: null,
+    positionsCashValue: null,
     assetNotional: null,
     assetAvailable: null,
     pendingCredit: null,
@@ -1398,11 +1480,15 @@ export async function getPolymarketUsTradingStatus(env) {
   }
 
   try {
-    const snapshot = await fetchUsdAccountSnapshot(env);
-    status.authenticated = true;
+    const [snapshotResult, positionsResult] = await Promise.allSettled([
+      fetchUsdAccountSnapshot(env),
+      fetchPortfolioPositions(env)
+    ]);
+    status.authenticated = snapshotResult.status === 'fulfilled' || positionsResult.status === 'fulfilled';
 
-    if (snapshot) {
-      status.totalAccountBudget = snapshot.totalAccountBudget;
+    if (snapshotResult.status === 'fulfilled' && snapshotResult.value) {
+      const snapshot = snapshotResult.value;
+      status.reportedCurrentBalance = snapshot.totalAccountBudget;
       status.buyingPower = snapshot.buyingPower;
       status.assetNotional = snapshot.assetNotional;
       status.assetAvailable = snapshot.assetAvailable;
@@ -1412,6 +1498,20 @@ export async function getPolymarketUsTradingStatus(env) {
       status.marginRequirement = snapshot.marginRequirement;
       status.budgetCurrency = snapshot.budgetCurrency;
       status.balanceLastUpdatedAt = snapshot.balanceLastUpdatedAt;
+      status.totalAccountBudget = snapshot.totalAccountBudget;
+    }
+
+    if (positionsResult.status === 'fulfilled') {
+      const portfolio = summarizePortfolioPositions(positionsResult.value);
+      status.positionsCashValue = portfolio.totalCashValue;
+
+      if (typeof status.buyingPower === 'number') {
+        status.totalAccountBudget = status.buyingPower + portfolio.totalCashValue;
+      }
+    }
+
+    if (snapshotResult.status === 'rejected' && positionsResult.status === 'rejected') {
+      status.error = getErrorMessage(snapshotResult.reason);
     }
   } catch (error) {
     status.error = getErrorMessage(error);
@@ -1427,7 +1527,9 @@ export async function getPolymarketUsAccountIdentity(env) {
     keyIdSuffix: env.polymarketUsKeyId ? String(env.polymarketUsKeyId).slice(-8) : null,
     authenticated: false,
     totalAccountBudget: null,
+    reportedCurrentBalance: null,
     buyingPower: null,
+    positionsCashValue: null,
     assetNotional: null,
     assetAvailable: null,
     pendingCredit: null,
@@ -1454,6 +1556,7 @@ export async function getPolymarketUsAccountIdentity(env) {
     identity.authenticated = positionsResult.status === 'fulfilled' || snapshotResult.status === 'fulfilled';
 
     if (snapshotResult.status === 'fulfilled' && snapshotResult.value) {
+      identity.reportedCurrentBalance = snapshotResult.value.totalAccountBudget;
       identity.totalAccountBudget = snapshotResult.value.totalAccountBudget;
       identity.buyingPower = snapshotResult.value.buyingPower;
       identity.assetNotional = snapshotResult.value.assetNotional;
@@ -1475,25 +1578,14 @@ export async function getPolymarketUsAccountIdentity(env) {
     }
 
     const positions = positionsResult.value;
+    const portfolio = summarizePortfolioPositions(positions);
 
-    const summarizedPositions = positions
-      .map((position) => {
-        const quantity = extractNumericQuantity(position);
-
-        if (!Number.isFinite(quantity) || quantity <= 0) {
-          return null;
-        }
-
-        return {
-          marketSlug: getPositionMarketSlug(position),
-          outcome: getPositionOutcome(position),
-          quantity
-        };
-      })
-      .filter(Boolean);
-
-    identity.openPositionsCount = summarizedPositions.length;
-    identity.openPositions = summarizedPositions.slice(0, 10);
+    identity.positionsCashValue = portfolio.totalCashValue;
+    if (typeof identity.buyingPower === 'number') {
+      identity.totalAccountBudget = identity.buyingPower + portfolio.totalCashValue;
+    }
+    identity.openPositionsCount = portfolio.positions.length;
+    identity.openPositions = portfolio.positions.slice(0, 10);
   } catch (error) {
     identity.error = getErrorMessage(error);
   }
