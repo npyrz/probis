@@ -2580,6 +2580,7 @@ export default function App() {
                     : null,
                   0.01
                 );
+                const monitoringNotes = String(intent.monitoring?.notes ?? '').trim();
                 const liveProbabilityHistory = trackedProbabilityHistory[intent.id] ?? [];
 
                   return (
@@ -2693,6 +2694,12 @@ export default function App() {
                         {intent.executionRequest?.readyForExecution
                           ? `Request ready · ${intent.executionRequest.orderType} · ${intent.executionRequest.side}`
                           : precheckMessage ?? 'Intent is ready for review.'}
+                      </p>
+                    ) : null}
+
+                    {isTracking && monitoringNotes ? (
+                      <p className={monitoringStateDisplay.includes('failed') ? 'trade-monitoring-note trade-monitoring-note-alert' : 'trade-monitoring-note'}>
+                        {monitoringNotes}
                       </p>
                     ) : null}
 

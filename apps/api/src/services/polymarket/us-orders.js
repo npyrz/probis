@@ -881,6 +881,20 @@ function buildAggressiveSellLimitLadder(basePrice, floor = 0.001) {
   });
 }
 
+function resolveFallbackSellQuotePrice(orderIntent, outcomePrice) {
+  const normalizedOutcomePrice = normalizeLimitPrice(outcomePrice);
+
+  if (!normalizedOutcomePrice) {
+    return null;
+  }
+
+  if (orderIntent === 'ORDER_INTENT_SELL_SHORT') {
+    return clampLimitPrice(1 - normalizedOutcomePrice);
+  }
+
+  return normalizedOutcomePrice;
+}
+
 async function submitLimitBuyOrder(env, { marketSlug, orderIntent, amount, limitPrice }) {
   const limitQuantity = Number((amount / limitPrice).toFixed(4));
 
@@ -1597,7 +1611,13 @@ export async function placeSellOrderForIntent(env, intent) {
   }
 
   const quote = await resolveOutcomeMarketQuote(env, marketSlug, intent.outcomeLabel);
-  const aggressiveLimitPrices = buildAggressiveSellLimitLadder(quote.outcomePrice);
+  const fallbackQuotePrice = resolveFallbackSellQuotePrice(orderIntent, quote.outcomePrice);
+
+  if (!fallbackQuotePrice) {
+    throw new Error('Unable to derive a valid executable limit price for sell retry.');
+  }
+
+  const aggressiveLimitPrices = buildAggressiveSellLimitLadder(fallbackQuotePrice);
 
   if (aggressiveLimitPrices.length === 0) {
     throw new Error('Unable to derive a valid limit price for sell retry.');

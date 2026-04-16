@@ -1220,6 +1220,23 @@ textarea:focus-visible,
   gap: 6px;
 }
 
+.trade-monitoring-note {
+  margin: 8px 0 0;
+  padding: 10px 12px;
+  border-radius: 10px;
+  border: 1px solid rgba(79, 93, 110, 0.3);
+  background: rgba(12, 19, 28, 0.92);
+  color: #b8c7d8;
+  font-size: 0.88rem;
+  line-height: 1.45;
+}
+
+.trade-monitoring-note-alert {
+  border-color: rgba(220, 84, 84, 0.42);
+  background: rgba(44, 14, 18, 0.88);
+  color: #ffb8b8;
+}
+
 .trade-history-card {
   min-height: 0;
   align-content: start;
