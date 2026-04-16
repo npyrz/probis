@@ -93,6 +93,15 @@ async function filterEventMarketsToUs(env, event) {
   const questions = availability.questions;
 
   if (slugs.size === 0 && questions.size === 0) {
+    if (Array.isArray(event.markets) && event.markets.length > 0) {
+      return {
+        ...event,
+        usFiltered: false,
+        usAvailableMarketCount: event.markets.length,
+        usFilterFallbackRetainedOriginalMarkets: true
+      };
+    }
+
     return {
       ...event,
       markets: [],
@@ -117,6 +126,15 @@ async function filterEventMarketsToUs(env, event) {
 
     return false;
   });
+
+  if (markets.length === 0 && Array.isArray(event.markets) && event.markets.length > 0) {
+    return {
+      ...event,
+      usFiltered: false,
+      usAvailableMarketCount: event.markets.length,
+      usFilterFallbackRetainedOriginalMarkets: true
+    };
+  }
 
   return {
     ...event,

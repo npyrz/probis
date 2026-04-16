@@ -633,18 +633,25 @@ export async function resolveIntentOrderFillState(env, intent) {
     entryOrder = await getPolymarketUsOrderById(env, entryOrderId);
   }
 
-  const orders = await fetchUsOrders(env);
   const expectedSellIntent = sellIntentForEntryIntent(intent?.position?.entryIntent, intent?.outcomeLabel);
   const entryCreatedAtMs = getOrderTimestampMs(entryOrder)
     ?? Date.parse(String(intent?.confirmedAt ?? intent?.createdAt ?? ''));
-  const matchingSellOrders = getMatchingFilledSellOrdersForIntent(orders, intent, {
-    entryOrderId,
-    entryCreatedAtMs,
-    expectedSellIntent
-  });
   const entryShares = Number.parseFloat(
     getSharesFromOrder(entryOrder) ?? intent?.position?.sharesFilled ?? intent?.executionRequest?.sharesEstimate ?? NaN
   );
+  let matchingSellOrders = [];
+
+  try {
+    const orders = await fetchUsOrders(env);
+    matchingSellOrders = getMatchingFilledSellOrdersForIntent(orders, intent, {
+      entryOrderId,
+      entryCreatedAtMs,
+      expectedSellIntent
+    });
+  } catch {
+    matchingSellOrders = [];
+  }
+
   const soldShares = matchingSellOrders.reduce((sum, order) => {
     const shares = Number.parseFloat(getSharesFromOrder(order) ?? NaN);
     return Number.isFinite(shares) && shares > 0 ? sum + shares : sum;
