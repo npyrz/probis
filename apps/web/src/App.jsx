@@ -142,6 +142,10 @@ function formatIntentStatus(intent) {
   return 'Confirmed';
 }
 
+function isDraftTradeIntent(intent) {
+  return intent?.status !== 'tracking' && intent?.status !== 'closed';
+}
+
 function formatMonitoringStateLabel(state) {
   const normalized = String(state ?? 'active').trim();
 
@@ -944,11 +948,15 @@ export default function App() {
       return intent.status === 'tracking';
     }
 
+    if (tradeCenterFilter === 'draft') {
+      return isDraftTradeIntent(intent);
+    }
+
     if (tradeCenterFilter === 'closed') {
       return intent.status === 'closed';
     }
 
-    return intent.status === 'tracking';
+    return isDraftTradeIntent(intent);
   });
   const lastPolledAge = formatRelativeAge(lastTradeUpdate, liveClock);
   const selectedLeader = selectedMarket ? getMarketLeader(selectedMarket) : null;
@@ -2256,6 +2264,15 @@ export default function App() {
               onClick={() => setTradeCenterFilter('tracking')}
             >
               Active
+            </button>
+            <button
+              type="button"
+              role="tab"
+              aria-selected={tradeCenterFilter === 'draft'}
+              className={tradeCenterFilter === 'draft' ? 'filter-chip filter-chip-active' : 'filter-chip'}
+              onClick={() => setTradeCenterFilter('draft')}
+            >
+              Drafts
             </button>
             <button
               type="button"
