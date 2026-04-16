@@ -1212,6 +1212,32 @@ textarea:focus-visible,
   padding: 14px;
 }
 
+.active-trade-edit-modal {
+  display: grid;
+  gap: 14px;
+}
+
+.active-trade-edit-modal .panel-heading,
+.active-trade-edit-modal .trade-preview-grid,
+.active-trade-edit-modal .trade-input-row,
+.active-trade-edit-modal .modal-actions,
+.active-trade-edit-modal .modal-copy {
+  margin: 0;
+}
+
+.active-trade-edit-modal .trade-preview-grid,
+.active-trade-edit-modal .trade-input-row {
+  gap: 12px;
+}
+
+.active-trade-edit-modal .trade-input-row label {
+  gap: 8px;
+}
+
+.active-trade-edit-modal .modal-actions {
+  gap: 10px;
+}
+
 button {
   cursor: pointer;
 }

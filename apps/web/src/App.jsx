@@ -958,6 +958,9 @@ export default function App() {
 
     return isDraftTradeIntent(intent);
   });
+  const editingActiveTrade = editingActiveTradeId
+    ? tradeHistory.find((intent) => intent.id === editingActiveTradeId) ?? null
+    : null;
   const lastPolledAge = formatRelativeAge(lastTradeUpdate, liveClock);
   const selectedLeader = selectedMarket ? getMarketLeader(selectedMarket) : null;
   const marketControlsOutcomes = Array.isArray(selectedMarket?.outcomes)
@@ -1221,6 +1224,42 @@ export default function App() {
       isCancelled = true;
     };
   }, []);
+
+  useEffect(() => {
+    if (!hasLoadedInitialData) {
+      return undefined;
+    }
+
+    let isCancelled = false;
+    let isFetching = false;
+
+    const intervalId = window.setInterval(() => {
+      void (async () => {
+        if (isFetching || isCancelled) {
+          return;
+        }
+
+        isFetching = true;
+
+        try {
+          const nextStatus = await fetchStatus();
+
+          if (!isCancelled) {
+            setStatus(nextStatus);
+          }
+        } catch {
+          // Ignore background status refresh failures and keep the last known header values.
+        } finally {
+          isFetching = false;
+        }
+      })();
+    }, 5000);
+
+    return () => {
+      isCancelled = true;
+      window.clearInterval(intervalId);
+    };
+  }, [hasLoadedInitialData]);
 
   useEffect(() => {
     if (activeTradeIntents.length === 0) {
@@ -2295,8 +2334,6 @@ export default function App() {
                 {filteredTradeHistory.map((intent) => {
                 const precheckMessage = getExecutePrecheckMessage(intent);
                 const isTracking = intent.status === 'tracking';
-                const isEditingActiveTrade = editingActiveTradeId === intent.id;
-                const activeTradeDraft = activeTradeRiskInputs[intent.id] ?? {};
                 const currentProbability = isTracking
                   ? (intent.monitoring?.currentProbability ?? null)
                   : (intent.recommendation?.currentProbability ?? null);
@@ -2446,35 +2483,14 @@ export default function App() {
                     <div className="trade-history-actions">
                       {isTracking ? (
                         <>
-                          {isEditingActiveTrade ? (
-                            <>
-                              <button
-                                type="button"
-                                className="secondary-button"
-                                onClick={() => void handleSaveActiveTradeRisk(intent)}
-                                disabled={isMutatingHistory}
-                              >
-                                Save Targets
-                              </button>
-                              <button
-                                type="button"
-                                className="ghost-button"
-                                onClick={handleCancelEditingActiveTrade}
-                                disabled={isMutatingHistory}
-                              >
-                                Cancel
-                              </button>
-                            </>
-                          ) : (
-                            <button
-                              type="button"
-                              className="secondary-button"
-                              onClick={() => handleStartEditingActiveTrade(intent)}
-                              disabled={isMutatingHistory}
-                            >
-                              Edit Active Trade
-                            </button>
-                          )}
+                          <button
+                            type="button"
+                            className="secondary-button"
+                            onClick={() => handleStartEditingActiveTrade(intent)}
+                            disabled={isMutatingHistory}
+                          >
+                            Edit Active Trade
+                          </button>
                           <button
                             type="button"
                             className="secondary-button"
@@ -2510,35 +2526,6 @@ export default function App() {
                         </>
                       )}
                     </div>
-
-                    {isTracking && isEditingActiveTrade ? (
-                      <div className="trade-input-row compact-input-grid">
-                        <label>
-                          <span>Stop-loss</span>
-                          <input
-                            type="number"
-                            min="0.01"
-                            max="0.99"
-                            step="0.01"
-                            value={activeTradeDraft.stopLossProbability}
-                            onChange={(event) => handleActiveTradeRiskInputChange(intent.id, 'stopLossProbability', event.target.value)}
-                            disabled={isMutatingHistory}
-                          />
-                        </label>
-                        <label>
-                          <span>Take-profit</span>
-                          <input
-                            type="number"
-                            min="0.01"
-                            max="0.99"
-                            step="0.01"
-                            value={activeTradeDraft.takeProfitProbability}
-                            onChange={(event) => handleActiveTradeRiskInputChange(intent.id, 'takeProfitProbability', event.target.value)}
-                            disabled={isMutatingHistory}
-                          />
-                        </label>
-                      </div>
-                    ) : null}
                     </article>
                   );
                 })}
@@ -2627,6 +2614,89 @@ export default function App() {
               </button>
               <button type="button" className="ghost-button" onClick={handleCloseTradeModal}>
                 Keep Editing
+              </button>
+            </div>
+          </section>
+        </div>
+      ) : null}
+
+      {editingActiveTrade ? (
+        <div className="modal-backdrop" role="presentation" onClick={handleCancelEditingActiveTrade}>
+          <section
+            className="modal-card active-trade-edit-modal"
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="active-trade-edit-title"
+            onClick={(event) => event.stopPropagation()}
+          >
+            <div className="panel-heading panel-heading-inline">
+              <div>
+                <p className="eyebrow">Active Trade</p>
+                <h2 id="active-trade-edit-title">Edit Stop-Loss And Take-Profit</h2>
+              </div>
+              <button type="button" className="ghost-button" onClick={handleCancelEditingActiveTrade}>
+                Close
+              </button>
+            </div>
+
+            <p className="modal-copy">
+              Update the live risk thresholds for {editingActiveTrade.outcomeLabel} in {editingActiveTrade.marketQuestion}.
+            </p>
+
+            <div className="trade-preview-grid">
+              <article>
+                <span>Current probability</span>
+                <strong>{formatPercent(editingActiveTrade.monitoring?.currentProbability)}</strong>
+              </article>
+              <article>
+                <span>Entry probability</span>
+                <strong>{formatPercent(getTrackedEntryProbability(editingActiveTrade))}</strong>
+              </article>
+            </div>
+
+            <div className="trade-input-row compact-input-grid">
+              <label>
+                <span>Stop-loss</span>
+                <input
+                  type="number"
+                  min="0.01"
+                  max="0.99"
+                  step="0.01"
+                  value={activeTradeRiskInputs[editingActiveTrade.id]?.stopLossProbability ?? ''}
+                  onChange={(event) => handleActiveTradeRiskInputChange(editingActiveTrade.id, 'stopLossProbability', event.target.value)}
+                  disabled={isMutatingHistory}
+                />
+              </label>
+              <label>
+                <span>Take-profit</span>
+                <input
+                  type="number"
+                  min="0.01"
+                  max="0.99"
+                  step="0.01"
+                  value={activeTradeRiskInputs[editingActiveTrade.id]?.takeProfitProbability ?? ''}
+                  onChange={(event) => handleActiveTradeRiskInputChange(editingActiveTrade.id, 'takeProfitProbability', event.target.value)}
+                  disabled={isMutatingHistory}
+                />
+              </label>
+            </div>
+
+            <div className="modal-actions">
+              <button
+                type="button"
+                className="secondary-button"
+                onClick={() => void handleSaveActiveTradeRisk(editingActiveTrade)}
+                disabled={isMutatingHistory}
+              >
+                {isMutatingHistory ? 'Saving...' : 'Save Targets'}
+              </button>
+              <button
+                type="button"
+                className="ghost-button"
+                onClick={handleCancelEditingActiveTrade}
+                disabled={isMutatingHistory}
+              >
+                Cancel
               </button>
             </div>
           </section>
