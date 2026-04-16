@@ -239,6 +239,16 @@ function getArticleText(article) {
   return normalizeSportsTeamKey(`${article?.headline ?? ''} ${article?.description ?? ''}`);
 }
 
+function matchesPattern(text, patterns) {
+  return patterns.some((pattern) => {
+    if (pattern instanceof RegExp) {
+      return pattern.test(text);
+    }
+
+    return text.includes(normalizeSportsTeamKey(pattern));
+  });
+}
+
 function matchPlayersInArticle(article, roster) {
   const normalizedText = getArticleText(article);
 
@@ -259,22 +269,145 @@ function detectImpactSignals(article) {
   const normalizedText = getArticleText(article);
   const signals = [];
 
-  const keywordMap = [
-    ['injury', ['injury', 'injured', 'hurt']],
-    ['availability', ['out', 'questionable', 'doubtful', 'available', 'returns', 'returning']],
-    ['lineup', ['starting', 'starter', 'lineup', 'rotation']],
-    ['transaction', ['trade', 'waived', 'signed', 'call up', 'optioned', 'promoted']],
-    ['discipline', ['suspended', 'fine', 'discipline']],
-    ['illness', ['illness', 'sick', 'flu']]
+  const signalRules = [
+    {
+      signal: 'injury',
+      include: [
+        /\binjur(?:y|ies|ed)\b/i,
+        /\bhurt\b/i,
+        /\b(?:left|exited|leaves)\b.{0,40}\b(?:game|match)\b.{0,40}\b(?:injur(?:y|ies)|hurt)\b/i,
+        /\b(?:shoulder|hamstring|ankle|knee|elbow|wrist|back|groin|concussion)\b.{0,30}\b(?:injur(?:y|ies)|strain|sprain|tear|soreness|tightness)\b/i,
+        /\bplaced on (?:the )?(?:injured list|il)\b/i
+      ]
+    },
+    {
+      signal: 'availability',
+      include: [
+        /\bquestionable\b/i,
+        /\bdoubtful\b/i,
+        /\bgame[- ]time decision\b/i,
+        /\bwill play\b/i,
+        /\bwill not play\b/i,
+        /\bout for\b/i,
+        /\bruled out\b/i,
+        /\bcleared to play\b/i,
+        /\bexpected to play\b/i,
+        /\bexpected back\b/i,
+        /\breturns? to (?:the )?(?:lineup|rotation|mound|court|field)\b/i,
+        /\bavailable tonight\b/i,
+        /\bavailable for (?:tonight|game \d+|the opener|the series)\b/i
+      ],
+      exclude: [
+        /\bavailable on\b/i,
+        /\btickets? available\b/i,
+        /\bstream(?:ing)? available\b/i,
+        /\btracker\b/i,
+        /\brankings?\b/i
+      ]
+    },
+    {
+      signal: 'lineup',
+      include: [
+        /\bstarting lineup\b/i,
+        /\blineup change\b/i,
+        /\blineup shuffle\b/i,
+        /\bremoved from the lineup\b/i,
+        /\bbenched\b/i,
+        /\bconfirmed starter\b/i,
+        /\bprobable starter\b/i,
+        /\bstarting pitcher\b/i,
+        /\brotation change\b/i,
+        /\bjoining the starting unit\b/i
+      ],
+      exclude: [
+        /\bpower rankings?\b/i,
+        /\brotation rankings?\b/i,
+        /\bstarting (?:five|lineups?) for all teams\b/i
+      ]
+    },
+    {
+      signal: 'transaction',
+      include: [
+        /\btraded?\b/i,
+        /\bsigned?\b/i,
+        /\bwaived?\b/i,
+        /\bdesignated for assignment\b/i,
+        /\bcall(?:ed)? up\b/i,
+        /\boptioned\b/i,
+        /\bpromoted\b/i,
+        /\brecalled\b/i,
+        /\bactivated from (?:the )?(?:il|injured list)\b/i
+      ],
+      exclude: [
+        /\btrade grades?\b/i,
+        /\btrade deadline rankings?\b/i
+      ]
+    },
+    {
+      signal: 'discipline',
+      include: [
+        /\bsuspend(?:ed|sion)?\b/i,
+        /\bfined?\b/i,
+        /\bdisciplin(?:e|ary)\b/i,
+        /\bejected\b/i
+      ]
+    },
+    {
+      signal: 'illness',
+      include: [
+        /\billness\b/i,
+        /\bflu\b/i,
+        /\bsick\b/i,
+        /\bunder the weather\b/i,
+        /\bnon-covid illness\b/i
+      ]
+    }
   ];
 
-  for (const [signal, tokens] of keywordMap) {
-    if (tokens.some((token) => normalizedText.includes(normalizeSportsTeamKey(token)))) {
-      signals.push(signal);
+  for (const rule of signalRules) {
+    const hasInclude = matchesPattern(normalizedText, rule.include ?? []);
+    const hasExclude = matchesPattern(normalizedText, rule.exclude ?? []);
+
+    if (hasInclude && !hasExclude) {
+      signals.push(rule.signal);
+    }
+  }
+
+  if (signals.includes('discipline') && !signals.includes('availability')) {
+    if (matchesPattern(normalizedText, [/\bmiss(?:es|ing)?\b/i, /\bout\b/i, /\bineligible\b/i])) {
+      signals.push('availability');
+    }
+  }
+
+  if (signals.includes('injury') && !signals.includes('availability')) {
+    if (matchesPattern(normalizedText, [/\bday to day\b/i, /\bquestionable\b/i, /\bwill not play\b/i])) {
+      signals.push('availability');
+    }
+  }
+
+  if (signals.includes('lineup') && !signals.includes('availability')) {
+    if (matchesPattern(normalizedText, [/\bscratched\b/i, /\bout of the lineup\b/i])) {
+      signals.push('availability');
     }
   }
 
   return signals;
+}
+
+function hasLowSignalHeadline(article) {
+  const normalizedText = getArticleText(article);
+
+  return matchesPattern(normalizedText, [
+    /\bpower rankings?\b/i,
+    /\brankings?\b/i,
+    /\btracker\b/i,
+    /\bpreview\b/i,
+    /\brecap\b/i,
+    /\bhighlights?\b/i,
+    /\bbest bets?\b/i,
+    /\bhow to watch\b/i,
+    /\bodds\b/i
+  ]);
 }
 
 function getArticleImpactScore(article, matchedTeams, matchedPlayers, impactSignals) {
@@ -301,6 +434,10 @@ function getArticleImpactScore(article, matchedTeams, matchedPlayers, impactSign
 
   if (type.includes('recap') || type.includes('media') || type.includes('highlight')) {
     score -= 6;
+  }
+
+  if (hasLowSignalHeadline(article) && impactSignals.length === 0) {
+    score -= 4;
   }
 
   if (normalizedText.includes('walk-off') || normalizedText.includes('beat ') || normalizedText.includes('rally')) {
