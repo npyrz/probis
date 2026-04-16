@@ -29,7 +29,17 @@ function formatEventIntelligence(aggregation) {
         ? ` players=${article.matchedPlayers.map((player) => player.name).join(', ')}`
         : '';
 
-      return `- ${article.headline ?? 'n/a'} | ${article.description ?? ''}${signals}${playersMentioned}`.trim();
+      return `- ${article.headline ?? 'n/a'} | impact=${article.impactScore ?? 0}${signals}${playersMentioned} | ${article.description ?? ''}`.trim();
+    })
+    .join('\n');
+  const social = (Array.isArray(intelligence.socialPosts) ? intelligence.socialPosts : [])
+    .slice(0, 4)
+    .map((post) => {
+      const signals = Array.isArray(post.impactSignals) && post.impactSignals.length > 0
+        ? ` signals=${post.impactSignals.join('/')}`
+        : '';
+
+      return `- [${String(post.provider ?? 'social').toUpperCase()}] ${post.headline ?? 'n/a'} | impact=${post.impactScore ?? 0}${signals}`;
     })
     .join('\n');
 
@@ -39,7 +49,9 @@ function formatEventIntelligence(aggregation) {
     gameFeed,
     `Player mentions: ${players || 'none'}`,
     'Relevant news:',
-    headlines || '- none'
+    headlines || '- none',
+    'Relevant social:',
+    social || '- none'
   ].join('\n');
 }
 

@@ -23,7 +23,15 @@ export function getEnv() {
     polymarketUsGatewayUrl: process.env.POLYMARKET_US_GATEWAY_URL ?? 'https://gateway.polymarket.us',
     gammaBaseUrl: process.env.GAMMA_BASE_URL ?? 'https://gamma-api.polymarket.com',
     ollamaBaseUrl: process.env.OLLAMA_BASE_URL ?? 'http://localhost:11434',
-    ollamaModel: process.env.OLLAMA_MODEL ?? 'gemma3:latest'
+    ollamaModel: process.env.OLLAMA_MODEL ?? 'gemma3:latest',
+    socialRedditEnabled: process.env.SOCIAL_REDDIT_ENABLED === 'true',
+    socialRedditSubreddits: (process.env.SOCIAL_REDDIT_SUBREDDITS ?? 'nba,mlb,sportsbook,polymarket')
+      .split(',')
+      .map((value) => value.trim())
+      .filter(Boolean),
+    socialRedditUserAgent: process.env.SOCIAL_REDDIT_USER_AGENT ?? 'probis/0.1',
+    socialXBearerToken: process.env.SOCIAL_X_BEARER_TOKEN ?? '',
+    socialXRecentSearchUrl: process.env.SOCIAL_X_RECENT_SEARCH_URL ?? 'https://api.x.com/2/tweets/search/recent'
   };
 
   const missing = requiredKeys.filter((key) => !process.env[key]);

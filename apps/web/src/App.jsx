@@ -580,6 +580,14 @@ function getEventIntelligenceSummary(aggregation) {
   return aggregation?.eventIntelligence?.available ? aggregation.eventIntelligence : null;
 }
 
+function formatImpactScore(value) {
+  if (typeof value !== 'number' || Number.isNaN(value)) {
+    return 'n/a';
+  }
+
+  return value.toFixed(0);
+}
+
 function getRecommendedStarterContext(modelMarket) {
   const features = modelMarket?.sportsContext?.features;
   const probablePitchers = features?.probablePitchers ?? null;
@@ -2114,6 +2122,10 @@ export default function App() {
                         <span>Player Mentions</span>
                         <strong>{eventIntelligence.playerMentions?.length ?? 0}</strong>
                       </article>
+                      <article>
+                        <span>Social Posts</span>
+                        <strong>{eventIntelligence.socialPosts?.length ?? 0}</strong>
+                      </article>
                     </div>
                     {eventIntelligence.gameFeed ? (
                       <div className="operator-notes-copy">
@@ -2129,7 +2141,16 @@ export default function App() {
                       <div className="operator-notes-copy">
                         {eventIntelligence.articles.slice(0, 5).map((article) => (
                           <p key={article.id ?? article.headline}>
-                            {article.headline}: {article.description ?? 'No summary'}
+                            [{formatImpactScore(article.impactScore)}] {article.headline}: {article.description ?? 'No summary'}
+                          </p>
+                        ))}
+                      </div>
+                    ) : null}
+                    {(eventIntelligence.socialPosts ?? []).length > 0 ? (
+                      <div className="operator-notes-copy">
+                        {eventIntelligence.socialPosts.slice(0, 4).map((post) => (
+                          <p key={post.id ?? post.headline}>
+                            [{String(post.provider ?? 'social').toUpperCase()} {formatImpactScore(post.impactScore)}] {post.headline}
                           </p>
                         ))}
                       </div>

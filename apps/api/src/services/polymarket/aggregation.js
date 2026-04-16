@@ -181,7 +181,7 @@ export async function buildEventAggregation(env, event) {
   );
 
   const sportsContext = await buildSportsContext(event);
-  const eventIntelligence = await buildEventIntelligence(event, sportsContext);
+  const eventIntelligence = await buildEventIntelligence(env, event, sportsContext);
   const sportsMarketsByConditionId = new Map(
     (Array.isArray(sportsContext.markets) ? sportsContext.markets : []).map((market) => [market.conditionId, market])
   );

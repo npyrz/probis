@@ -13,13 +13,16 @@ const TEAM_DIRECTORY_TTL_MS = 6 * 60 * 60 * 1000;
 const ROSTER_TTL_MS = 60 * 60 * 1000;
 const NEWS_TTL_MS = 5 * 60 * 1000;
 const SCOREBOARD_TTL_MS = 2 * 60 * 1000;
+const SOCIAL_TTL_MS = 90 * 1000;
 const MAX_NEWS_ARTICLES = 8;
 const MAX_MATCHED_PLAYERS = 5;
+const MAX_SOCIAL_POSTS = 8;
 
 const teamDirectoryCache = new Map();
 const rosterCache = new Map();
 const newsCache = new Map();
 const scoreboardCache = new Map();
+const socialCache = new Map();
 
 function pruneExpiredCache(cache, now = Date.now()) {
   for (const [key, entry] of cache.entries()) {
@@ -213,7 +216,22 @@ function normalizeArticle(article) {
       type: category?.type ?? null,
       description: category?.description ?? null,
       id: category?.id ? String(category.id) : null
-    })) : []
+    })) : [],
+    provider: article?.provider ?? 'espn'
+  };
+}
+
+function normalizeSocialPost(post) {
+  return {
+    id: post?.id ? String(post.id) : null,
+    headline: post?.headline ?? post?.text ?? null,
+    description: post?.description ?? post?.text ?? null,
+    published: post?.published ?? post?.createdAt ?? null,
+    lastModified: post?.lastModified ?? post?.published ?? post?.createdAt ?? null,
+    type: post?.type ?? 'Social',
+    link: post?.link ?? null,
+    categories: Array.isArray(post?.categories) ? post.categories : [],
+    provider: post?.provider ?? 'social'
   };
 }
 
@@ -259,6 +277,52 @@ function detectImpactSignals(article) {
   return signals;
 }
 
+function getArticleImpactScore(article, matchedTeams, matchedPlayers, impactSignals) {
+  const type = String(article?.type ?? '').toLowerCase();
+  const normalizedText = getArticleText(article);
+  let score = 0;
+
+  const signalWeights = {
+    injury: 12,
+    availability: 10,
+    suspension: 10,
+    discipline: 9,
+    lineup: 7,
+    illness: 7,
+    transaction: 6
+  };
+
+  for (const signal of impactSignals) {
+    score += signalWeights[signal] ?? 3;
+  }
+
+  score += matchedTeams.length * 2;
+  score += matchedPlayers.length * 3;
+
+  if (type.includes('recap') || type.includes('media') || type.includes('highlight')) {
+    score -= 6;
+  }
+
+  if (normalizedText.includes('walk-off') || normalizedText.includes('beat ') || normalizedText.includes('rally')) {
+    score -= 2;
+  }
+
+  const publishedAt = Date.parse(article?.published ?? 0);
+  const ageHours = Number.isFinite(publishedAt) ? Math.max(0, (Date.now() - publishedAt) / 3600000) : null;
+
+  if (typeof ageHours === 'number') {
+    if (ageHours <= 6) {
+      score += 3;
+    } else if (ageHours <= 24) {
+      score += 1;
+    } else if (ageHours > 72) {
+      score -= 1;
+    }
+  }
+
+  return score;
+}
+
 function rankArticles(articles, teamNames, roster) {
   const unique = new Map();
 
@@ -273,26 +337,145 @@ function rankArticles(articles, teamNames, roster) {
     const matchedTeams = teamNames.filter((teamName) => text.includes(normalizeSportsTeamKey(teamName)));
     const matchedPlayers = matchPlayersInArticle(normalized, roster);
     const impactSignals = detectImpactSignals(normalized);
-    const relevanceScore = matchedTeams.length * 2 + matchedPlayers.length * 2 + impactSignals.length;
+    const impactScore = getArticleImpactScore(normalized, matchedTeams, matchedPlayers, impactSignals);
 
     unique.set(normalized.id, {
       ...normalized,
       matchedTeams,
       matchedPlayers,
       impactSignals,
-      relevanceScore
+      impactScore,
+      relevanceScore: impactScore
     });
   }
 
   return [...unique.values()]
     .sort((left, right) => {
-      if (right.relevanceScore !== left.relevanceScore) {
-        return right.relevanceScore - left.relevanceScore;
+      if (right.impactScore !== left.impactScore) {
+        return right.impactScore - left.impactScore;
       }
 
       return Date.parse(right.published ?? 0) - Date.parse(left.published ?? 0);
     })
     .slice(0, MAX_NEWS_ARTICLES);
+}
+
+function buildSearchQueries(teams, roster) {
+  const teamTerms = teams
+    .flatMap((team) => [team.displayName, team.abbreviation])
+    .filter(Boolean);
+  const playerTerms = roster
+    .slice(0, 20)
+    .map((player) => player.displayName)
+    .filter(Boolean);
+
+  return [...new Set([...teamTerms, ...playerTerms])].slice(0, 16);
+}
+
+async function fetchRedditPosts(env, queries, league) {
+  if (!env?.socialRedditEnabled || queries.length === 0) {
+    return [];
+  }
+
+  const subredditPart = Array.isArray(env.socialRedditSubreddits) && env.socialRedditSubreddits.length > 0
+    ? env.socialRedditSubreddits.join('+')
+    : 'sports';
+  const query = encodeURIComponent(queries.slice(0, 6).join(' OR '));
+
+  return getCachedJson(socialCache, `reddit:${league}:${query}`, SOCIAL_TTL_MS, async () => {
+    const response = await fetch(`https://www.reddit.com/r/${subredditPart}/search.json?q=${query}&sort=new&restrict_sr=0&limit=${MAX_SOCIAL_POSTS}`, {
+      headers: {
+        'User-Agent': env.socialRedditUserAgent
+      }
+    });
+
+    if (!response.ok) {
+      return [];
+    }
+
+    const payload = await response.json();
+    const posts = Array.isArray(payload?.data?.children) ? payload.data.children : [];
+
+    return posts.map((entry) => {
+      const data = entry?.data ?? {};
+
+      return normalizeSocialPost({
+        id: data.id,
+        text: data.title,
+        description: data.selftext?.slice(0, 240) ?? '',
+        published: data.created_utc ? new Date(data.created_utc * 1000).toISOString() : null,
+        type: 'Reddit',
+        link: data.permalink ? `https://www.reddit.com${data.permalink}` : null,
+        provider: 'reddit'
+      });
+    });
+  });
+}
+
+async function fetchXPosts(env, queries, league) {
+  if (!env?.socialXBearerToken || queries.length === 0) {
+    return [];
+  }
+
+  const search = encodeURIComponent(queries.slice(0, 6).map((query) => `"${query}"`).join(' OR '));
+
+  return getCachedJson(socialCache, `x:${league}:${search}`, SOCIAL_TTL_MS, async () => {
+    const response = await fetch(`${env.socialXRecentSearchUrl}?max_results=${MAX_SOCIAL_POSTS}&tweet.fields=created_at&query=${search}`, {
+      headers: {
+        Authorization: `Bearer ${env.socialXBearerToken}`
+      }
+    });
+
+    if (!response.ok) {
+      return [];
+    }
+
+    const payload = await response.json();
+    const posts = Array.isArray(payload?.data) ? payload.data : [];
+
+    return posts.map((post) => normalizeSocialPost({
+      id: post.id,
+      text: post.text,
+      published: post.created_at ?? null,
+      type: 'X',
+      link: post.id ? `https://x.com/i/web/status/${post.id}` : null,
+      provider: 'x'
+    }));
+  });
+}
+
+function rankSocialPosts(posts, teamNames, roster) {
+  const unique = new Map();
+
+  for (const post of posts.map((entry) => normalizeSocialPost(entry))) {
+    if (!post.id || unique.has(post.id)) {
+      continue;
+    }
+
+    const text = getArticleText(post);
+    const matchedTeams = teamNames.filter((teamName) => text.includes(normalizeSportsTeamKey(teamName)));
+    const matchedPlayers = matchPlayersInArticle(post, roster);
+    const impactSignals = detectImpactSignals(post);
+    const impactScore = getArticleImpactScore(post, matchedTeams, matchedPlayers, impactSignals) + 1;
+
+    unique.set(post.id, {
+      ...post,
+      matchedTeams,
+      matchedPlayers,
+      impactSignals,
+      impactScore
+    });
+  }
+
+  return [...unique.values()]
+    .sort((left, right) => {
+      if (right.impactScore !== left.impactScore) {
+        return right.impactScore - left.impactScore;
+      }
+
+      return Date.parse(right.published ?? 0) - Date.parse(left.published ?? 0);
+    })
+    .slice(0, MAX_SOCIAL_POSTS);
 }
 
 function buildGameFeed(events, teams) {
@@ -327,7 +510,7 @@ function buildGameFeed(events, teams) {
   };
 }
 
-export async function buildEventIntelligence(event, sportsContext) {
+export async function buildEventIntelligence(env, event, sportsContext) {
   const sportsMarkets = Array.isArray(sportsContext?.markets) ? sportsContext.markets : [];
   const supportedLeague = sportsMarkets.find((market) => market?.league === 'NBA' || market?.league === 'MLB')?.league ?? null;
 
@@ -382,8 +565,14 @@ export async function buildEventIntelligence(event, sportsContext) {
   const roster = rosterGroups.flat();
   const teamNames = teams.map((team) => team.displayName);
   const articles = rankArticles([...leagueNews, ...teamNewsGroups.flat()], teamNames, roster);
+  const queries = buildSearchQueries(teams, roster);
+  const [redditPosts, xPosts] = await Promise.all([
+    fetchRedditPosts(env, queries, supportedLeague),
+    fetchXPosts(env, queries, supportedLeague)
+  ]);
+  const socialPosts = rankSocialPosts([...redditPosts, ...xPosts], teamNames, roster);
   const playerMentions = [...new Map(
-    articles
+    [...articles, ...socialPosts]
       .flatMap((article) => article.matchedPlayers)
       .map((player) => [player.id ?? player.name, player])
   ).values()].slice(0, 12);
@@ -395,16 +584,19 @@ export async function buildEventIntelligence(event, sportsContext) {
     teams,
     gameFeed: buildGameFeed(scoreboardEvents, teams),
     articles,
+    socialPosts,
     playerMentions,
     sources: {
       espnNews: true,
       espnGameFeed: true,
-      socialMedia: false
+      socialMedia: socialPosts.length > 0
     },
     notes: [
       'ESPN team and league news are included.',
       'Player relevance is inferred from team rosters plus article text/categories.',
-      'No single reliable API exists for all live social media sources; social feeds are not configured.'
+      env?.socialXBearerToken || env?.socialRedditEnabled
+        ? 'Optional social providers are enabled when configured and merged into event intelligence.'
+        : 'No single reliable API exists for all live social media sources; optional social providers are currently disabled.'
     ]
   };
 }
