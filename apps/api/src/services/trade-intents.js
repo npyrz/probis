@@ -53,6 +53,38 @@ function getSharesEstimate(tradeAmount, entryProbability) {
   return tradeAmount / entryProbability;
 }
 
+function normalizeTrackedOutcomeLabel(label) {
+  return String(label ?? '').trim().toLowerCase();
+}
+
+function isBinaryTrackedOutcomeLabel(label) {
+  const normalized = normalizeTrackedOutcomeLabel(label);
+  return normalized === 'yes' || normalized === 'no';
+}
+
+function getOrderCommissionNotional(orderResponse) {
+  const order = orderResponse?.order ?? orderResponse;
+  const commission = Number.parseFloat(order?.commissionNotionalTotalCollected?.value ?? NaN);
+  return Number.isFinite(commission) && commission >= 0 ? commission : 0;
+}
+
+function getTrackedDisplayNotionalSpent({ entryIntent, outcomeLabel, sharesFilled, rawNotionalSpent, orderResponse }) {
+  if (!Number.isFinite(rawNotionalSpent) || rawNotionalSpent < 0) {
+    return null;
+  }
+
+  if (entryIntent !== 'ORDER_INTENT_BUY_SHORT' || isBinaryTrackedOutcomeLabel(outcomeLabel)) {
+    return rawNotionalSpent;
+  }
+
+  if (!Number.isFinite(sharesFilled) || sharesFilled <= 0) {
+    return rawNotionalSpent;
+  }
+
+  const commission = getOrderCommissionNotional(orderResponse);
+  return Math.max(0, sharesFilled - rawNotionalSpent + commission);
+}
+
 function buildExecutionRequestShape(payload) {
   const entryProbability = Number.parseFloat(
     payload?.recommendation?.currentProbability ?? payload?.tradeSuggestion?.entryProbability ?? NaN
@@ -107,7 +139,14 @@ function buildMonitoringState(intent) {
 
 function getExecutedEntryProbability(intent, buyOrder) {
   const shares = Number.parseFloat(buyOrder?.sharesFilled ?? intent?.executionRequest?.sharesEstimate ?? NaN);
-  const spent = Number.parseFloat(buyOrder?.notionalSpent ?? intent?.tradeAmount ?? NaN);
+  const rawSpent = Number.parseFloat(buyOrder?.notionalSpent ?? intent?.tradeAmount ?? NaN);
+  const spent = getTrackedDisplayNotionalSpent({
+    entryIntent: buyOrder?.entryIntent,
+    outcomeLabel: intent?.outcomeLabel,
+    sharesFilled: shares,
+    rawNotionalSpent: rawSpent,
+    orderResponse: buyOrder?.response
+  });
 
   if (!Number.isFinite(shares) || shares <= 0 || !Number.isFinite(spent) || spent <= 0) {
     return intent.executionRequest?.entryProbability ?? intent.recommendation?.currentProbability ?? null;
@@ -134,18 +173,6 @@ function deriveRemainingPositionCostBasis({ entryShares, entryNotionalSpent, rem
 
 function getPositionSideFromEntryIntent(entryIntent) {
   return entryIntent === 'ORDER_INTENT_BUY_SHORT' ? 'short' : 'long';
-}
-
-function toTrackedProbability(entryIntent, outcomeProbability) {
-  if (typeof outcomeProbability !== 'number') {
-    return null;
-  }
-
-  if (entryIntent === 'ORDER_INTENT_BUY_SHORT') {
-    return 1 - outcomeProbability;
-  }
-
-  return outcomeProbability;
 }
 
 function buildExitRequestShape(intent, exitReason) {
@@ -464,7 +491,14 @@ async function reconcileTrackingIntentWithVenue(env, intent) {
   }
 
   const sharesFilled = Number.parseFloat(getSharesFromOrder(venueOrder) ?? NaN);
-  const notionalSpent = Number.parseFloat(getSpentFromOrder(venueOrder) ?? NaN);
+  const rawNotionalSpent = Number.parseFloat(getSpentFromOrder(venueOrder) ?? NaN);
+  const notionalSpent = getTrackedDisplayNotionalSpent({
+    entryIntent: intent?.position?.entryIntent,
+    outcomeLabel: intent?.outcomeLabel,
+    sharesFilled,
+    rawNotionalSpent,
+    orderResponse: venueOrder
+  });
   const orderState = getTerminalOrderStateFromVenueOrder(venueOrder);
   const hasEntryFills = Number.isFinite(sharesFilled) && sharesFilled > 0;
 
@@ -617,6 +651,9 @@ async function reconcileTrackingIntentWithVenue(env, intent) {
     },
     monitoring: {
       ...intent.monitoring,
+      entryProbability: Number.isFinite(remainingShares) && remainingShares > 0 && Number.isFinite(remainingNotionalSpent) && remainingNotionalSpent > 0
+        ? remainingNotionalSpent / remainingShares
+        : intent.monitoring?.entryProbability ?? null,
       lastEvaluationAt: new Date().toISOString(),
       syncNoLiveSharesCount: 0,
       notes: `Order ${orderId} is ${orderState} with ${sharesFilled} entry shares filled. Remaining open shares inferred from order fills: ${hasRemainingShares ? remainingShares : sharesFilled}.`
@@ -656,7 +693,14 @@ async function reconcileSyncRemovedIntentWithVenue(env, intent) {
   }
 
   const sharesFilled = Number.parseFloat(getSharesFromOrder(venueOrder) ?? NaN);
-  const notionalSpent = Number.parseFloat(getSpentFromOrder(venueOrder) ?? NaN);
+  const rawNotionalSpent = Number.parseFloat(getSpentFromOrder(venueOrder) ?? NaN);
+  const notionalSpent = getTrackedDisplayNotionalSpent({
+    entryIntent: intent?.position?.entryIntent,
+    outcomeLabel: intent?.outcomeLabel,
+    sharesFilled,
+    rawNotionalSpent,
+    orderResponse: venueOrder
+  });
 
   let liveShares;
 
@@ -695,6 +739,9 @@ async function reconcileSyncRemovedIntentWithVenue(env, intent) {
       ...intent.monitoring,
       state: 'active',
       exitReason: null,
+      entryProbability: Number.isFinite(sharesFilled) && sharesFilled > 0 && Number.isFinite(notionalSpent) && notionalSpent > 0
+        ? notionalSpent / sharesFilled
+        : intent.monitoring?.entryProbability ?? null,
       lastEvaluationAt: new Date().toISOString(),
       notes: `Recovered from venue sync for order ${orderId}; active position shares detected.`
     },
@@ -924,7 +971,7 @@ async function resolveTrackedProbability(env, intent) {
 
   if (typeof liveOutcomeProbability === 'number') {
     return {
-      currentProbability: toTrackedProbability(intent?.position?.entryIntent, liveOutcomeProbability),
+      currentProbability: liveOutcomeProbability,
       lastPolymarketQuoteAt: new Date().toISOString()
     };
   }
@@ -1157,7 +1204,13 @@ export async function executeTradeIntent(env, id) {
       entryIntent: buyOrder.entryIntent,
       entryOrderId: buyOrder.orderId,
       sharesFilled: buyOrder.sharesFilled,
-      notionalSpent: buyOrder.notionalSpent,
+      notionalSpent: getTrackedDisplayNotionalSpent({
+        entryIntent: buyOrder.entryIntent,
+        outcomeLabel: executableIntent.outcomeLabel,
+        sharesFilled: Number.parseFloat(buyOrder?.sharesFilled ?? NaN),
+        rawNotionalSpent: Number.parseFloat(buyOrder?.notionalSpent ?? NaN),
+        orderResponse: buyOrder.response
+      }),
       lastExecutionAt: new Date().toISOString()
     },
     monitoring: buildMonitoringState(executableIntent),

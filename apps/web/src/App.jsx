@@ -737,8 +737,7 @@ function estimateTrackedPnl(intent, currentProbability, entryProbability) {
   }
 
   const spent = Number.parseFloat(intent?.position?.notionalSpent ?? intent?.tradeAmount ?? NaN);
-  const direction = intent?.position?.entryIntent === 'ORDER_INTENT_BUY_SHORT' ? -1 : 1;
-  const pnlDollars = shares * (currentProbability - entryProbability) * direction;
+  const pnlDollars = shares * (currentProbability - entryProbability);
   const pnlPercent = Number.isFinite(spent) && spent > 0 ? pnlDollars / spent : null;
 
   return {
@@ -796,6 +795,16 @@ function getTrackedEntryProbability(intent) {
 
 function replaceIntentInList(intents, nextIntent) {
   return intents.map((intent) => (intent.id === nextIntent.id ? nextIntent : intent));
+}
+
+function mergeTrackingIntentsIntoHistory(previousIntents, polledTrackingIntents) {
+  if (!Array.isArray(polledTrackingIntents) || polledTrackingIntents.length === 0) {
+    return previousIntents;
+  }
+
+  const byId = new Map(polledTrackingIntents.map((intent) => [intent.id, intent]));
+
+  return previousIntents.map((intent) => byId.get(intent.id) ?? intent);
 }
 
 function filterAndSortMarkets(markets, aggregation, statisticalModel, sortBy, filterBy) {
@@ -1166,11 +1175,15 @@ export default function App() {
     const intervalId = window.setInterval(() => {
       void (async () => {
         try {
-          await pollTrackedTradeIntents();
-          const [_, nextStatus] = await Promise.all([
-            refreshTradeHistory(),
+          const [polledTrackingIntents, nextStatus] = await Promise.all([
+            pollTrackedTradeIntents(),
             fetchStatus()
           ]);
+          setTradeHistory((previous) => {
+            const nextHistory = mergeTrackingIntentsIntoHistory(previous, polledTrackingIntents);
+            syncTradeDraftFromHistory(nextHistory);
+            return nextHistory;
+          });
           setStatus(nextStatus);
           setLastMarketUpdate(new Date().toISOString());
           setLastTradeUpdate(new Date().toISOString());
@@ -1415,12 +1428,16 @@ export default function App() {
     setIsPollingTracking(true);
 
     try {
-      await pollTrackedTradeIntents();
-      const intents = await refreshTradeHistory();
+      const polledTrackingIntents = await pollTrackedTradeIntents();
+      setTradeHistory((previous) => {
+        const nextHistory = mergeTrackingIntentsIntoHistory(previous, polledTrackingIntents);
+        syncTradeDraftFromHistory(nextHistory);
+        return nextHistory;
+      });
       const nextStatus = await fetchStatus();
       setStatus(nextStatus);
       setLastMarketUpdate(new Date().toISOString());
-      setLastTradeUpdate(new Date().toISOString());
+      setNotice(polledTrackingIntents.length > 0 ? 'Refreshed active trade monitoring from Polymarket US.' : 'No tracked trades to refresh.');
       const stillTracking = intents.filter((intent) => intent.status === 'tracking').length;
       setNotice(stillTracking > 0 ? 'Updated active positions from live market probabilities.' : 'Polling completed and no active tracked positions remain.');
     } catch (pollError) {
@@ -2262,9 +2279,8 @@ export default function App() {
                   ? 'sync-warning'
                   : monitoringState;
                 const isVerifiedFilledPosition = hasApiVerifiedFilledPosition(intent);
-                const driftDirection = intent?.position?.entryIntent === 'ORDER_INTENT_BUY_SHORT' ? -1 : 1;
                 const drift = typeof currentProbability === 'number' && typeof entryProbability === 'number'
-                  ? (currentProbability - entryProbability) * driftDirection
+                  ? (currentProbability - entryProbability)
                   : null;
                 const unrealizedPnl = estimateTrackedPnl(intent, currentProbability, entryProbability);
                 const stopLossProbability = intent.monitoring?.stopLossProbability ?? null;
