@@ -2,13 +2,13 @@
 
 # Probis
 
-Probis is a local-first Polymarket analysis and trade-planning system. The current codebase is built around a deterministic market-scoring pipeline, a constrained LLM recommendation layer, and a lightweight operator UI for reviewing opportunities, sizing trades, and storing execution intents.
+Probis is a local-first Polymarket analysis and trade-monitoring system. It combines a deterministic market model, a constrained Ollama layer for explanation and recommendation selection, and an operator UI for reviewing events, saving trade intents, and managing live tracked positions.
 
-The hot path in this repo is deterministic event resolution, market normalization, historical aggregation, statistical scoring, recommendation synthesis, and operator-controlled execution. Live order submission and monitoring are supported, while strategy selection remains model-guided and user-supervised.
+The recommendation path stays deterministic-first. The LLM helps explain the setup and choose within allowed candidates, but event resolution, aggregation, scoring, trade shaping, and tracking are handled in code.
 
 ## Quick Start
 
-For a first run, you only need Node.js, Ollama, and the default local API URL.
+You only need Node.js 20+, Ollama, and the default local API URL for a first run.
 
 1. Install dependencies.
 
@@ -16,13 +16,13 @@ For a first run, you only need Node.js, Ollama, and the default local API URL.
 npm install
 ```
 
-2. Copy `.env.example` to `.env` and keep the defaults unless you need custom endpoints.
+2. Copy `.env.example` to `.env`.
 
 ```bash
 cp .env.example .env
 ```
 
-3. Start Ollama and make sure at least one model is available.
+3. Start Ollama and make sure a model is available.
 
 ```bash
 ollama serve
@@ -41,39 +41,36 @@ npm run dev
 curl http://localhost:4000/health
 ```
 
-6. Open the web app, resolve a Polymarket event, run the decision engine, and manage intents in the Trade Center.
+6. Open the app and work through the normal flow.
 
 - Web UI: `http://localhost:5173`
 - API: `http://localhost:4000`
-- If you want full Polymarket auth and live trading, add `POLYMARKET_US_KEY_ID` and `POLYMARKET_US_SECRET_KEY` to `.env`.
+- Typical flow: resolve event -> review analytics -> run decision engine -> save intent -> execute -> monitor
 
 ### Polymarket US Live Trading Credentials
 
-To place live buy/sell orders through `/api/trades/intents/:id/execute` and `/api/trades/intents/:id/sell`, configure these environment variables:
+Live orders require Polymarket US credentials in `.env`.
 
-- `POLYMARKET_US_KEY_ID` (or fallback `POLYMARKET_API_KEY`)
-- `POLYMARKET_US_SECRET_KEY` (or fallback `POLYMARKET_PRIVATE_KEY`)
-- `POLYMARKET_US_BASE_URL` (default `https://api.polymarket.us`)
+- `POLYMARKET_US_KEY_ID` or fallback `POLYMARKET_API_KEY`
+- `POLYMARKET_US_SECRET_KEY` or fallback `POLYMARKET_PRIVATE_KEY`
+- `POLYMARKET_US_BASE_URL` defaults to `https://api.polymarket.us`
 
-The API signs requests using Ed25519 with the format described in Polymarket US docs: `timestamp + method + path`.
+The API signs Polymarket US requests with Ed25519 using the standard `timestamp + method + path` format.
 
 ## What The Current Codebase Does
 
-- Resolves a Polymarket event from either a full URL or a slug.
-- Falls back to fuzzy active-event matching if the exact slug lookup misses.
-- Pulls live event and market state from Gamma.
-- Pulls 7-day outcome price history from the Polymarket CLOB client.
-- Builds deterministic per-market and per-outcome scores from price, momentum, volatility, liquidity share, and volume share.
-- Uses Ollama locally for two tasks: narrative event analysis and JSON recommendation selection.
-- Combines deterministic model output with LLM output into a single decision payload.
-- Lets the user preview stake, expected value, break-even, stop-loss, take-profit, and risk/reward.
-- Persists trade intents to a local JSON store.
-- Converts a saved intent into a tracking scaffold and execution-request shape.
-- Polls tracked positions against current market probability, updates unrealized P/L, and evaluates stop-loss and take-profit triggers.
-- Exposes operator controls for Sell Now, Stop Trade, and Close Intent on tracked positions.
-- Surfaces total account buying power in the top header from authenticated Polymarket US account balances.
-- Shows unrealized P/L (dollars and percent) for active tracked positions with frequent auto-refresh.
-- Uses a monitor-first Trade Center workflow with filters for all, tracking, and closed intents.
+- Resolves events from a Polymarket URL or slug.
+- Pulls active event and market data, with US-market-aware fallback handling.
+- Builds 7-day market history and aggregation snapshots.
+- Scores markets and outcomes with a deterministic statistical model.
+- Uses Ollama for event analysis and constrained recommendation selection.
+- Produces a single decision payload with action, edge, EV, confidence, and risk targets.
+- Saves trade intents to a local JSON store.
+- Executes live buy and sell orders through Polymarket US.
+- Tracks positions from venue order fills instead of relying only on portfolio snapshots.
+- Detects manual or external sells from venue history.
+- Monitors active trades with stop-loss, take-profit, unrealized P/L, and manual cash-out controls.
+- Surfaces account identity and buying power in the UI when credentials are configured.
 
 ## Workspace Layout
 
@@ -143,42 +140,38 @@ flowchart LR
 
 ### 1. API Layer
 
-The API is a single Express service in `apps/api`. It exposes four route groups:
+The API lives in `apps/api` and is split into four route groups.
 
 - `GET /health`
-	Returns service timestamp plus live Polymarket and Ollama status.
+  Returns service timestamp plus Polymarket and Ollama status.
 - `GET /api/polymarket/*`
-	Handles event discovery, direct event resolution, analytics resolution, and cache invalidation.
+  Handles event discovery, event resolution, analytics resolution, cache invalidation, and account identity.
 - `GET|POST /api/ai/*`
-	Handles Ollama availability, prompt smoke tests, and full event analysis plus decision output.
+  Handles Ollama status, prompt smoke tests, and full event analysis plus decision output.
 - `GET|POST|PATCH|DELETE /api/trades/*`
-	Handles local trade-intent storage, execution-request shaping, live monitoring updates, and tracked-position actions.
+  Handles trade-intent storage, execution, polling, sell, stop, and close actions.
 
 ### 2. Data Providers
 
-There are three external data sources and one local persistence layer:
+The current system uses three external sources plus one local store.
 
-- Gamma API
-	Used for active event discovery and detailed event lookup by slug.
-- Polymarket CLOB client
-	Used for price-history retrieval and auth/readiness checks.
-- Polymarket US API
-	Used for signed account/balance calls and live buy/sell order submission.
-- Local JSON store
-	Used for saved trade intents in `data/trade-intents.json`.
+- Gamma API for event and market discovery.
+- Polymarket CLOB client for public reads and history retrieval.
+- Polymarket US API for signed trading, balances, and account identity.
+- Local JSON persistence in `data/trade-intents.json`.
 
 ### 3. Frontend Operator Console
 
-The React app in `apps/web` is an analyst and trader console, not a passive dashboard. The flow is:
+The React app in `apps/web` is an analyst console and live trade monitor.
 
-1. Load system status and top active events.
-2. Resolve an event from URL or slug.
-3. View live markets plus historical and model overlays.
+1. Load service status, account details, and active events.
+2. Resolve an event by URL or slug.
+3. Review live markets, history, and model output.
 4. Run the decision engine.
-5. Adjust sizing and risk controls.
+5. Adjust stake and risk controls.
 6. Save or edit the trade intent.
-7. Transition the intent into tracking.
-8. Poll or manage active tracked positions from the operator console.
+7. Execute the intent into tracking.
+8. Monitor active positions and manage exits from the Trade Center.
 
 ## End-to-End Flow
 
@@ -200,26 +193,26 @@ sequenceDiagram
 
 		Web->>API: GET /api/polymarket/events/aggregation
 		API->>Gamma: Fetch event
-		API->>CLOB: Fetch 7d price history for each token
+		API->>CLOB: Fetch 7d price history
 		API->>API: Build aggregation and statistical model
 		API-->>Web: event + aggregation + statisticalModel
 
 		User->>Web: Run decision engine
 		Web->>API: POST /api/ai/analyze-event
 		API->>Ollama: Narrative analysis prompt
-		API->>Ollama: JSON decision prompt
-		API->>API: Combine LLM output with deterministic model
+		API->>Ollama: Structured decision prompt
+		API->>API: Combine deterministic + LLM output
 		API-->>Web: analysis + decisionEngine
 
-		User->>Web: Confirm trade intent
-		Web->>API: POST /api/trades/intents
-		API->>Store: Persist JSON intent
-		API-->>Web: Saved intent
+		User->>Web: Save or execute trade intent
+		Web->>API: POST /api/trades/intents or /execute
+		API->>Store: Persist or update trade intent
+		API-->>Web: Current intent state
 ```
 
 ## Decision Engine Architecture
 
-The engine is split into distinct models and stages. Each one has a separate responsibility.
+The engine is intentionally split into small stages.
 
 ### Model 1: Event Resolution Model
 
@@ -227,18 +220,9 @@ Implemented in `apps/api/src/services/polymarket/gamma.js`.
 
 Purpose:
 
-- Convert a URL or slug into a valid Polymarket event.
-- Normalize Gamma payloads into a stable internal shape.
-- Recover from slug mismatches by scoring active-event candidates.
-
-Behavior:
-
-- Extracts the slug from URLs like `/event/...` or `/events/...`.
-- Tries a direct `events/slug/:slug` lookup first.
-- If that lookup fails with `404`, fetches active events and scores fuzzy matches.
-- Normalizes event, market, and outcome fields into numeric-safe internal objects.
-
-This is effectively the input-normalization model for the rest of the engine.
+- Resolve a valid event from a URL or slug.
+- Normalize event and market payloads into a stable shape.
+- Recover from slug mismatches with active-event fallback matching.
 
 ### Model 2: Aggregation Model
 
@@ -246,30 +230,13 @@ Implemented in `apps/api/src/services/polymarket/aggregation.js`.
 
 Purpose:
 
-- Build a clean event analytics view from live market state plus short-horizon history.
+- Build a short-horizon analytics snapshot from live market state and 7-day history.
 
-Inputs:
-
-- Event liquidity and volume.
-- Market liquidity and volume.
-- Outcome token IDs.
-- 7-day CLOB price history with daily fidelity.
-
-Outputs:
+Outputs include:
 
 - `liquiditySnapshot`
 - `derivedMetrics`
 - `historicalPrices`
-
-Derived metrics include:
-
-- Top outcome by current probability.
-- Highest-volume market.
-- Highest-liquidity market.
-- Most competitive market, defined by the smallest probability gap between top two outcomes.
-- Average liquidity and volume per live market.
-
-This stage does not make trading recommendations. It prepares the feature space used by the statistical model.
 
 ### Model 3: Statistical Pricing Model
 
@@ -277,46 +244,21 @@ Implemented in `apps/api/src/services/polymarket/statistical-model.js`.
 
 Purpose:
 
-- Produce a deterministic estimate of each outcome's fair probability.
+- Estimate fair probability for each outcome.
 - Quantify edge and confidence from observable market behavior.
 
-Methodology in code:
+Core inputs:
 
-- Start with current market probability.
-- Add a momentum term from 7-day absolute price change.
-- Add a historical-anchor term from the average of first, latest, high, and low price observations.
-- Apply a volatility penalty when the price range is wide.
-- Weight adjustments by market quality and sample strength.
+- current probability
+- momentum
+- historical anchor
+- volatility
+- liquidity share
+- volume share
 
-Core features:
+For each outcome, the model returns estimated probability, edge, confidence, and feature diagnostics.
 
-- `currentProbability`
-- `momentum`
-- `volatility`
-- `quality`
-	Average of liquidity share and volume share.
-- `sampleStrength`
-	A capped function of available history points.
-- `historicalAnchor`
-
-For each outcome, the model returns:
-
-- `estimatedProbability`
-- `edge = estimatedProbability - currentProbability`
-- `confidence`
-- feature diagnostics
-
-For each market, the model returns:
-
-- average market confidence
-- the best positive-edge outcome as `opportunity`
-
-For the event, the model returns:
-
-- `bestOpportunity`
-- `highestConfidenceMarket`
-
-Conceptually, the deterministic estimate is:
+Conceptually, the model starts from the current market price and adjusts it with trend and anchor terms:
 
 $$
 rawEstimate
@@ -325,45 +267,31 @@ rawEstimate
 + ((\text{anchor} - p_{current}) \times w_{anchor})
 $$
 
-followed by a volatility-based shrinkage toward $0.5$, and then normalization across outcomes in the same market.
+It then applies normalization and volatility-aware shrinkage.
 
 ### Model 4: LLM Analysis Model
 
-Implemented in `apps/api/src/services/ollama.js` via `buildEventAnalysisPrompt` and `runAiTest`.
+Implemented in `apps/api/src/services/ollama.js`.
 
 Purpose:
 
-- Produce a concise human-readable readout of event state, strongest opportunity, divergence reason, and key risk.
+- Produce a short human-readable explanation of the event, opportunity, and risk.
 
-This model is explanatory, not authoritative. It does not directly choose the final action.
+This layer is explanatory, not authoritative.
 
 ### Model 5: LLM Candidate Selection Model
 
-Implemented in `apps/api/src/services/ollama.js` via `buildDecisionEnginePrompt` and `runAiJson`.
+Implemented in `apps/api/src/services/ollama.js`.
 
 Purpose:
 
-- Choose one recommendation from the top deterministic candidates.
+- Choose one recommendation from allowed candidates.
 - Return structured JSON only.
 
-Important constraint:
+Constraint:
 
-- The LLM is not allowed to invent a market or outcome.
-- It is limited to the top three deterministic candidates with the exact provided `marketQuestion` and `outcomeLabel` values.
-
-Expected JSON schema:
-
-```json
-{
-	"marketQuestion": "string",
-	"outcomeLabel": "string",
-	"confidence": 0.0,
-	"agreeWithModel": true,
-	"thesis": "string",
-	"keyRisk": "string",
-	"reasons": ["string", "string", "string"]
-}
-```
+- The model is not allowed to invent a market or outcome.
+- Fallback logic keeps a valid recommendation even when the ideal modeled candidate is missing.
 
 ### Model 6: Final Recommendation Combiner
 
@@ -371,26 +299,14 @@ Implemented in `apps/api/src/services/decision-engine.js`.
 
 Purpose:
 
-- Merge deterministic ranking with LLM selection.
-- Convert probabilities into an action, stake suggestion, EV estimate, and risk targets.
+- Merge deterministic ranking with the structured LLM selection.
+- Convert that into an action, EV estimate, stake suggestion, and risk targets.
 
-How it works:
-
-- Validate the LLM selection against actual model outputs.
-- Fall back to the model's best opportunity if the LLM output is missing or inconsistent.
-- Compute combined confidence as the average of model confidence and LLM confidence.
-- Compute `expectedValuePerDollar` as:
+The EV calculation is:
 
 $$
 EV = \frac{p_{model}}{p_{market}} - 1
 $$
-
-- Generate an action:
-	- `buy` if edge is positive enough, confidence is high enough, and the LLM agrees.
-	- `avoid` if edge is negative enough or the LLM has low confidence and disagrees.
-	- otherwise `watch`.
-- Suggest a bankroll fraction for buys, capped between 1% and 20%.
-- Generate default stop-loss and take-profit probabilities from current probability and edge magnitude.
 
 Outputs include:
 
@@ -406,7 +322,6 @@ Outputs include:
 - `stopLossProbability`
 - `takeProfitProbability`
 - `riskRewardRatio`
-- `thesis`, `keyRisk`, and `reasons`
 
 ## Engine Dataflow
 
@@ -429,7 +344,7 @@ flowchart TD
 		K --> M
 		M --> N[Trade Suggestion and Risk Targets]
 		N --> O[Saved Trade Intent]
-		O --> P[Tracking Scaffold]
+		O --> P[Tracked Position]
 ```
 
 ## Caching Design
@@ -439,56 +354,48 @@ Implemented in `apps/api/src/services/polymarket/event-data.js`.
 Behavior:
 
 - Analytics are cached in memory by normalized event slug.
-- Each cache entry has a TTL controlled by `ANALYTICS_CACHE_TTL_MS`.
-- `refresh=true` bypasses cache for a single request.
-- `POST /api/polymarket/events/aggregation/invalidate` clears one event or all events.
-
-This cache covers the expensive analytics path: event fetch, history aggregation, and statistical-model construction.
+- Cache TTL is controlled by `ANALYTICS_CACHE_TTL_MS`.
+- `refresh=true` bypasses cache for one request.
+- `POST /api/polymarket/events/aggregation/invalidate` clears one event or all cached analytics.
 
 ## Trade Intent Lifecycle
 
 Implemented in `apps/api/src/services/trade-intents.js`.
 
-The backend manages an intent lifecycle and supports live Polymarket US execution:
+Current lifecycle:
 
-1. Build a validated intent payload.
+1. Build and validate an intent payload.
 2. Persist it to local JSON.
-3. Rebuild an execution-request shape from edited values.
-4. Resolve market metadata and submit a live buy order on execute.
-5. Move the intent to `tracking` and attach a monitoring scaffold with stop-loss and take-profit thresholds.
-6. Trigger live sell orders for manual exits or threshold hits.
+3. Derive an execution-request shape.
+4. Resolve market metadata and submit a live buy on execute.
+5. Move the intent to `tracking` with stop-loss and take-profit thresholds.
+6. Poll tracked positions against live venue state and current probability.
+7. Trigger live sells for manual exits or threshold hits.
 
-Execution-request payloads include:
+Important current behavior:
 
-- venue and side metadata
-- trade amount
-- entry probability
-- estimated shares
-- stop-loss and take-profit probabilities
-- max slippage and venue submission metadata
-
-Execution behavior:
-
-- Buy and sell requests are routed to Polymarket US `/v1/orders` with signed headers.
-- Outcome intent mapping supports both YES/NO and named outcomes (for example, sports teams).
-- Slug resolution handles common canonicalization differences (for example, prefixed `aec-` slugs).
-- If the venue requires limit pricing, order placement falls back to limit payloads with derived price/quantity.
+- Live trading is routed through Polymarket US.
+- Outcome intent mapping supports YES/NO and named outcomes.
+- Position state is reconciled from order fills, not only portfolio snapshots.
+- External or manual sells can be detected from venue history.
+- Sell exits stay open only when the venue actually has a non-terminal pending exit.
+- If a venue exit expires or is rejected, the trade remains active and is marked as a failed exit instead of being falsely closed.
 
 ## Frontend UX Architecture
 
 Implemented primarily in `apps/web/src/App.jsx`.
 
-The UI is organized around one analyst workflow:
+The UI is built around one operator workflow:
 
-1. Inspect live system/ticker state and account buying power.
-2. Pick a high-volume event or paste a direct event URL.
-3. Review market board, sparkline history, and event metrics.
-4. Rank markets by model edge, confidence, liquidity, or momentum.
-5. Run the decision engine.
-6. Preview the recommended trade with current price, sizing, editable risk inputs, and hover explanations.
-7. Save, restore, edit, delete, start tracking, or close a trade intent.
+1. Inspect service status, account identity, and buying power.
+2. Pick an active event or paste a direct URL.
+3. Review live markets, historical context, and model overlays.
+4. Run the decision engine.
+5. Preview stake, EV, stop-loss, take-profit, and risk/reward.
+6. Save, edit, delete, execute, stop, sell, or close intents.
+7. Monitor active trades with auto-refresh, unrealized P/L, and exit state badges.
 
-The frontend keeps a local draft in browser storage so an in-progress recommendation survives refresh, while preventing restoration of tracking or closed intents.
+The frontend also keeps a local draft in browser storage so in-progress analysis survives a refresh.
 
 ## Configuration
 
@@ -509,9 +416,9 @@ ANALYTICS_CACHE_TTL_MS=300000
 
 Notes:
 
-- `POLYMARKET_PRIVATE_KEY` is used to validate signer compatibility and derive CLOB API credentials.
-- Gamma event reads still work even when trading credentials are not ready.
-- Ollama must be running locally and have at least one available model.
+- Gamma reads and analytics still work without trading credentials.
+- Ollama must be running locally with an available model.
+- Polymarket US credentials are only required for live trading and account-level reads.
 
 ## Development
 
@@ -519,7 +426,7 @@ Requirements:
 
 - Node.js 20+
 - A local Ollama instance for AI routes
-- Polymarket credentials if you want full auth/readiness checks
+- Polymarket credentials if you want authenticated trading and account checks
 
 Install and run:
 
@@ -545,6 +452,7 @@ curl http://localhost:4000/health
 - `GET /`
 - `GET /health`
 - `GET /api/polymarket/status`
+- `GET /api/polymarket/account-identity`
 - `GET /api/ai/status`
 
 ### Event discovery and analytics
@@ -575,7 +483,7 @@ curl http://localhost:4000/health
 
 ## API Examples
 
-These examples are trimmed to the fields most useful for integration and debugging. Actual payloads include additional fields.
+These examples are intentionally short. Actual payloads include more fields.
 
 ### 1. Health check
 
@@ -589,28 +497,25 @@ Response:
 
 ```json
 {
-	"ok": true,
-	"service": "probis-api",
-	"timestamp": "2026-04-15T18:42:10.000Z",
-	"polymarket": {
-		"configured": false,
-		"host": "https://clob.polymarket.com",
-		"chainId": 137,
-		"publicReadOk": true,
-		"auth": {
-			"privateKeyValid": false,
-			"signerAddress": null,
-			"derivedApiCredsReady": false,
-			"derivedApiKeyMatchesEnv": null,
-			"error": null
-		}
-	},
-	"ollama": {
-		"reachable": true,
-		"requestedModel": "gemma3:latest",
-		"resolvedModel": "gemma3:latest",
-		"availableModels": ["gemma3:latest"]
-	}
+  "ok": true,
+  "service": "probis-api",
+  "timestamp": "2026-04-15T18:42:10.000Z",
+  "polymarket": {
+    "configured": false,
+    "host": "https://clob.polymarket.com",
+    "chainId": 137,
+    "usTrading": {
+      "configured": false,
+      "authenticated": false,
+      "buyingPower": null
+    },
+    "publicReadOk": true
+  },
+  "ollama": {
+    "reachable": true,
+    "requestedModel": "gemma3:latest",
+    "resolvedModel": "gemma3:latest"
+  }
 }
 ```
 
@@ -626,42 +531,24 @@ Response:
 
 ```json
 {
-	"ok": true,
-	"event": {
-		"id": "12345",
-		"slug": "will-the-fed-cut-rates-in-june",
-		"title": "Will the Fed cut rates in June?",
-		"description": "...",
-		"active": true,
-		"closed": false,
-		"endDate": "2026-06-18T00:00:00Z",
-		"startDate": "2026-01-10T00:00:00Z",
-		"liquidity": 184522.12,
-		"volume": 912004.55,
-		"markets": [
-			{
-				"id": "mkt_1",
-				"question": "Will the Fed cut rates in June?",
-				"conditionId": "0xabc123",
-				"liquidity": 184522.12,
-				"volume": 912004.55,
-				"outcomes": [
-					{
-						"label": "Yes",
-						"price": 0.42,
-						"probability": 0.42,
-						"tokenId": "1001"
-					},
-					{
-						"label": "No",
-						"price": 0.58,
-						"probability": 0.58,
-						"tokenId": "1002"
-					}
-				]
-			}
-		]
-	}
+  "ok": true,
+  "event": {
+    "slug": "will-the-fed-cut-rates-in-june",
+    "title": "Will the Fed cut rates in June?",
+    "active": true,
+    "closed": false,
+    "markets": [
+      {
+        "question": "Will the Fed cut rates in June?",
+        "conditionId": "0xabc123",
+        "slug": "will-the-fed-cut-rates-in-june",
+        "outcomes": [
+          { "label": "Yes", "probability": 0.42 },
+          { "label": "No", "probability": 0.58 }
+        ]
+      }
+    ]
+  }
 }
 ```
 
@@ -677,81 +564,31 @@ Response:
 
 ```json
 {
-	"ok": true,
-	"event": {
-		"id": "12345",
-		"slug": "will-the-fed-cut-rates-in-june",
-		"title": "Will the Fed cut rates in June?",
-		"resolvedFromFallback": false,
-		"requestedSlug": null
-	},
-	"aggregation": {
-		"generatedAt": "2026-04-15T18:45:00.000Z",
-		"historyWindow": {
-			"intervalLabel": "7d",
-			"fidelityMinutes": 1440
-		},
-		"liquiditySnapshot": {
-			"eventLiquidity": 184522.12,
-			"eventVolume": 912004.55,
-			"liveMarketCount": 1,
-			"pricedOutcomeCount": 2
-		},
-		"derivedMetrics": {
-			"topOutcome": {
-				"question": "Will the Fed cut rates in June?",
-				"label": "No",
-				"probability": 0.58
-			},
-			"highestVolumeMarket": {
-				"question": "Will the Fed cut rates in June?",
-				"value": 912004.55
-			},
-			"mostCompetitiveMarket": {
-				"question": "Will the Fed cut rates in June?",
-				"probabilityGap": 0.16,
-				"leadingOutcome": "No"
-			}
-		},
-		"historicalPrices": {
-			"markets": [
-				{
-					"question": "Will the Fed cut rates in June?",
-					"outcomes": [
-						{
-							"label": "Yes",
-							"currentProbability": 0.42,
-							"historySummary": {
-								"pointCount": 7,
-								"firstPrice": 0.37,
-								"latestPrice": 0.42,
-								"percentChange": 0.1351
-							}
-						}
-					]
-				}
-			]
-		}
-	},
-	"statisticalModel": {
-		"generatedAt": "2026-04-15T18:45:00.000Z",
-		"methodology": {
-			"name": "first-pass-statistical-model"
-		},
-		"summary": {
-			"eventSlug": "will-the-fed-cut-rates-in-june",
-			"liveMarketCount": 1,
-			"bestOpportunity": {
-				"question": "Will the Fed cut rates in June?",
-				"label": "Yes",
-				"currentProbability": 0.42,
-				"estimatedProbability": 0.47,
-				"edge": 0.05,
-				"confidence": 0.64,
-				"score": 0.032
-			}
-		}
-	}
+  "ok": true,
+  "event": {
+    "slug": "will-the-fed-cut-rates-in-june",
+    "title": "Will the Fed cut rates in June?"
+  },
+  "aggregation": {
+    "generatedAt": "2026-04-15T18:45:00.000Z",
+    "derivedMetrics": {
+      "topOutcome": {
+        "question": "Will the Fed cut rates in June?",
+        "label": "No",
+        "probability": 0.58
+      }
+    }
+  },
+  "statisticalModel": {
+    "summary": {
+      "bestOpportunity": {
+        "question": "Will the Fed cut rates in June?",
+        "label": "Yes",
+        "edge": 0.05,
+        "confidence": 0.64
+      }
+    }
+  }
 }
 ```
 
@@ -761,67 +598,31 @@ Request:
 
 ```bash
 curl -X POST http://localhost:4000/api/ai/analyze-event \
-	-H "Content-Type: application/json" \
-	-d '{"input":"will-the-fed-cut-rates-in-june"}'
+  -H "Content-Type: application/json" \
+  -d '{"input":"will-the-fed-cut-rates-in-june"}'
 ```
 
 Response:
 
 ```json
 {
-	"ok": true,
-	"event": {
-		"slug": "will-the-fed-cut-rates-in-june",
-		"title": "Will the Fed cut rates in June?"
-	},
-	"aggregation": {
-		"derivedMetrics": {
-			"topOutcome": {
-				"label": "No",
-				"probability": 0.58
-			}
-		}
-	},
-	"statisticalModel": {
-		"summary": {
-			"bestOpportunity": {
-				"question": "Will the Fed cut rates in June?",
-				"label": "Yes",
-				"edge": 0.05,
-				"confidence": 0.64
-			}
-		}
-	},
-	"analysis": "- Event state: ...\n- Strongest market/opportunity: ...\n- Why the model differs: ...\n- Key risk: ...",
-	"decisionEngine": {
-		"generatedAt": "2026-04-15T18:47:00.000Z",
-		"action": "buy",
-		"recommendation": {
-			"marketQuestion": "Will the Fed cut rates in June?",
-			"outcomeLabel": "Yes",
-			"currentProbability": 0.42,
-			"modelProbability": 0.47,
-			"edge": 0.05,
-			"expectedValuePerDollar": 0.119,
-			"combinedConfidence": 0.67,
-			"modelConfidence": 0.64,
-			"llmConfidence": 0.7,
-			"agreementWithModel": true,
-			"suggestedStakeFraction": 0.134,
-			"stopLossProbability": 0.39,
-			"takeProfitProbability": 0.48,
-			"riskRewardRatio": 2.0,
-			"thesis": "The recent upward move in Yes has not fully caught up with the model estimate.",
-			"keyRisk": "Macro headlines could reverse sentiment quickly.",
-			"reasons": [
-				"Positive 7d momentum",
-				"Model fair value above market price",
-				"Adequate liquidity for a manual entry"
-			]
-		}
-	},
-	"model": "gemma3:latest",
-	"requestedModel": "gemma3:latest"
+  "ok": true,
+  "analysis": "- Event state: ...\n- Strongest setup: ...\n- Key risk: ...",
+  "decisionEngine": {
+    "action": "buy",
+    "recommendation": {
+      "marketQuestion": "Will the Fed cut rates in June?",
+      "outcomeLabel": "Yes",
+      "currentProbability": 0.42,
+      "modelProbability": 0.47,
+      "edge": 0.05,
+      "expectedValuePerDollar": 0.119,
+      "combinedConfidence": 0.67,
+      "suggestedStakeFraction": 0.134,
+      "stopLossProbability": 0.39,
+      "takeProfitProbability": 0.48
+    }
+  }
 }
 ```
 
@@ -831,57 +632,47 @@ Request:
 
 ```bash
 curl -X POST http://localhost:4000/api/trades/intents \
-	-H "Content-Type: application/json" \
-	-d '{
-		"eventSlug": "will-the-fed-cut-rates-in-june",
-		"eventTitle": "Will the Fed cut rates in June?",
-		"conditionId": "0xabc123",
-		"marketQuestion": "Will the Fed cut rates in June?",
-		"outcomeLabel": "Yes",
-		"action": "buy",
-		"tradeAmount": 100,
-		"recommendation": {
-			"currentProbability": 0.42,
-			"modelProbability": 0.47,
-			"edge": 0.05
-		},
-		"tradeSuggestion": {
-			"amount": 100,
-			"stopLossProbability": 0.39,
-			"takeProfitProbability": 0.48
-		}
-	}'
+  -H "Content-Type: application/json" \
+  -d '{
+    "eventSlug": "will-the-fed-cut-rates-in-june",
+    "eventTitle": "Will the Fed cut rates in June?",
+    "conditionId": "0xabc123",
+    "marketQuestion": "Will the Fed cut rates in June?",
+    "outcomeLabel": "Yes",
+    "action": "buy",
+    "tradeAmount": 100,
+    "recommendation": {
+      "currentProbability": 0.42,
+      "modelProbability": 0.47,
+      "edge": 0.05
+    },
+    "tradeSuggestion": {
+      "amount": 100,
+      "stopLossProbability": 0.39,
+      "takeProfitProbability": 0.48
+    }
+  }'
 ```
 
 Response:
 
 ```json
 {
-	"ok": true,
-	"intent": {
-		"id": "9f4cf9c3-faf9-4f8f-84fa-0fa5244f0fd4",
-		"status": "confirmed",
-		"createdAt": "2026-04-15T18:49:00.000Z",
-		"confirmedAt": "2026-04-15T18:49:00.000Z",
-		"eventSlug": "will-the-fed-cut-rates-in-june",
-		"marketQuestion": "Will the Fed cut rates in June?",
-		"outcomeLabel": "Yes",
-		"tradeAmount": 100,
-		"tradeSuggestion": {
-			"amount": 100,
-			"stopLossProbability": 0.39,
-			"takeProfitProbability": 0.48
-		},
-		"executionRequest": {
-			"requestType": "market-buy-intent",
-			"venue": "polymarket-us",
-			"side": "buy",
-			"orderType": "market-intent",
-			"readyForExecution": false,
-			"entryProbability": 0.42,
-			"sharesEstimate": 238.09523809523807
-		}
-	}
+  "ok": true,
+  "intent": {
+    "id": "9f4cf9c3-faf9-4f8f-84fa-0fa5244f0fd4",
+    "status": "confirmed",
+    "eventSlug": "will-the-fed-cut-rates-in-june",
+    "marketQuestion": "Will the Fed cut rates in June?",
+    "outcomeLabel": "Yes",
+    "tradeAmount": 100,
+    "executionRequest": {
+      "venue": "polymarket-us",
+      "side": "buy",
+      "entryProbability": 0.42,
+      "sharesEstimate": 238.09523809523807
+    }
+  }
 }
 ```
 
@@ -897,24 +688,18 @@ Response:
 
 ```json
 {
-	"ok": true,
-	"intent": {
-		"id": "9f4cf9c3-faf9-4f8f-84fa-0fa5244f0fd4",
-		"status": "tracking",
-		"executionRequest": {
-			"readyForExecution": true,
-			"preparedAt": "2026-04-15T18:50:00.000Z"
-		},
-		"monitoring": {
-			"state": "active",
-			"activatedAt": "2026-04-15T18:50:00.000Z",
-			"currentProbability": 0.42,
-			"entryProbability": 0.42,
-			"stopLossProbability": 0.39,
-			"takeProfitProbability": 0.48,
-			"notes": "Monitoring live probability against configured stop-loss and take-profit levels."
-		}
-	}
+  "ok": true,
+  "intent": {
+    "id": "9f4cf9c3-faf9-4f8f-84fa-0fa5244f0fd4",
+    "status": "tracking",
+    "monitoring": {
+      "state": "active",
+      "currentProbability": 0.42,
+      "entryProbability": 0.42,
+      "stopLossProbability": 0.39,
+      "takeProfitProbability": 0.48
+    }
+  }
 }
 ```
 
@@ -922,34 +707,33 @@ Response:
 
 What this repo does today:
 
-- event discovery
-- event normalization
+- event discovery and normalization
 - market history aggregation
 - deterministic opportunity scoring
-- local LLM-assisted explanation and recommendation
+- local LLM-assisted analysis and constrained recommendation selection
 - risk-target generation
 - trade intent persistence
-- live buy/sell execution through Polymarket US
-- active intent polling with stop-loss/take-profit evaluation
+- live buy and sell execution through Polymarket US
+- tracked-position polling with stop-loss and take-profit evaluation
 - manual overrides for sell, stop, and close actions
-- Trade Center monitoring with unrealized P/L display
+- Trade Center monitoring with unrealized P/L and exit state display
 
 What this repo does not do yet:
 
 - portfolio accounting
-- backtesting and model-evaluation infrastructure
+- backtesting or model-evaluation tooling
 - multi-venue routing
 - fully autonomous strategy deployment without operator review
 
 ## Practical Summary
 
-The current system design is a layered decision-support stack:
+Probis is a layered decision-support stack:
 
 1. Resolve and normalize market data.
 2. Aggregate short-horizon market history.
-3. Score each outcome with deterministic logic.
-4. Let the LLM explain and select only within constrained candidates.
-5. Combine both views into an operator-facing recommendation.
-6. Execute, track, and manage intents in the Trade Center with live polling and risk triggers.
+3. Score outcomes with deterministic logic.
+4. Let the LLM explain and select only within bounded candidates.
+5. Turn that into an operator-facing trade suggestion.
+6. Execute, track, and manage live intents from the Trade Center.
 
-That makes the codebase suitable for research, triage, live supervised execution, and trade management while keeping the core recommendation path anchored in observable market features rather than unconstrained model output.
+That keeps the hot path grounded in market data and code while still giving the operator a fast interface for review, execution, and live monitoring.
