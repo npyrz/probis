@@ -1,14 +1,9 @@
-Background market scanner service that scans the full tradable Polymarket US universe on a schedule and ranks candidates.
-Scanner API endpoint that runs event analytics + statistical model + ranking and returns Opportunity Board rows.
-Opportunity Board features: edge, EV per dollar, confidence, liquidity, spread, time-to-resolution, momentum, signal source, and class labels (strong buy / soft buy / watchlist / avoid).
-Auto-generated draft trade intents from top-ranked opportunities (recommendation-first, not auto-execution).
 Agent mode for live trades with staged-entry ladder (initial entry, add 1, add 2, no more adds).
 Partial take-profit + trailing-stop behavior for active positions.
 Blended position accounting for multi-leg entries (blended entry probability, blended cost basis, per-leg attribution).
 Portfolio risk engine with hard caps by market, event cluster, league, day, and regime.
 PostgreSQL storage for intents, fills, quotes, model versions, and outcome attribution (replace JSON-file persistence).
 Optional true terminal workflow (CLI/TUI): scan, inspect, draft, execute, monitor, rebalance.
-Update / Fix / Improve (Existing System)
 
 Enforce venue authority model: Polymarket US is authoritative for tradability, shares, fills; discovery feeds are candidate discovery only.
 Upgrade active trade loop from stop-loss/take-profit-only to re-decision each poll: hold, add, trim, exit.
