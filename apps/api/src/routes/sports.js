@@ -2,7 +2,7 @@ import { Router } from 'express';
 
 import { getEnv } from '../config/env.js';
 import { resolveEventAnalytics } from '../services/polymarket/event-data.js';
-import { runSportsBacktest } from '../services/sports/backtest.js';
+import { runSportsBacktest, runSportsPerformanceDashboard } from '../services/sports/backtest.js';
 import { loadPolymarketUsTeamUniverse, loadSportsHistoryStore } from '../services/sports/history-store.js';
 import { importMlbHistory } from '../services/sports/mlb-importer.js';
 import { importNbaHistory } from '../services/sports/nba-importer.js';
@@ -137,7 +137,8 @@ router.post('/api/sports/backtest', async (request, response) => {
       endDate: request.body?.endDate,
       phase: String(request.body?.phase ?? 'all').toLowerCase(),
       minTrainingGames: Number.parseInt(request.body?.minTrainingGames ?? '10', 10),
-      calibrationBucketSize: Number.parseFloat(request.body?.calibrationBucketSize ?? '0.1')
+      calibrationBucketSize: Number.parseFloat(request.body?.calibrationBucketSize ?? '0.1'),
+      walkForwardMinCalibrationSampleSize: Number.parseInt(request.body?.walkForwardMinCalibrationSampleSize ?? '250', 10)
     });
 
     response.json({
@@ -148,6 +149,28 @@ router.post('/api/sports/backtest', async (request, response) => {
     response.status(400).json({
       ok: false,
       error: error instanceof Error ? error.message : 'Unable to run sports backtest'
+    });
+  }
+});
+
+router.get('/api/sports/performance-dashboard', async (request, response) => {
+  try {
+    const result = await runSportsPerformanceDashboard({
+      startDate: request.query.startDate,
+      endDate: request.query.endDate,
+      minTrainingGames: Number.parseInt(request.query.minTrainingGames ?? '10', 10),
+      calibrationBucketSize: Number.parseFloat(request.query.calibrationBucketSize ?? '0.1'),
+      walkForwardMinCalibrationSampleSize: Number.parseInt(request.query.walkForwardMinCalibrationSampleSize ?? '250', 10)
+    });
+
+    response.json({
+      ok: true,
+      result
+    });
+  } catch (error) {
+    response.status(400).json({
+      ok: false,
+      error: error instanceof Error ? error.message : 'Unable to run sports performance dashboard'
     });
   }
 });

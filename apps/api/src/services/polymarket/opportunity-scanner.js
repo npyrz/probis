@@ -1,6 +1,7 @@
 import axios from 'axios';
 
 import { buildStatisticalModel } from './statistical-model.js';
+import { inferCompetitionPhaseFromEventText } from '../sports/canonicalization.js';
 
 const scannerState = {
   snapshot: createEmptySnapshot(),
@@ -288,6 +289,11 @@ function getImpliedSpreadFromMarket(eventMarket) {
 }
 
 function buildLightweightAnalyticsFromEvent(event) {
+  const competitionPhase = inferCompetitionPhaseFromEventText(
+    event?.title,
+    event?.description,
+    ...(Array.isArray(event?.markets) ? event.markets.map((market) => market?.question) : [])
+  );
   const normalizedMarkets = normalizeEventMarkets(event?.markets);
   const rawEventLiquidity = toNumberOrNull(event?.liquidity);
   const rawEventVolume = toNumberOrNull(event?.volume);
@@ -297,6 +303,7 @@ function buildLightweightAnalyticsFromEvent(event) {
     id: event.id ?? null,
     slug: event.slug ?? null,
     title: event.title ?? event.slug ?? null,
+    category: typeof event?.category === 'string' ? event.category.toLowerCase() : null,
     description: event.description ?? '',
     active: Boolean(event.active),
     closed: Boolean(event.closed),
@@ -320,6 +327,7 @@ function buildLightweightAnalyticsFromEvent(event) {
       markets: pricedMarkets.map((market) => ({
         conditionId: market.conditionId,
         question: market.question,
+        category: typeof market?.category === 'string' ? market.category.toLowerCase() : null,
         liquidity: toNumberOrNull(market.liquidity),
         volume: toNumberOrNull(market.volume),
         liquidityShare: typeof normalizedEvent.liquidity === 'number' && normalizedEvent.liquidity > 0
@@ -332,6 +340,9 @@ function buildLightweightAnalyticsFromEvent(event) {
     },
     sportsContext: {
       generatedAt: new Date().toISOString(),
+      competitionPhase,
+      competitionPhaseSource: 'text-heuristic',
+      teamImpactSummary: [],
       recognizedMarketCount: 0,
       historyGameCount: 0,
       markets: []
@@ -340,6 +351,7 @@ function buildLightweightAnalyticsFromEvent(event) {
       markets: pricedMarkets.map((market) => ({
         conditionId: market.conditionId,
         question: market.question,
+        category: typeof market?.category === 'string' ? market.category.toLowerCase() : null,
         outcomes: (Array.isArray(market.outcomes) ? market.outcomes : [])
           .map((outcome) => {
             const probability = toNumberOrNull(outcome?.probability);
@@ -543,13 +555,20 @@ async function buildMarketOpportunity(env, analytics, statisticalMarket) {
   const modelProbability = opportunity.estimatedProbability ?? null;
   const timeToResolutionMs = getTimeToResolutionMs(eventMarket.endDate ?? analytics.event.endDate ?? null);
   const expectedValuePerDollar = getExpectedValuePerDollar(currentProbability, modelProbability);
+  const hasSportsContext = Boolean(opportunity.features?.sportsLeague ?? statisticalMarket.sportsContext?.league);
+  const modelFamily = String(opportunity.features?.modelFamily ?? '').trim();
+  const resolvedSignalSource = modelFamily === 'sports-model'
+    ? 'sports-model'
+    : (modelFamily === 'politics-model' ? 'politics-model' : 'market-microstructure');
 
   const result = {
     eventId: analytics.event.id,
     eventSlug: analytics.event.slug,
     eventTitle: analytics.event.title,
     eventEndDate: analytics.event.endDate,
+    eventCategory: analytics.event.category ?? null,
     marketSlug: eventMarket.slug ?? null,
+    marketCategory: typeof eventMarket?.category === 'string' ? eventMarket.category.toLowerCase() : null,
     conditionId: statisticalMarket.conditionId,
     marketQuestion: statisticalMarket.question,
     outcomeLabel: opportunity.label,
@@ -573,8 +592,25 @@ async function buildMarketOpportunity(env, analytics, statisticalMarket) {
     spreadSource: typeof impliedSpread === 'number' ? 'implied-market-probabilities' : 'unavailable',
     timeToResolutionMs,
     sportsLeague: opportunity.features?.sportsLeague ?? statisticalMarket.sportsContext?.league ?? null,
-    signalSource: opportunity.features?.sportsModel ? 'sports-model' : 'market-microstructure',
+    signalSource: resolvedSignalSource,
     sportsModel: opportunity.features?.sportsModel ?? null,
+    politicsModel: opportunity.features?.politicsModel ?? null,
+    sportsPhase: hasSportsContext
+      ? (statisticalMarket.sportsContext?.features?.competitionPhase
+        ?? analytics.aggregation?.sportsContext?.competitionPhase
+        ?? null)
+      : null,
+    sportsPhaseSource: hasSportsContext
+      ? (analytics.aggregation?.sportsContext?.competitionPhaseSource ?? null)
+      : null,
+    sportsImpactDirection: opportunity.features?.sportsImpactDirection ?? null,
+    sportsImpactProbabilityDelta: opportunity.features?.sportsImpactProbabilityDelta ?? null,
+    teamImpactSummary: Array.isArray(analytics.aggregation?.sportsContext?.teamImpactSummary)
+      ? analytics.aggregation.sportsContext.teamImpactSummary
+          .slice()
+          .sort((left, right) => Math.abs(right?.directionalScore ?? 0) - Math.abs(left?.directionalScore ?? 0))
+          .slice(0, 3)
+      : [],
     generatedAt: analytics.statisticalModel?.generatedAt ?? analytics.aggregation?.generatedAt ?? new Date().toISOString()
   };
 

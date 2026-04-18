@@ -205,6 +205,46 @@ function getOpportunityClassificationClassName(value) {
   return `scanner-class-chip scanner-class-chip-${String(value ?? 'watchlist')}`;
 }
 
+function formatCompetitionPhase(value) {
+  if (value === 'playoffs') {
+    return 'Playoffs';
+  }
+
+  if (value === 'regular') {
+    return 'Regular';
+  }
+
+  return 'Unknown';
+}
+
+function formatCompetitionPhaseSource(value) {
+  if (value === 'espn-season-type') {
+    return 'ESPN Season Type';
+  }
+
+  if (value === 'text-heuristic') {
+    return 'Text Heuristic';
+  }
+
+  return 'Unavailable';
+}
+
+function formatImpactDirection(value) {
+  if (value === 'positive') {
+    return 'Positive';
+  }
+
+  if (value === 'negative') {
+    return 'Negative';
+  }
+
+  if (value === 'neutral') {
+    return 'Neutral';
+  }
+
+  return 'Unavailable';
+}
+
 function formatIntentStatus(intent) {
   if (intent.status === 'draft') {
     return 'Draft';
@@ -2864,6 +2904,20 @@ export default function App() {
                     key={`${opportunity.eventSlug}-${opportunity.conditionId}-${opportunity.outcomeLabel}`}
                     className="trade-history-item opportunity-board-item"
                   >
+                    {(() => {
+                      const teamImpactSummary = Array.isArray(opportunity.teamImpactSummary)
+                        ? opportunity.teamImpactSummary
+                        : [];
+                      const hasNonZeroImpactDelta = typeof opportunity.sportsImpactProbabilityDelta === 'number'
+                        && Math.abs(opportunity.sportsImpactProbabilityDelta) >= 0.001;
+                      const hasSportsAuditDetails = opportunity.signalSource === 'sports-model'
+                        || hasNonZeroImpactDelta
+                        || Boolean(opportunity.sportsPhase)
+                        || Boolean(opportunity.sportsPhaseSource)
+                        || teamImpactSummary.length > 0;
+
+                      return (
+                        <>
                     <div className="panel-heading panel-heading-inline">
                       <div>
                         <p className="eyebrow">#{opportunity.rank} {formatOpportunityClassification(opportunity.classification)}</p>
@@ -2917,6 +2971,48 @@ export default function App() {
                       </article>
                     </div>
 
+                    {hasSportsAuditDetails ? (
+                      <section className="opportunity-board-audit">
+                        <p className="eyebrow opportunity-board-audit-eyebrow">Sports Audit</p>
+                        <div className="decision-rationale-grid compact-preview-grid opportunity-board-audit-grid">
+                          <article>
+                            <span>Competition Phase</span>
+                            <strong>{formatCompetitionPhase(opportunity.sportsPhase)}</strong>
+                          </article>
+                          <article>
+                            <span>Phase Source</span>
+                            <strong>{formatCompetitionPhaseSource(opportunity.sportsPhaseSource)}</strong>
+                          </article>
+                          <article>
+                            <span>Impact Direction</span>
+                            <strong>{formatImpactDirection(opportunity.sportsImpactDirection)}</strong>
+                          </article>
+                          <article>
+                            <span>Impact Delta</span>
+                            <strong>{formatSignedPercent(opportunity.sportsImpactProbabilityDelta)}</strong>
+                          </article>
+                        </div>
+
+                        {teamImpactSummary.length > 0 ? (
+                          <div className="opportunity-board-impact-list" role="list" aria-label="Top team impacts">
+                            {teamImpactSummary.map((teamImpact) => (
+                              <article
+                                key={`${opportunity.eventSlug}-${opportunity.conditionId}-${teamImpact.teamId ?? teamImpact.teamName}`}
+                                className="opportunity-board-impact-item"
+                                role="listitem"
+                              >
+                                <span>{teamImpact.teamName ?? teamImpact.teamId ?? 'Unknown Team'}</span>
+                                <strong>{formatSignedPercent(teamImpact.probabilityDelta)}</strong>
+                                <small>{formatImpactDirection(teamImpact.direction)} impact • conf {formatPercent(teamImpact.confidence)}</small>
+                              </article>
+                            ))}
+                          </div>
+                        ) : (
+                          <p className="empty-state opportunity-board-impact-empty">No directional team impact entries for this row yet.</p>
+                        )}
+                      </section>
+                    ) : null}
+
                     <div className="trade-actions">
                       <button
                         type="button"
@@ -2933,6 +3029,9 @@ export default function App() {
                         Use Slug
                       </button>
                     </div>
+                        </>
+                      );
+                    })()}
                   </article>
                 ))}
               </div>

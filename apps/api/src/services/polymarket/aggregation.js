@@ -170,6 +170,7 @@ export async function buildEventAggregation(env, event) {
       return {
         conditionId: market.conditionId,
         question: market.question,
+        category: typeof market?.category === 'string' ? market.category.toLowerCase() : null,
         liquidity: market.liquidity,
         volume: market.volume,
         outcomes,
@@ -180,8 +181,9 @@ export async function buildEventAggregation(env, event) {
     })
   );
 
-  const sportsContext = await buildSportsContext(event);
-  const eventIntelligence = await buildEventIntelligence(env, event, sportsContext);
+  const baselineSportsContext = await buildSportsContext(event);
+  const eventIntelligence = await buildEventIntelligence(env, event, baselineSportsContext);
+  const sportsContext = await buildSportsContext(event, { eventIntelligence });
   const sportsMarketsByConditionId = new Map(
     (Array.isArray(sportsContext.markets) ? sportsContext.markets : []).map((market) => [market.conditionId, market])
   );
@@ -204,6 +206,7 @@ export async function buildEventAggregation(env, event) {
       markets: aggregatedMarkets.map((market) => ({
         conditionId: market.conditionId,
         question: market.question,
+        category: market.category,
         liquidity: market.liquidity,
         volume: market.volume,
         liquidityShare: market.liquidityShare,
@@ -228,6 +231,7 @@ export async function buildEventAggregation(env, event) {
       markets: aggregatedMarkets.map((market) => ({
         conditionId: market.conditionId,
         question: market.question,
+        category: market.category,
         sportsContext: sportsMarketsByConditionId.get(market.conditionId) ?? null,
         leader: market.leader
           ? {

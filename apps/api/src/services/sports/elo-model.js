@@ -93,6 +93,18 @@ function getLeagueConfig(league) {
   };
 }
 
+function getPlayoffCalibrationMinSample(league) {
+  if (league === 'NBA') {
+    return 120;
+  }
+
+  if (league === 'MLB') {
+    return 90;
+  }
+
+  return 80;
+}
+
 function expectedScore(eloA, eloB) {
   return 1 / (1 + 10 ** ((eloB - eloA) / 400));
 }
@@ -688,14 +700,56 @@ export function buildHistoricalCalibrationContext(
     calibrationBucketSize
   });
 
-  return summary?.calibrated?.calibration?.profile ?? null;
+  const primaryProfile = summary?.calibrated?.calibration?.profile ?? null;
+
+  if (phase !== 'playoffs') {
+    return primaryProfile;
+  }
+
+  const playoffSample = summary?.evaluationGameCount ?? 0;
+  const minimumSample = getPlayoffCalibrationMinSample(league);
+
+  if (primaryProfile && playoffSample >= minimumSample) {
+    return {
+      ...primaryProfile,
+      requestedPhase: 'playoffs',
+      profilePhase: 'playoffs'
+    };
+  }
+
+  const fallbackSummary = runTeamStrengthBacktest(historyStore, {
+    league,
+    endDate,
+    phase: 'regular',
+    minTrainingGames,
+    calibrationBucketSize
+  });
+  const fallbackProfile = fallbackSummary?.calibrated?.calibration?.profile ?? null;
+
+  if (fallbackProfile) {
+    return {
+      ...fallbackProfile,
+      requestedPhase: 'playoffs',
+      profilePhase: 'regular',
+      fallbackReason: `insufficient-playoff-sample:${playoffSample}<${minimumSample}`
+    };
+  }
+
+  return primaryProfile;
 }
 
 export function applyPostModelCalibration(probability, calibrationProfile) {
   return applyCalibrationProfile(probability, calibrationProfile);
 }
 
-export async function buildTeamStrengthMarketContext({ event, market, historyStore, phase = 'all', calibrationProfile = null }) {
+export async function buildTeamStrengthMarketContext({
+  event,
+  market,
+  historyStore,
+  phase = 'all',
+  calibrationProfile = null,
+  teamImpactByTeamId = null
+}) {
   const config = getLeagueConfig(market.league);
   const asOfDate = toDate(event?.startDate) ?? toDate(event?.endDate) ?? new Date();
   const games = getGamesForLeague(historyStore, market.league, asOfDate, phase);
@@ -712,6 +766,8 @@ export async function buildTeamStrengthMarketContext({ event, market, historySto
   const fallbackAwayTeamId = market.awayTeamId ?? market.labelMappings[1]?.teamId ?? null;
   const homeTeamId = fallbackHomeTeamId;
   const awayTeamId = fallbackAwayTeamId;
+  const homeTeamImpact = teamImpactByTeamId?.get(homeTeamId) ?? null;
+  const awayTeamImpact = teamImpactByTeamId?.get(awayTeamId) ?? null;
   const homeTeamState = getTeamState(teamStates, homeTeamId, config.baseElo);
   const awayTeamState = getTeamState(teamStates, awayTeamId, config.baseElo);
   const homeSummary = getTeamSummary(homeTeamState, asOfDate);
@@ -733,11 +789,13 @@ export async function buildTeamStrengthMarketContext({ event, market, historySto
       }
     : null;
   const pitcherAdjustment = getPitcherAdjustment(market.league, probablePitcherMatchup?.probablePitchers, config, recentPitcherForm);
+  const intelligenceDiff = (homeTeamImpact?.eloAdjustment ?? 0) - (awayTeamImpact?.eloAdjustment ?? 0);
   const adjustedDiff = (homeSummary.elo - awaySummary.elo)
     + homeAdvantageApplied
     + recentFormDiff * config.recentFormWeight
     + recentScoreDiff * config.pointDiffWeight
     + restDiff * config.restDayWeight
+    + intelligenceDiff
     + pitcherAdjustment.adjustment;
   const rawHomeProbability = expectedScore(adjustedDiff, 0);
   const calibratedHomeProbability = applyCalibrationProfile(rawHomeProbability, calibrationProfile);
@@ -776,6 +834,10 @@ export async function buildTeamStrengthMarketContext({ event, market, historySto
       probablePitcherAwayScore: pitcherAdjustment.awayScore,
       probablePitchers: probablePitcherMatchup?.probablePitchers ?? null,
       probablePitcherRecentForm: pitcherAdjustment.recentForm,
+      intelligenceSource: homeTeamImpact || awayTeamImpact ? 'event-intelligence-team-impact' : null,
+      homeTeamImpact,
+      awayTeamImpact,
+      intelligenceDiff,
       adjustedDiff,
       leagueGameSampleSize: games.length,
       competitionPhase: phase,
@@ -803,7 +865,10 @@ export async function buildTeamStrengthMarketContext({ event, market, historySto
         homeProbability: rawHomeProbability
       }),
       modelConfidence: marketConfidence,
-      features: mapping.teamId === homeTeamId ? homeSummary : awaySummary
+      features: {
+        ...(mapping.teamId === homeTeamId ? homeSummary : awaySummary),
+        teamImpact: mapping.teamId === homeTeamId ? homeTeamImpact : awayTeamImpact
+      }
     }))
   };
 }

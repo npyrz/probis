@@ -24,6 +24,10 @@ const newsCache = new Map();
 const scoreboardCache = new Map();
 const socialCache = new Map();
 
+function clamp(value, min, max) {
+  return Math.min(max, Math.max(min, value));
+}
+
 function pruneExpiredCache(cache, now = Date.now()) {
   for (const [key, entry] of cache.entries()) {
     if ((entry?.expiresAt ?? 0) <= now) {
@@ -160,7 +164,8 @@ function resolveEspnTeam(leagueTeams, teamName, teamId) {
   )) ?? null;
 }
 
-async function fetchTeamRoster(league, espnTeamId) {
+async function fetchTeamRoster(league, team) {
+  const espnTeamId = team?.espnTeamId;
   const baseUrl = getLeagueBaseUrl(league);
 
   if (!baseUrl || !espnTeamId) {
@@ -176,7 +181,9 @@ async function fetchTeamRoster(league, espnTeamId) {
       id: athlete.id ? String(athlete.id) : null,
       displayName: athlete.displayName ?? athlete.fullName ?? null,
       shortName: athlete.shortName ?? null,
-      position: athlete.position?.abbreviation ?? athlete.position ?? null
+      position: athlete.position?.abbreviation ?? athlete.position ?? null,
+      teamId: team?.teamId ?? null,
+      teamName: team?.displayName ?? team?.teamName ?? null
     }));
   });
 }
@@ -325,10 +332,19 @@ function buildTeamMatchKeys(team) {
   return [...aliasSet];
 }
 
-function matchTeamsInText(text, teams) {
+function matchTeamEntriesInText(text, teams) {
   return teams
     .filter((team) => (team.matchKeys ?? []).some((matchKey) => matchKey && text.includes(matchKey)))
-    .map((team) => team.displayName ?? team.teamName ?? team.label)
+    .map((team) => ({
+      teamId: team.teamId ?? null,
+      teamName: team.displayName ?? team.teamName ?? team.label
+    }))
+    .filter((team) => team.teamName);
+}
+
+function matchTeamsInText(text, teams) {
+  return matchTeamEntriesInText(text, teams)
+    .map((entry) => entry.teamName)
     .filter(Boolean);
 }
 
@@ -354,7 +370,9 @@ function matchPlayersInArticle(article, roster) {
     .map((player) => ({
       id: player.id,
       name: player.displayName,
-      position: player.position ?? null
+      position: player.position ?? null,
+      teamId: player.teamId ?? null,
+      teamName: player.teamName ?? null
     }));
 }
 
@@ -503,6 +521,61 @@ function hasLowSignalHeadline(article) {
   ]);
 }
 
+function getDirectionalAvailabilitySignal(article) {
+  const normalizedText = getArticleText(article);
+
+  const negativePatterns = [
+    /\bwill not play\b/i,
+    /\b(?:ruled|listed) out\b/i,
+    /\bout for\b/i,
+    /\bdoubtful\b/i,
+    /\bquestionable\b/i,
+    /\bsuspended\b/i,
+    /\bplaced on (?:the )?(?:injured list|il)\b/i,
+    /\bnon-covid illness\b/i,
+    /\bscratched\b/i
+  ];
+  const positivePatterns = [
+    /\bwill play\b/i,
+    /\bcleared to play\b/i,
+    /\bexpected to play\b/i,
+    /\bexpected back\b/i,
+    /\breturns? to (?:the )?(?:lineup|rotation|mound|court|field)\b/i,
+    /\bactivated from (?:the )?(?:il|injured list)\b/i,
+    /\bavailable tonight\b/i,
+    /\bconfirmed starter\b/i,
+    /\bstarting pitcher\b/i
+  ];
+
+  const negativeHitCount = negativePatterns.filter((pattern) => pattern.test(normalizedText)).length;
+  const positiveHitCount = positivePatterns.filter((pattern) => pattern.test(normalizedText)).length;
+
+  if (negativeHitCount === 0 && positiveHitCount === 0) {
+    return 0;
+  }
+
+  return clamp((positiveHitCount - negativeHitCount) / 3, -1, 1);
+}
+
+function getDirectionalImpactSignal(article, impactSignals) {
+  const signalBias = {
+    injury: -0.9,
+    availability: 0,
+    discipline: -0.8,
+    illness: -0.65,
+    lineup: 0.25,
+    transaction: 0.15
+  };
+  const base = impactSignals.reduce((score, signal) => score + (signalBias[signal] ?? 0), 0);
+  const availabilityBias = getDirectionalAvailabilitySignal(article);
+
+  if (impactSignals.includes('availability')) {
+    return clamp(base + availabilityBias, -1.5, 1.5);
+  }
+
+  return clamp(base + availabilityBias * 0.5, -1.5, 1.5);
+}
+
 function getArticleImpactScore(article, matchedTeams, matchedPlayers, impactSignals) {
   const type = String(article?.type ?? '').toLowerCase();
   const normalizedText = getArticleText(article);
@@ -576,9 +649,13 @@ function rankArticles(articles, teams, roster) {
     }
 
     const text = getArticleText(normalized);
+    const matchedTeamEntries = matchTeamEntriesInText(text, teams);
     const matchedTeams = matchTeamsInText(text, teams);
+    const matchedTeamIds = matchedTeamEntries.map((entry) => entry.teamId).filter(Boolean);
     const matchedPlayers = matchPlayersInArticle(normalized, roster);
     const impactSignals = detectImpactSignals(normalized);
+    const directionalImpact = getDirectionalImpactSignal(normalized, impactSignals);
+    const availabilityImpact = getDirectionalAvailabilitySignal(normalized);
 
     if (!shouldKeepArticle(article, matchedTeams, matchedPlayers, impactSignals)) {
       continue;
@@ -589,9 +666,12 @@ function rankArticles(articles, teams, roster) {
     unique.set(normalized.id, {
       ...normalized,
       matchedTeams,
+      matchedTeamIds,
       matchedPlayers,
       impactSignals,
       impactScore,
+      directionalImpact,
+      availabilityImpact,
       relevanceScore: impactScore
     });
   }
@@ -700,9 +780,13 @@ function rankSocialPosts(posts, teams, roster) {
     }
 
     const text = getArticleText(post);
+    const matchedTeamEntries = matchTeamEntriesInText(text, teams);
     const matchedTeams = matchTeamsInText(text, teams);
+    const matchedTeamIds = matchedTeamEntries.map((entry) => entry.teamId).filter(Boolean);
     const matchedPlayers = matchPlayersInArticle(post, roster);
     const impactSignals = detectImpactSignals(post);
+    const directionalImpact = getDirectionalImpactSignal(post, impactSignals);
+    const availabilityImpact = getDirectionalAvailabilitySignal(post);
 
     if (matchedTeams.length === 0 && matchedPlayers.length === 0) {
       continue;
@@ -713,9 +797,12 @@ function rankSocialPosts(posts, teams, roster) {
     unique.set(post.id, {
       ...post,
       matchedTeams,
+      matchedTeamIds,
       matchedPlayers,
       impactSignals,
-      impactScore
+      impactScore,
+      directionalImpact,
+      availabilityImpact
     });
   }
 
@@ -728,6 +815,99 @@ function rankSocialPosts(posts, teams, roster) {
       return Date.parse(right.published ?? 0) - Date.parse(left.published ?? 0);
     })
     .slice(0, MAX_SOCIAL_POSTS);
+}
+
+function buildTeamImpactSummary(teams, articles, socialPosts) {
+  const byTeamId = new Map(
+    teams.map((team) => ([
+      team.teamId,
+      {
+        teamId: team.teamId,
+        teamName: team.displayName ?? team.teamName ?? null,
+        articleMentions: 0,
+        socialMentions: 0,
+        matchedPlayerCount: 0,
+        impactSignalCounts: {},
+        rawDirectionalScore: 0,
+        rawAvailabilityScore: 0
+      }
+    ]))
+  );
+
+  const allItems = [...articles, ...socialPosts];
+
+  for (const item of allItems) {
+    const matchedTeamIds = Array.isArray(item?.matchedTeamIds)
+      ? [...new Set(item.matchedTeamIds.filter(Boolean))]
+      : [];
+
+    if (matchedTeamIds.length === 0) {
+      continue;
+    }
+
+    const sourceWeight = item?.provider === 'reddit' || item?.provider === 'x' || item?.provider === 'social'
+      ? 0.7
+      : 1;
+    const directionalSignal = typeof item?.directionalImpact === 'number' ? item.directionalImpact : 0;
+    const availabilitySignal = typeof item?.availabilityImpact === 'number' ? item.availabilityImpact : 0;
+    const impactMagnitude = Math.max(1, Number(item?.impactScore ?? 0)) / 10;
+    const directionalContribution = directionalSignal * impactMagnitude * sourceWeight;
+    const availabilityContribution = availabilitySignal * sourceWeight;
+
+    for (const teamId of matchedTeamIds) {
+      const summary = byTeamId.get(teamId);
+
+      if (!summary) {
+        continue;
+      }
+
+      if (item?.provider === 'reddit' || item?.provider === 'x' || item?.provider === 'social') {
+        summary.socialMentions += 1;
+      } else {
+        summary.articleMentions += 1;
+      }
+
+      summary.rawDirectionalScore += directionalContribution;
+      summary.rawAvailabilityScore += availabilityContribution;
+
+      const matchedPlayers = Array.isArray(item?.matchedPlayers) ? item.matchedPlayers : [];
+      const teamMatchedPlayers = matchedPlayers.filter((player) => player?.teamId === teamId);
+      summary.matchedPlayerCount += teamMatchedPlayers.length;
+
+      for (const signal of Array.isArray(item?.impactSignals) ? item.impactSignals : []) {
+        summary.impactSignalCounts[signal] = (summary.impactSignalCounts[signal] ?? 0) + 1;
+      }
+    }
+  }
+
+  return [...byTeamId.values()]
+    .map((summary) => {
+      const mentionCount = summary.articleMentions + summary.socialMentions;
+      const normalizedDirectionalScore = clamp(summary.rawDirectionalScore / 6, -1, 1);
+      const normalizedAvailabilityScore = clamp(summary.rawAvailabilityScore / 4, -1, 1);
+      const confidence = clamp(
+        0.2 + Math.min(mentionCount, 10) / 14 + Math.min(Math.abs(normalizedDirectionalScore), 1) * 0.15,
+        0.2,
+        0.9
+      );
+
+      return {
+        teamId: summary.teamId,
+        teamName: summary.teamName,
+        articleMentions: summary.articleMentions,
+        socialMentions: summary.socialMentions,
+        matchedPlayerCount: summary.matchedPlayerCount,
+        impactSignalCounts: summary.impactSignalCounts,
+        directionalScore: Number(normalizedDirectionalScore.toFixed(4)),
+        availabilityScore: Number(normalizedAvailabilityScore.toFixed(4)),
+        probabilityDelta: Number((normalizedDirectionalScore * 0.035).toFixed(4)),
+        eloAdjustment: Number((normalizedDirectionalScore * 16).toFixed(2)),
+        confidence: Number(confidence.toFixed(4)),
+        direction: normalizedDirectionalScore > 0.05 ? 'positive' : (normalizedDirectionalScore < -0.05 ? 'negative' : 'neutral')
+      };
+    })
+    .filter((summary) => (summary.articleMentions + summary.socialMentions) > 0)
+    .sort((left, right) => Math.abs(right.directionalScore) - Math.abs(left.directionalScore));
 }
 
 function buildGameFeed(events, teams, targetDate) {
@@ -767,6 +947,7 @@ function buildGameFeed(events, teams, targetDate) {
     id: matching?.id ? String(matching.id) : null,
     name: matching?.name ?? null,
     shortName: matching?.shortName ?? null,
+    seasonType: competition?.season?.type ?? matching?.season?.type ?? null,
     status: competition?.status?.type?.description ?? competition?.status?.type?.name ?? null,
     detail: competition?.status?.type?.detail ?? null,
     startDate: matching?.date ?? null,
@@ -833,7 +1014,7 @@ export async function buildEventIntelligence(env, event, sportsContext) {
   const [leagueNews, scoreboardEvents, rosterGroups, teamNewsGroups] = await Promise.all([
     fetchLeagueNews(supportedLeague),
     fetchLeagueScoreboards(supportedLeague, resolveGameFeedTargetDate(event)),
-    Promise.all(teams.map((team) => fetchTeamRoster(supportedLeague, team.espnTeamId))),
+    Promise.all(teams.map((team) => fetchTeamRoster(supportedLeague, team))),
     Promise.all(teams.map((team) => fetchTeamNews(supportedLeague, team.espnTeamId)))
   ]);
 
@@ -847,6 +1028,7 @@ export async function buildEventIntelligence(env, event, sportsContext) {
     fetchXPosts(env, queries, supportedLeague)
   ]);
   const socialPosts = rankSocialPosts([...redditPosts, ...xPosts], teams, roster);
+  const teamImpactSummary = buildTeamImpactSummary(teams, articles, socialPosts);
   const playerMentions = [...new Map(
     [...articles, ...socialPosts]
       .flatMap((article) => article.matchedPlayers)
@@ -862,6 +1044,7 @@ export async function buildEventIntelligence(env, event, sportsContext) {
     articles,
     socialPosts,
     playerMentions,
+    teamImpactSummary,
     sources: {
       espnNews: true,
       espnGameFeed: true,

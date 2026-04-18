@@ -285,7 +285,7 @@ function summarizeTeamRecord(competitor) {
 }
 
 function getMlbSeasonPhase(event) {
-  const seasonType = Number(event?.season?.type ?? event?.competitions?.[0]?.season?.type ?? NaN);
+  const seasonType = Number(event?.competitions?.[0]?.season?.type ?? event?.season?.type ?? NaN);
 
   if (seasonType === 2) {
     return 'regular';
