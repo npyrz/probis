@@ -931,6 +931,12 @@ h3 {
   color: #ffc08e;
 }
 
+.market-chip-league-politics {
+  border-color: rgba(241, 129, 129, 0.48);
+  background: rgba(111, 47, 47, 0.3);
+  color: #ffc2c2;
+}
+
 .market-chip-league-mlb {
   border-color: rgba(109, 182, 255, 0.52);
   background: rgba(19, 44, 84, 0.34);

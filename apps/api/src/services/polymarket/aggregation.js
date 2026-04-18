@@ -1,6 +1,7 @@
 import { createPolymarketClient } from './client.js';
 import { buildSportsContext } from '../sports/aggregation.js';
 import { buildEventIntelligence } from '../sports/event-intelligence.js';
+import { buildPoliticsContext } from '../politics/event-intelligence.js';
 
 const HISTORY_WINDOW_SECONDS = 7 * 24 * 60 * 60;
 const HISTORY_FIDELITY_MINUTES = 1440;
@@ -170,6 +171,8 @@ export async function buildEventAggregation(env, event) {
       return {
         conditionId: market.conditionId,
         question: market.question,
+        title: market.title ?? null,
+        subtitle: market.subtitle ?? null,
         category: typeof market?.category === 'string' ? market.category.toLowerCase() : null,
         liquidity: market.liquidity,
         volume: market.volume,
@@ -184,8 +187,24 @@ export async function buildEventAggregation(env, event) {
   const baselineSportsContext = await buildSportsContext(event);
   const eventIntelligence = await buildEventIntelligence(env, event, baselineSportsContext);
   const sportsContext = await buildSportsContext(event, { eventIntelligence });
+  const politicsContext = await buildPoliticsContext(env, event, {
+    markets: aggregatedMarkets.map((market) => ({
+      conditionId: market.conditionId,
+      question: market.question,
+      title: market.title ?? null,
+      subtitle: market.subtitle ?? null,
+      category: market.category,
+      outcomes: market.outcomes.map((outcome) => ({
+        label: outcome.label,
+        currentProbability: outcome.probability
+      }))
+    }))
+  });
   const sportsMarketsByConditionId = new Map(
     (Array.isArray(sportsContext.markets) ? sportsContext.markets : []).map((market) => [market.conditionId, market])
+  );
+  const politicsMarketsByConditionId = new Map(
+    (Array.isArray(politicsContext.markets) ? politicsContext.markets : []).map((market) => [market.conditionId, market])
   );
 
   return {
@@ -226,13 +245,17 @@ export async function buildEventAggregation(env, event) {
         : null
     },
     sportsContext,
+    politicsContext,
     eventIntelligence,
     historicalPrices: {
       markets: aggregatedMarkets.map((market) => ({
         conditionId: market.conditionId,
         question: market.question,
+        title: market.title,
+        subtitle: market.subtitle,
         category: market.category,
         sportsContext: sportsMarketsByConditionId.get(market.conditionId) ?? null,
+        politicsContext: politicsMarketsByConditionId.get(market.conditionId) ?? null,
         leader: market.leader
           ? {
               label: market.leader.label,

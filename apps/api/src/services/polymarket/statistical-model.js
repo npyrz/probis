@@ -40,6 +40,14 @@ function getSportsOutcome(outcome, sportsMarket) {
   return sportsMarket.outcomes.find((candidate) => candidate.label === outcome.label) ?? null;
 }
 
+function getPoliticsOutcome(outcome, politicsMarket) {
+  if (!politicsMarket || !Array.isArray(politicsMarket.outcomes)) {
+    return null;
+  }
+
+  return politicsMarket.outcomes.find((candidate) => candidate.label === outcome.label) ?? null;
+}
+
 function normalizeMarketCategory(value) {
   if (typeof value !== 'string') {
     return null;
@@ -54,7 +62,7 @@ function isPoliticsCategory(value) {
   return normalized === 'politics';
 }
 
-function scoreOutcome(outcome, marketSnapshot, sportsMarket) {
+function scoreOutcome(outcome, marketSnapshot, sportsMarket, politicsMarket) {
   const summary = outcome.historySummary ?? {};
   const currentProbability = outcome.currentProbability ?? 0;
   const momentum = summary.absoluteChange ?? 0;
@@ -72,13 +80,19 @@ function scoreOutcome(outcome, marketSnapshot, sportsMarket) {
     )
   ) ?? currentProbability;
   const sportsOutcome = getSportsOutcome(outcome, sportsMarket);
+  const politicsOutcome = getPoliticsOutcome(outcome, politicsMarket);
   const sportsFairProbability = sportsOutcome?.fairProbability ?? null;
   const sportsConfidence = sportsOutcome?.modelConfidence ?? sportsMarket?.marketConfidence ?? null;
+  const politicsFairProbability = politicsOutcome?.fairProbability ?? null;
+  const politicsConfidence = politicsOutcome?.modelConfidence ?? politicsMarket?.marketConfidence ?? null;
+  const politicsNewsImpact = politicsOutcome?.features?.politicsNewsImpact ?? 0;
   const marketCategory = normalizeMarketCategory(marketSnapshot?.category ?? null);
-  const politicsModel = isPoliticsCategory(marketCategory) ? 'politics-residual-microstructure-v1' : null;
+  const politicsModel = isPoliticsCategory(marketCategory)
+    ? (politicsMarket?.model?.name ?? 'politics-residual-microstructure-v1')
+    : null;
   const modelFamily = sportsMarket
     ? 'sports-model'
-    : (politicsModel ? 'politics-model' : 'market-microstructure');
+    : ((politicsModel || politicsOutcome) ? 'politics-model' : 'market-microstructure');
   const teamImpact = sportsOutcome?.features?.teamImpact ?? null;
   const sportsImpactProbabilityDelta = typeof teamImpact?.probabilityDelta === 'number'
     ? teamImpact.probabilityDelta
@@ -107,6 +121,11 @@ function scoreOutcome(outcome, marketSnapshot, sportsMarket) {
     rawEstimate = rawEstimate * (1 - sportsBlendWeight) + adjustedSportsFairProbability * sportsBlendWeight;
   }
 
+  if (typeof politicsFairProbability === 'number') {
+    const politicsBlendWeight = clamp((politicsConfidence ?? 0.42) * 0.6, 0.16, 0.72);
+    rawEstimate = rawEstimate * (1 - politicsBlendWeight) + politicsFairProbability * politicsBlendWeight;
+  }
+
   const baseConfidence = clamp(
     0.15
       + quality * (politicsModel ? 0.5 : 0.45)
@@ -117,7 +136,7 @@ function scoreOutcome(outcome, marketSnapshot, sportsMarket) {
     0.95
   );
   const confidence = clamp(
-    average([baseConfidence, sportsConfidence].filter((value) => typeof value === 'number')) ?? baseConfidence,
+    average([baseConfidence, sportsConfidence, politicsConfidence].filter((value) => typeof value === 'number')) ?? baseConfidence,
     0.05,
     0.97
   );
@@ -137,14 +156,18 @@ function scoreOutcome(outcome, marketSnapshot, sportsMarket) {
       historicalAnchor,
       marketCategory,
       modelFamily,
-      politicsModel,
       sportsFairProbability,
       adjustedSportsFairProbability,
       sportsConfidence,
       sportsImpactProbabilityDelta,
       sportsImpactDirection: teamImpact?.direction ?? null,
       sportsModel: sportsMarket?.model?.name ?? null,
-      sportsLeague: sportsMarket?.league ?? null
+      sportsLeague: sportsMarket?.league ?? null,
+      politicsFairProbability,
+      politicsConfidence,
+      politicsNewsImpact,
+      politicsModel: politicsMarket?.model?.name ?? politicsModel,
+      politicsSignalCount: politicsMarket?.relatedArticleCount ?? null
     }
   };
 }
@@ -165,11 +188,13 @@ export function buildStatisticalModel(event, aggregation) {
   const marketSnapshots = aggregation?.liquiditySnapshot?.markets ?? [];
   const historicalMarkets = aggregation?.historicalPrices?.markets ?? [];
   const sportsMarkets = aggregation?.sportsContext?.markets ?? [];
+  const politicsMarkets = aggregation?.politicsContext?.markets ?? [];
 
   const markets = historicalMarkets.map((market) => {
     const marketSnapshot = marketSnapshots.find((candidate) => candidate.conditionId === market.conditionId);
     const sportsMarket = sportsMarkets.find((candidate) => candidate.conditionId === market.conditionId) ?? market.sportsContext ?? null;
-    const scoredOutcomes = market.outcomes.map((outcome) => scoreOutcome(outcome, marketSnapshot, sportsMarket));
+    const politicsMarket = politicsMarkets.find((candidate) => candidate.conditionId === market.conditionId) ?? market.politicsContext ?? null;
+    const scoredOutcomes = market.outcomes.map((outcome) => scoreOutcome(outcome, marketSnapshot, sportsMarket, politicsMarket));
     const normalizedOutcomes = normalizeProbabilities(scoredOutcomes).sort(
       (left, right) => right.estimatedProbability - left.estimatedProbability
     );
@@ -180,6 +205,7 @@ export function buildStatisticalModel(event, aggregation) {
       conditionId: market.conditionId,
       question: market.question,
       sportsContext: sportsMarket,
+      politicsContext: politicsMarket,
       confidence: marketConfidence,
       opportunity: bestOpportunity,
       outcomes: normalizedOutcomes
@@ -199,13 +225,15 @@ export function buildStatisticalModel(event, aggregation) {
   return {
     generatedAt: new Date().toISOString(),
     methodology: {
-      name: 'hybrid-market-and-sports-statistical-model',
+      name: 'hybrid-market-sports-politics-statistical-model',
       inputs: [
         'current_probability',
         '7d_price_history',
         'liquidity_share',
         'volume_share',
         'market_category',
+        'politics_news_signals',
+        'politics_directional_impact',
         'team_elo',
         'home_edge',
         'recent_form',
@@ -215,7 +243,7 @@ export function buildStatisticalModel(event, aggregation) {
         'mlb_probable_starter_record'
       ],
       description:
-        'Adjusts current market probabilities with short-horizon market behavior. For recognized team-vs-team sports markets, blends in calibrated fair probabilities from local team history (plus MLB probable-starter context). For politics markets, applies a dedicated residual microstructure profile tuned for event-driven repricing.'
+        'Adjusts current market probabilities with short-horizon market behavior. For recognized team-vs-team sports markets, blends in calibrated fair probabilities from local team history (plus MLB probable-starter context). For politics markets, blends a dedicated event-driven politics news impact model into fair probabilities.'
     },
     summary: {
       eventSlug: event.slug,

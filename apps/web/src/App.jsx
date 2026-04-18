@@ -245,6 +245,70 @@ function formatImpactDirection(value) {
   return 'Unavailable';
 }
 
+function getOpportunityUniverseScope(opportunity) {
+  const sportsLeague = String(opportunity?.sportsLeague ?? '').trim().toLowerCase();
+
+  if (sportsLeague === 'nba' || sportsLeague === 'mlb') {
+    return sportsLeague;
+  }
+
+  const marketCategory = String(opportunity?.marketCategory ?? opportunity?.eventCategory ?? '').trim().toLowerCase();
+
+  if (marketCategory === 'politics') {
+    return 'politics';
+  }
+
+  return null;
+}
+
+function formatOpportunitySignalSource(signalSource) {
+  if (signalSource === 'sports-model') {
+    return 'Sports Model';
+  }
+
+  if (signalSource === 'politics-model') {
+    return 'Politics Model';
+  }
+
+  return 'Microstructure';
+}
+
+function isBinaryOutcomeLabel(value) {
+  const normalized = String(value ?? '').trim().toLowerCase();
+  return normalized === 'yes' || normalized === 'no';
+}
+
+function getOpportunityHeadline(opportunity) {
+  const marketTitle = String(opportunity?.marketTitle ?? '').trim();
+
+  if (marketTitle.length > 0) {
+    return marketTitle;
+  }
+
+  return `${opportunity.outcomeLabel} in ${opportunity.marketQuestion}`;
+}
+
+function getOpportunityContextLine(opportunity) {
+  const marketQuestion = String(opportunity?.marketQuestion ?? '').trim();
+  const marketSubtitle = String(opportunity?.marketSubtitle ?? '').trim();
+  const outcomeLabel = String(opportunity?.outcomeLabel ?? '').trim();
+  const hasBinaryOutcome = isBinaryOutcomeLabel(outcomeLabel);
+
+  if (hasBinaryOutcome && marketQuestion.length > 0) {
+    return `${outcomeLabel} on ${marketQuestion}`;
+  }
+
+  if (marketSubtitle.length > 0 && marketQuestion.length > 0 && marketSubtitle !== marketQuestion) {
+    return `${marketQuestion} • ${marketSubtitle}`;
+  }
+
+  if (marketQuestion.length > 0) {
+    return marketQuestion;
+  }
+
+  return outcomeLabel;
+}
+
 function formatIntentStatus(intent) {
   if (intent.status === 'draft') {
     return 'Draft';
@@ -1474,7 +1538,9 @@ export default function App() {
     .map((intent) => intent?.monitoring?.lastPolymarketQuoteAt)
     .filter(Boolean)
     .sort((left, right) => new Date(right).getTime() - new Date(left).getTime())[0] ?? null;
-  const opportunityBoard = scannerSnapshot?.opportunities ?? [];
+  const opportunityBoard = (scannerSnapshot?.opportunities ?? []).filter((opportunity) => {
+    return getOpportunityUniverseScope(opportunity) !== null;
+  });
   const scannerLastUpdatedAge = formatRelativeAge(scannerSnapshot?.generatedAt, liveClock);
   const filteredTradeHistory = tradeHistory.filter((intent) => {
     if (tradeCenterFilter === 'tracking') {
@@ -2896,7 +2962,7 @@ export default function App() {
             {!scannerSnapshot ? (
               <p className="empty-state">Loading scanner snapshot.</p>
             ) : opportunityBoard.length === 0 ? (
-              <p className="empty-state">No ranked scanner results are available right now.</p>
+              <p className="empty-state">No ranked Politics, NBA, or MLB opportunities are available right now.</p>
             ) : (
               <div className="opportunity-board-list">
                 {opportunityBoard.map((opportunity) => (
@@ -2905,12 +2971,14 @@ export default function App() {
                     className="trade-history-item opportunity-board-item"
                   >
                     {(() => {
+                      const universeScope = getOpportunityUniverseScope(opportunity);
                       const teamImpactSummary = Array.isArray(opportunity.teamImpactSummary)
                         ? opportunity.teamImpactSummary
                         : [];
                       const hasNonZeroImpactDelta = typeof opportunity.sportsImpactProbabilityDelta === 'number'
                         && Math.abs(opportunity.sportsImpactProbabilityDelta) >= 0.001;
                       const hasSportsAuditDetails = opportunity.signalSource === 'sports-model'
+                        || opportunity.signalSource === 'politics-model'
                         || hasNonZeroImpactDelta
                         || Boolean(opportunity.sportsPhase)
                         || Boolean(opportunity.sportsPhaseSource)
@@ -2921,7 +2989,8 @@ export default function App() {
                     <div className="panel-heading panel-heading-inline">
                       <div>
                         <p className="eyebrow">#{opportunity.rank} {formatOpportunityClassification(opportunity.classification)}</p>
-                        <h2>{opportunity.outcomeLabel} in {opportunity.marketQuestion}</h2>
+                        <h2>{getOpportunityHeadline(opportunity)}</h2>
+                        <p className="event-meta">{getOpportunityContextLine(opportunity)}</p>
                         <p className="event-meta">{opportunity.eventTitle}</p>
                       </div>
                       <div className="trade-heading-chips">
@@ -2931,6 +3000,10 @@ export default function App() {
                         {opportunity.sportsLeague ? (
                           <span className={`market-chip market-chip-league market-chip-league-${opportunity.sportsLeague.toLowerCase()}`}>
                             {opportunity.sportsLeague}
+                          </span>
+                        ) : universeScope === 'politics' ? (
+                          <span className="market-chip market-chip-league market-chip-league-politics">
+                            Politics
                           </span>
                         ) : null}
                       </div>
@@ -2967,14 +3040,22 @@ export default function App() {
                       </article>
                       <article>
                         <span>Signal</span>
-                        <strong>{opportunity.signalSource === 'sports-model' ? 'Sports Model' : 'Microstructure'}</strong>
+                        <strong>{formatOpportunitySignalSource(opportunity.signalSource)}</strong>
                       </article>
                     </div>
 
                     {hasSportsAuditDetails ? (
                       <section className="opportunity-board-audit">
-                        <p className="eyebrow opportunity-board-audit-eyebrow">Sports Audit</p>
+                        <p className="eyebrow opportunity-board-audit-eyebrow">Model Audit</p>
                         <div className="decision-rationale-grid compact-preview-grid opportunity-board-audit-grid">
+                          <article>
+                            <span>Model</span>
+                            <strong>{formatOpportunitySignalSource(opportunity.signalSource)}</strong>
+                          </article>
+                          <article>
+                            <span>Market Category</span>
+                            <strong>{universeScope === 'politics' ? 'Politics' : (opportunity.sportsLeague ?? 'Unknown')}</strong>
+                          </article>
                           <article>
                             <span>Competition Phase</span>
                             <strong>{formatCompetitionPhase(opportunity.sportsPhase)}</strong>

@@ -1,7 +1,8 @@
 import axios from 'axios';
 
 import { buildStatisticalModel } from './statistical-model.js';
-import { inferCompetitionPhaseFromEventText } from '../sports/canonicalization.js';
+import { inferCompetitionPhaseFromEventText, inferLeagueFromEventText } from '../sports/canonicalization.js';
+import { buildPoliticsContext } from '../politics/event-intelligence.js';
 
 const scannerState = {
   snapshot: createEmptySnapshot(),
@@ -288,7 +289,7 @@ function getImpliedSpreadFromMarket(eventMarket) {
   return Math.abs(1 - total);
 }
 
-function buildLightweightAnalyticsFromEvent(event) {
+async function buildLightweightAnalyticsFromEvent(env, event) {
   const competitionPhase = inferCompetitionPhaseFromEventText(
     event?.title,
     event?.description,
@@ -315,6 +316,23 @@ function buildLightweightAnalyticsFromEvent(event) {
   };
   const pricedMarkets = normalizedEvent.markets
     .filter((market) => Array.isArray(market?.outcomes) && market.outcomes.some((outcome) => typeof toNumberOrNull(outcome?.probability) === 'number'));
+  const politicsContext = await buildPoliticsContext(env, normalizedEvent, {
+    markets: pricedMarkets.map((market) => ({
+      conditionId: market.conditionId,
+      question: market.question,
+      title: market.title ?? null,
+      subtitle: market.subtitle ?? null,
+      category: typeof market?.category === 'string' ? market.category.toLowerCase() : null,
+      outcomes: (Array.isArray(market.outcomes) ? market.outcomes : []).map((outcome) => ({
+        label: outcome.label,
+        currentProbability: toNumberOrNull(outcome?.probability)
+      }))
+    }))
+  });
+  const politicsMarketsByConditionId = new Map(
+    (Array.isArray(politicsContext?.markets) ? politicsContext.markets : [])
+      .map((market) => [market.conditionId, market])
+  );
   const aggregation = {
     generatedAt: new Date().toISOString(),
     liquiditySnapshot: {
@@ -347,11 +365,15 @@ function buildLightweightAnalyticsFromEvent(event) {
       historyGameCount: 0,
       markets: []
     },
+    politicsContext,
     historicalPrices: {
       markets: pricedMarkets.map((market) => ({
         conditionId: market.conditionId,
         question: market.question,
+        title: market.title ?? null,
+        subtitle: market.subtitle ?? null,
         category: typeof market?.category === 'string' ? market.category.toLowerCase() : null,
+        politicsContext: politicsMarketsByConditionId.get(market.conditionId) ?? null,
         outcomes: (Array.isArray(market.outcomes) ? market.outcomes : [])
           .map((outcome) => {
             const probability = toNumberOrNull(outcome?.probability);
@@ -556,6 +578,17 @@ async function buildMarketOpportunity(env, analytics, statisticalMarket) {
   const timeToResolutionMs = getTimeToResolutionMs(eventMarket.endDate ?? analytics.event.endDate ?? null);
   const expectedValuePerDollar = getExpectedValuePerDollar(currentProbability, modelProbability);
   const hasSportsContext = Boolean(opportunity.features?.sportsLeague ?? statisticalMarket.sportsContext?.league);
+  const inferredSportsLeague = inferLeagueFromEventText(
+    analytics.event.title,
+    analytics.event.description,
+    analytics.event.slug,
+    eventMarket.question,
+    eventMarket.slug,
+    eventMarket.category
+  );
+  const resolvedSportsLeague = opportunity.features?.sportsLeague
+    ?? statisticalMarket.sportsContext?.league
+    ?? ((eventMarket?.category === 'sports' && typeof inferredSportsLeague === 'string') ? inferredSportsLeague : null);
   const modelFamily = String(opportunity.features?.modelFamily ?? '').trim();
   const resolvedSignalSource = modelFamily === 'sports-model'
     ? 'sports-model'
@@ -568,6 +601,9 @@ async function buildMarketOpportunity(env, analytics, statisticalMarket) {
     eventEndDate: analytics.event.endDate,
     eventCategory: analytics.event.category ?? null,
     marketSlug: eventMarket.slug ?? null,
+    marketTitle: eventMarket.title ?? null,
+    marketSubtitle: eventMarket.subtitle ?? null,
+    marketDescription: eventMarket.description ?? null,
     marketCategory: typeof eventMarket?.category === 'string' ? eventMarket.category.toLowerCase() : null,
     conditionId: statisticalMarket.conditionId,
     marketQuestion: statisticalMarket.question,
@@ -591,10 +627,12 @@ async function buildMarketOpportunity(env, analytics, statisticalMarket) {
     midpoint: null,
     spreadSource: typeof impliedSpread === 'number' ? 'implied-market-probabilities' : 'unavailable',
     timeToResolutionMs,
-    sportsLeague: opportunity.features?.sportsLeague ?? statisticalMarket.sportsContext?.league ?? null,
+    sportsLeague: resolvedSportsLeague,
     signalSource: resolvedSignalSource,
     sportsModel: opportunity.features?.sportsModel ?? null,
     politicsModel: opportunity.features?.politicsModel ?? null,
+    politicsNewsImpact: opportunity.features?.politicsNewsImpact ?? null,
+    politicsSignalCount: opportunity.features?.politicsSignalCount ?? null,
     sportsPhase: hasSportsContext
       ? (statisticalMarket.sportsContext?.features?.competitionPhase
         ?? analytics.aggregation?.sportsContext?.competitionPhase
@@ -621,7 +659,7 @@ async function buildMarketOpportunity(env, analytics, statisticalMarket) {
 }
 
 async function scanEvent(env, event) {
-  const analytics = buildLightweightAnalyticsFromEvent(event);
+  const analytics = await buildLightweightAnalyticsFromEvent(env, event);
   const statisticalMarkets = Array.isArray(analytics.statisticalModel?.markets) ? analytics.statisticalModel.markets : [];
 
   if (!analytics.event.active || analytics.event.closed || analytics.event.markets.length === 0 || statisticalMarkets.length === 0) {
