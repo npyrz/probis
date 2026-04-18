@@ -76,6 +76,26 @@ export async function fetchActiveEvents(limit = 5) {
   return data.events;
 }
 
+export async function fetchOpportunityScanner(options = {}) {
+  const query = new URLSearchParams();
+
+  if (options.refresh) {
+    query.set('refresh', 'true');
+  }
+
+  if (options.wait) {
+    query.set('wait', 'true');
+  }
+
+  const suffix = query.size > 0 ? `?${query.toString()}` : '';
+  const data = await requestJson(`/api/polymarket/scanner${suffix}`);
+  return data.scanner;
+}
+
+export async function refreshOpportunityScanner() {
+  return fetchOpportunityScanner({ refresh: true, wait: true });
+}
+
 export async function resolveEvent(input) {
   const data = await requestJson(
     `/api/polymarket/events/resolve?input=${encodeURIComponent(input)}`

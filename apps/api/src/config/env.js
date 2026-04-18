@@ -15,6 +15,11 @@ export function getEnv() {
   const env = {
     port: Number.parseInt(process.env.PORT ?? '4000', 10),
     analyticsCacheTtlMs: Number.parseInt(process.env.ANALYTICS_CACHE_TTL_MS ?? '300000', 10),
+    opportunityScannerIntervalMs: Number.parseInt(process.env.OPPORTUNITY_SCANNER_INTERVAL_MS ?? '600000', 10),
+    opportunityScannerUniverseLimit: Number.parseInt(process.env.OPPORTUNITY_SCANNER_UNIVERSE_LIMIT ?? '0', 10),
+    opportunityScannerBatchSize: Number.parseInt(process.env.OPPORTUNITY_SCANNER_BATCH_SIZE ?? '200', 10),
+    opportunityScannerConcurrency: Number.parseInt(process.env.OPPORTUNITY_SCANNER_CONCURRENCY ?? '8', 10),
+    opportunityScannerMaxOpportunities: Number.parseInt(process.env.OPPORTUNITY_SCANNER_MAX_OPPORTUNITIES ?? '0', 10),
     polymarketApiKey: process.env.POLYMARKET_API_KEY ?? '',
     polymarketPrivateKey: process.env.POLYMARKET_PRIVATE_KEY ?? '',
     polymarketUsKeyId: process.env.POLYMARKET_US_KEY_ID ?? process.env.POLYMARKET_API_KEY ?? '',

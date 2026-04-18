@@ -58,7 +58,24 @@ export async function resolveEventAnalytics(env, input, options = {}) {
   const cacheKey = getCacheKey(input);
   const forceRefresh = options.forceRefresh === true;
   const event = await fetchEventByInput(env, input);
-  const sportsSync = await ensureSportsHistoryForEvent(event, { forceRefresh });
+  let sportsSync;
+
+  try {
+    sportsSync = await ensureSportsHistoryForEvent(event, { forceRefresh });
+  } catch (error) {
+    if (!options.tolerateSportsSyncFailure) {
+      throw error;
+    }
+
+    sportsSync = {
+      attempted: true,
+      updated: false,
+      league: null,
+      season: null,
+      reason: 'sports-sync-failed',
+      error: error instanceof Error ? error.message : 'Unknown sports sync error'
+    };
+  }
   const cached = forceRefresh ? null : getCachedAnalytics(cacheKey);
 
   if (cached) {

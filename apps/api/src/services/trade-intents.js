@@ -7,6 +7,7 @@ import { fetchEventByInput } from './polymarket/gamma.js';
 import {
   findRecentFilledSellOrderForIntent,
   getLiveOutcomeProbabilityFromUsMarket,
+  getOrderRejectionReason,
   getOrderState,
   getPolymarketUsOrderById,
   getSharesFromOrder,
@@ -328,13 +329,15 @@ function describeExitFailure(sellOrder, reasonLabel = 'Exit') {
   const orderId = sellOrder?.orderId ?? 'unknown';
   const orderState = String(sellOrder?.orderState ?? 'unknown').trim() || 'unknown';
   const exitMethod = String(sellOrder?.exitMethod ?? 'sell-order').trim() || 'sell-order';
+  const rejectionReason = getOrderRejectionReason(sellOrder?.response);
   const sharesFilled = Number.parseFloat(sellOrder?.sharesFilled ?? NaN);
   const sharesRequested = Number.parseFloat(sellOrder?.sharesRequested ?? NaN);
   const partialFillDetail = Number.isFinite(sharesFilled) && sharesFilled > 0
     ? ` Filled ${sharesFilled}${Number.isFinite(sharesRequested) && sharesRequested > 0 ? ` of ${sharesRequested}` : ''} shares before the order became terminal.`
     : ' No shares were filled.';
+  const reasonDetail = rejectionReason ? ` Venue reason: ${rejectionReason}.` : '';
 
-  return `${reasonLabel} order ${orderId} via ${exitMethod} ended in ${orderState}.${partialFillDetail}`;
+  return `${reasonLabel} order ${orderId} via ${exitMethod} ended in ${orderState}.${partialFillDetail}${reasonDetail}`;
 }
 
 function buildVenueSyncClosedIntent(intent, nextState, notes, { exitReason } = {}) {

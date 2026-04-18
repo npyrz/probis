@@ -904,8 +904,8 @@ function clampLimitPrice(value) {
     return null;
   }
 
-  // Binary outcome prices must remain within (0, 1).
-  const clamped = Math.min(0.999, Math.max(0.001, numeric));
+  // Polymarket US rejects binary prices below $0.01.
+  const clamped = Math.min(0.999, Math.max(0.01, numeric));
   return normalizeLimitPrice(clamped);
 }
 
@@ -1020,7 +1020,7 @@ function buildAggressiveBuyLimitLadder(basePrice, maxSlippageBps, { direction = 
     .sort((left, right) => left - right);
 }
 
-function buildAggressiveSellLimitLadder(basePrice, floor = 0.001) {
+function buildAggressiveSellLimitLadder(basePrice, floor = 0.01) {
   return buildAggressiveBuyLimitLadder(basePrice, 0, {
     direction: 'down',
     boundary: clampLimitPrice(floor)
@@ -1168,6 +1168,51 @@ export async function getLiveOutcomeProbabilityFromUsMarket(env, marketSlug, out
   }
 
   return null;
+}
+
+export async function getUsMarketBboSummary(env, marketSlug) {
+  if (!marketSlug || !env.hasUsTradingCredentials) {
+    return null;
+  }
+
+  const bbo = await fetchBboForMarket(env, marketSlug);
+  const marketData = bbo?.marketData ?? bbo;
+
+  if (!marketData || typeof marketData !== 'object') {
+    return null;
+  }
+
+  const bestBid = parseNumber(
+    marketData.bestBid?.price?.value
+    ?? marketData.bestBid?.price
+    ?? marketData.bestBid?.value
+    ?? marketData.bestBid
+    ?? marketData.bid?.price?.value
+    ?? marketData.bid?.price
+    ?? marketData.bid
+  );
+  const bestAsk = parseNumber(
+    marketData.bestAsk?.price?.value
+    ?? marketData.bestAsk?.price
+    ?? marketData.bestAsk?.value
+    ?? marketData.bestAsk
+    ?? marketData.ask?.price?.value
+    ?? marketData.ask?.price
+    ?? marketData.ask
+  );
+  const midpoint = typeof bestBid === 'number' && typeof bestAsk === 'number'
+    ? normalizeLimitPrice((bestBid + bestAsk) / 2)
+    : null;
+  const spread = typeof bestBid === 'number' && typeof bestAsk === 'number'
+    ? normalizeLimitPrice(bestAsk - bestBid)
+    : null;
+
+  return {
+    bestBid: typeof bestBid === 'number' ? normalizeLimitPrice(bestBid) : null,
+    bestAsk: typeof bestAsk === 'number' ? normalizeLimitPrice(bestAsk) : null,
+    midpoint,
+    spread
+  };
 }
 
 async function fetchBboForMarket(env, marketSlug) {
@@ -1335,6 +1380,36 @@ export function getOrderState(orderResponse) {
   const executionState = String(latestExecution?.order?.state ?? '').trim();
 
   return executionState.length > 0 ? executionState : null;
+}
+
+export function getOrderRejectionReason(orderResponse) {
+  const order = orderResponse?.order ?? orderResponse;
+  const executions = Array.isArray(orderResponse?.executions)
+    ? orderResponse.executions
+    : (Array.isArray(order?.executions) ? order.executions : []);
+  const candidates = [
+    order?.rejectReason,
+    order?.rejectionReason,
+    order?.reason,
+    order?.message,
+    orderResponse?.rejectReason,
+    orderResponse?.rejectionReason,
+    orderResponse?.reason,
+    orderResponse?.message,
+    ...executions.flatMap((execution) => ([
+      execution?.rejectReason,
+      execution?.rejectionReason,
+      execution?.reason,
+      execution?.message,
+      execution?.order?.rejectReason,
+      execution?.order?.rejectionReason,
+      execution?.order?.reason,
+      execution?.order?.message
+    ]))
+  ];
+
+  const match = candidates.find((value) => String(value ?? '').trim().length > 0);
+  return match ? String(match).trim() : null;
 }
 
 export function getSharesFromOrder(orderResponse) {
@@ -1773,8 +1848,11 @@ export async function placeSellOrderForIntent(env, intent) {
     }
   }
 
+  const liveExecutablePrice = await getLiveOutcomeProbabilityFromUsMarket(env, marketSlug, intent.outcomeLabel).catch(() => null);
   const quote = await resolveOutcomeMarketQuote(env, marketSlug, intent.outcomeLabel);
-  const fallbackQuotePrice = resolveFallbackSellQuotePrice(orderIntent, quote.outcomePrice);
+  const fallbackQuotePrice = typeof liveExecutablePrice === 'number'
+    ? resolveFallbackSellQuotePrice(orderIntent, liveExecutablePrice)
+    : resolveFallbackSellQuotePrice(orderIntent, quote.outcomePrice);
 
   if (!fallbackQuotePrice) {
     throw new Error('Unable to derive a valid executable limit price for sell retry.');

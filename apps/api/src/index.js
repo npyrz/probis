@@ -8,6 +8,7 @@ import healthRouter from './routes/health.js';
 import polymarketRouter from './routes/polymarket.js';
 import sportsRouter from './routes/sports.js';
 import tradesRouter from './routes/trades.js';
+import { startOpportunityScanner } from './services/polymarket/opportunity-scanner.js';
 
 const env = getEnv();
 const app = express();
@@ -23,6 +24,7 @@ app.get('/', (_request, response) => {
       '/health',
       '/api/polymarket/status',
       '/api/polymarket/events',
+      '/api/polymarket/scanner',
       '/api/polymarket/events/resolve',
       '/api/polymarket/events/aggregation',
       '/api/sports/status',
@@ -43,6 +45,8 @@ app.use(polymarketRouter);
 app.use(sportsRouter);
 app.use(aiRouter);
 app.use(tradesRouter);
+
+startOpportunityScanner(env);
 
 app.listen(env.port, () => {
   logStartup(env);

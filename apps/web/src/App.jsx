@@ -6,6 +6,7 @@ import {
   deleteTradeIntent as deleteTradeIntentRequest,
   executeTradeIntent as executeTradeIntentRequest,
   fetchActiveEvents,
+  fetchOpportunityScanner,
   fetchStatus,
   fetchTradeIntents,
   invalidateEventAggregationCache,
@@ -161,6 +162,47 @@ function formatRelativeAge(value, now = new Date()) {
 
   const diffHours = Math.floor(diffMinutes / 60);
   return `${diffHours}h ago`;
+}
+
+function formatTimeToResolution(value) {
+  if (typeof value !== 'number') {
+    return 'n/a';
+  }
+
+  const totalMinutes = Math.max(0, Math.round(value / 60000));
+
+  if (totalMinutes < 60) {
+    return `${totalMinutes}m`;
+  }
+
+  const totalHours = totalMinutes / 60;
+
+  if (totalHours < 48) {
+    return `${totalHours.toFixed(totalHours < 10 ? 1 : 0)}h`;
+  }
+
+  const totalDays = totalHours / 24;
+  return `${totalDays.toFixed(totalDays < 10 ? 1 : 0)}d`;
+}
+
+function formatOpportunityClassification(value) {
+  if (value === 'strong-buy') {
+    return 'Strong Buy';
+  }
+
+  if (value === 'soft-buy') {
+    return 'Soft Buy';
+  }
+
+  if (value === 'watchlist') {
+    return 'Watchlist';
+  }
+
+  return 'Avoid';
+}
+
+function getOpportunityClassificationClassName(value) {
+  return `scanner-class-chip scanner-class-chip-${String(value ?? 'watchlist')}`;
 }
 
 function formatIntentStatus(intent) {
@@ -1346,6 +1388,7 @@ function OutcomeSparkline({ history, className = 'sparkline' }) {
 export default function App() {
   const [status, setStatus] = useState(null);
   const [activeEvents, setActiveEvents] = useState([]);
+  const [scannerSnapshot, setScannerSnapshot] = useState(null);
   const [selectedEvent, setSelectedEvent] = useState(null);
   const [aggregation, setAggregation] = useState(null);
   const [statisticalModel, setStatisticalModel] = useState(null);
@@ -1391,6 +1434,8 @@ export default function App() {
     .map((intent) => intent?.monitoring?.lastPolymarketQuoteAt)
     .filter(Boolean)
     .sort((left, right) => new Date(right).getTime() - new Date(left).getTime())[0] ?? null;
+  const opportunityBoard = scannerSnapshot?.opportunities ?? [];
+  const scannerLastUpdatedAge = formatRelativeAge(scannerSnapshot?.generatedAt, liveClock);
   const filteredTradeHistory = tradeHistory.filter((intent) => {
     if (tradeCenterFilter === 'tracking') {
       return intent.status === 'tracking';
@@ -1650,10 +1695,11 @@ export default function App() {
 
     async function loadInitialData() {
       try {
-        const [nextStatus, nextEvents, nextTradeHistory] = await Promise.all([
+        const [nextStatus, nextEvents, nextTradeHistory, nextScannerSnapshot] = await Promise.all([
           fetchStatus(),
           fetchActiveEvents(5),
-          fetchTradeIntents(6)
+          fetchTradeIntents(6),
+          fetchOpportunityScanner()
         ]);
 
         if (isCancelled) {
@@ -1663,6 +1709,7 @@ export default function App() {
         setStatus(nextStatus);
         setActiveEvents(nextEvents);
         setTradeHistory(nextTradeHistory);
+        setScannerSnapshot(nextScannerSnapshot);
         setLastMarketUpdate(new Date().toISOString());
         setLastTradeUpdate(new Date().toISOString());
         setNotice('');
@@ -1721,6 +1768,42 @@ export default function App() {
   }, [hasLoadedInitialData]);
 
   useEffect(() => {
+    if (!hasLoadedInitialData) {
+      return undefined;
+    }
+
+    let isCancelled = false;
+    let isFetching = false;
+
+    const intervalId = window.setInterval(() => {
+      void (async () => {
+        if (isFetching || isCancelled) {
+          return;
+        }
+
+        isFetching = true;
+
+        try {
+          const nextScannerSnapshot = await fetchOpportunityScanner();
+
+          if (!isCancelled) {
+            setScannerSnapshot(nextScannerSnapshot);
+          }
+        } catch {
+          // Keep the last known board snapshot during background refresh failures.
+        } finally {
+          isFetching = false;
+        }
+      })();
+    }, 120000);
+
+    return () => {
+      isCancelled = true;
+      window.clearInterval(intervalId);
+    };
+  }, [hasLoadedInitialData]);
+
+  useEffect(() => {
     if (activeTradeIntents.length === 0) {
       return undefined;
     }
@@ -1747,7 +1830,7 @@ export default function App() {
     };
   }, [activeTradeIntents.map((intent) => intent.id).join('|')]);
 
-  async function handleResolveEvent(submittedInput) {
+  async function handleResolveEvent(submittedInput, options = {}) {
     setError('');
     setNotice('');
     setAnalysis('');
@@ -1777,7 +1860,8 @@ export default function App() {
       setAggregation(analytics.aggregation ?? null);
       setStatisticalModel(analytics.statisticalModel ?? null);
       const liveMarkets = event.markets.filter(marketHasLivePrices);
-      setSelectedMarketId(liveMarkets[0]?.conditionId ?? null);
+      const preferredMarket = liveMarkets.find((market) => market.conditionId === options.preferredConditionId) ?? null;
+      setSelectedMarketId(preferredMarket?.conditionId ?? liveMarkets[0]?.conditionId ?? null);
       setEventInput(submittedInput);
       setLastMarketUpdate(new Date().toISOString());
     } catch (resolveError) {
@@ -1805,6 +1889,17 @@ export default function App() {
   function handleUseEvent(slug) {
     startTransition(() => {
       void handleResolveEvent(slug);
+    });
+  }
+
+  function handleUseScannerOpportunity(opportunity) {
+    startTransition(() => {
+      void (async () => {
+        await handleResolveEvent(opportunity.eventSlug, {
+          preferredConditionId: opportunity.conditionId
+        });
+        setNotice(`Loaded ${opportunity.outcomeLabel} in ${opportunity.marketQuestion}.`);
+      })();
     });
   }
 
@@ -2737,6 +2832,114 @@ export default function App() {
       </section>
 
       <section className="dashboard-footer-grid">
+        <section className="panel-card terminal-card trade-history-card footer-history-card opportunity-board-card">
+          <div className="panel-heading panel-heading-inline">
+            <div>
+              <p className="eyebrow">Scanner</p>
+              <h2>Opportunity Board</h2>
+            </div>
+            <div className="action-row">
+              <span className="market-chip market-chip-muted">{opportunityBoard.length} ranked</span>
+              <span className="market-chip market-chip-muted">
+                {scannerSnapshot?.status === 'refreshing' || scannerSnapshot?.status === 'loading'
+                  ? 'Refreshing'
+                  : `Updated ${scannerLastUpdatedAge}`}
+              </span>
+            </div>
+          </div>
+
+          <div className="panel-scroll-body opportunity-board-scroll">
+            {scannerSnapshot?.error ? (
+              <p className="error-banner">{scannerSnapshot.error}</p>
+            ) : null}
+
+            {!scannerSnapshot ? (
+              <p className="empty-state">Loading scanner snapshot.</p>
+            ) : opportunityBoard.length === 0 ? (
+              <p className="empty-state">No ranked scanner results are available right now.</p>
+            ) : (
+              <div className="opportunity-board-list">
+                {opportunityBoard.map((opportunity) => (
+                  <article
+                    key={`${opportunity.eventSlug}-${opportunity.conditionId}-${opportunity.outcomeLabel}`}
+                    className="trade-history-item opportunity-board-item"
+                  >
+                    <div className="panel-heading panel-heading-inline">
+                      <div>
+                        <p className="eyebrow">#{opportunity.rank} {formatOpportunityClassification(opportunity.classification)}</p>
+                        <h2>{opportunity.outcomeLabel} in {opportunity.marketQuestion}</h2>
+                        <p className="event-meta">{opportunity.eventTitle}</p>
+                      </div>
+                      <div className="trade-heading-chips">
+                        <span className={getOpportunityClassificationClassName(opportunity.classification)}>
+                          {formatOpportunityClassification(opportunity.classification)}
+                        </span>
+                        {opportunity.sportsLeague ? (
+                          <span className={`market-chip market-chip-league market-chip-league-${opportunity.sportsLeague.toLowerCase()}`}>
+                            {opportunity.sportsLeague}
+                          </span>
+                        ) : null}
+                      </div>
+                    </div>
+
+                    <div className="decision-rationale-grid compact-preview-grid opportunity-board-metrics">
+                      <article>
+                        <span>EV / Dollar</span>
+                        <strong>{formatSignedPercent(opportunity.expectedValuePerDollar)}</strong>
+                      </article>
+                      <article>
+                        <span>Confidence</span>
+                        <strong>{formatPercent(opportunity.confidence)}</strong>
+                      </article>
+                      <article>
+                        <span>Market Price</span>
+                        <strong>{formatPercent(opportunity.currentProbability)}</strong>
+                      </article>
+                      <article>
+                        <span>Model Price</span>
+                        <strong>{formatPercent(opportunity.modelProbability)}</strong>
+                      </article>
+                      <article>
+                        <span>Liquidity</span>
+                        <strong>{formatCompactNumber(opportunity.marketLiquidity ?? opportunity.eventLiquidity)}</strong>
+                      </article>
+                      <article>
+                        <span>Spread</span>
+                        <strong>{formatSignedPercent(opportunity.spread)}</strong>
+                      </article>
+                      <article>
+                        <span>Resolves In</span>
+                        <strong>{formatTimeToResolution(opportunity.timeToResolutionMs)}</strong>
+                      </article>
+                      <article>
+                        <span>Signal</span>
+                        <strong>{opportunity.signalSource === 'sports-model' ? 'Sports Model' : 'Microstructure'}</strong>
+                      </article>
+                    </div>
+
+                    <div className="trade-actions">
+                      <button
+                        type="button"
+                        className="secondary-button"
+                        onClick={() => handleUseScannerOpportunity(opportunity)}
+                      >
+                        Load Event
+                      </button>
+                      <button
+                        type="button"
+                        className="ghost-button"
+                        onClick={() => setEventInput(opportunity.eventSlug)}
+                      >
+                        Use Slug
+                      </button>
+                    </div>
+                  </article>
+                ))}
+              </div>
+            )}
+          </div>
+        </section>
+
         <section className="panel-card terminal-card trade-history-card footer-history-card">
           <div className="panel-heading panel-heading-inline">
             <div>
