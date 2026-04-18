@@ -915,20 +915,40 @@ h3 {
   border-radius: 10px;
   border: 1px solid rgba(79, 93, 110, 0.28);
   background:
-    linear-gradient(180deg, rgba(14, 22, 32, 0.96), rgba(8, 13, 19, 0.98)),
-    repeating-linear-gradient(
-      to right,
-      rgba(255, 255, 255, 0.03) 0,
-      rgba(255, 255, 255, 0.03) 1px,
-      transparent 1px,
-      transparent 14px
-    );
+    radial-gradient(circle at top left, rgba(40, 64, 90, 0.28), transparent 36%),
+    linear-gradient(180deg, rgba(20, 28, 39, 0.98), rgba(10, 15, 22, 0.99));
   overflow: hidden;
 }
 
+.tracking-chart-frame {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 56px;
+  grid-template-rows: 176px auto;
+  column-gap: 6px;
+  row-gap: 8px;
+  align-items: stretch;
+  width: 100%;
+  min-width: 0;
+}
+
+.tracking-chart-grid-line {
+  stroke: rgba(148, 163, 184, 0.2);
+  stroke-width: 0.45;
+  stroke-dasharray: 0.8 2.2;
+}
+
+.tracking-chart-time-line {
+  stroke: rgba(96, 112, 132, 0.18);
+  stroke-width: 0.38;
+}
+
+.tracking-chart-area {
+  fill: url(#tracking-chart-area-fill);
+}
+
 .tracking-chart-threshold {
-  stroke-width: 1.2;
-  stroke-dasharray: 4 3;
+  stroke-width: 0.95;
+  stroke-dasharray: 3 2.6;
 }
 
 .tracking-chart-threshold-entry {
@@ -944,15 +964,71 @@ h3 {
 }
 
 .tracking-chart-current-line {
-  stroke: #23c7ff;
-  stroke-width: 1.4;
+  fill: none;
+  stroke: #189cff;
+  stroke-width: 1.35;
   stroke-linecap: round;
-  filter: drop-shadow(0 0 4px rgba(35, 199, 255, 0.42));
+  filter: drop-shadow(0 0 2px rgba(35, 199, 255, 0.32));
+  stroke-linejoin: round;
 }
 
 .tracking-chart-current-line-selling {
-  stroke-width: 1.8;
+  stroke-width: 1.6;
   stroke-dasharray: 5 3;
+}
+
+.tracking-chart-current-dot {
+  fill: #1faeff;
+  stroke: rgba(7, 13, 19, 0.98);
+  stroke-width: 0.65;
+  filter: drop-shadow(0 0 3px rgba(31, 174, 255, 0.45));
+}
+
+.tracking-chart-axis {
+  pointer-events: none;
+}
+
+.tracking-chart-axis-y {
+  grid-column: 2;
+  grid-row: 1;
+  display: flex;
+  flex-direction: column;
+  justify-content: space-between;
+  align-items: flex-end;
+  padding: 10px 0 12px;
+  min-width: 0;
+}
+
+.tracking-chart-axis-x {
+  grid-column: 1;
+  grid-row: 2;
+  min-height: 20px;
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-end;
+  padding: 0 4px;
+  min-width: 0;
+}
+
+.tracking-chart-axis-label-y,
+.tracking-chart-axis-label-x {
+  color: rgba(159, 176, 196, 0.92);
+  font-size: 0.78rem;
+  line-height: 1;
+  letter-spacing: 0.01em;
+  font-variant-numeric: tabular-nums;
+}
+
+.tracking-chart-axis-label-x {
+  white-space: nowrap;
+}
+
+.tracking-chart-axis-label-y {
+  text-align: right;
+}
+
+.tracking-chart-axis-label-x {
+  color: rgba(132, 149, 171, 0.9);
 }
 
 .tracking-chart-legend {

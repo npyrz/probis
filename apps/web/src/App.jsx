@@ -17,7 +17,8 @@ import {
 } from './lib/api.js';
 
 const TRADE_DRAFT_STORAGE_KEY = 'probis.tradeDraft';
-const TRACKED_PROBABILITY_HISTORY_LIMIT = 36;
+const TRACKED_PROBABILITY_HISTORY_LIMIT = 72;
+const TRACKED_PROBABILITY_WINDOW_MS = 5 * 60 * 1000;
 
 function formatCompactNumber(value) {
   if (typeof value !== 'number' || Number.isNaN(value)) {
@@ -90,6 +91,45 @@ function formatClockTime(value) {
     second: '2-digit',
     hour12: false
   }).format(parsed);
+}
+
+function formatChartDate(value) {
+  if (!value) {
+    return 'n/a';
+  }
+
+  const parsed = new Date(value);
+
+  if (Number.isNaN(parsed.getTime())) {
+    return 'n/a';
+  }
+
+  return new Intl.DateTimeFormat('en-US', {
+    month: 'short',
+    day: 'numeric'
+  }).format(parsed);
+}
+
+function formatChartTime(value) {
+  if (!value) {
+    return 'n/a';
+  }
+
+  const parsed = new Date(value);
+
+  if (Number.isNaN(parsed.getTime())) {
+    return 'n/a';
+  }
+
+  return new Intl.DateTimeFormat('en-US', {
+    hour: 'numeric',
+    minute: '2-digit'
+  }).format(parsed);
+}
+
+function getTimestampMs(value) {
+  const parsed = Date.parse(String(value ?? ''));
+  return Number.isFinite(parsed) ? parsed : null;
 }
 
 function formatRelativeAge(value, now = new Date()) {
@@ -978,6 +1018,102 @@ function getProbabilityChartY(value, bounds) {
   return 100 - ((value - bounds.minValue) / range) * 100;
 }
 
+function getProbabilityChartStep(range) {
+  if (range <= 0.2) {
+    return 0.05;
+  }
+
+  if (range <= 0.45) {
+    return 0.1;
+  }
+
+  if (range <= 0.75) {
+    return 0.15;
+  }
+
+  return 0.2;
+}
+
+function getRoundedProbabilityChartBounds(bounds) {
+  if (!bounds) {
+    return null;
+  }
+
+  const rawRange = Math.max(0.04, bounds.maxValue - bounds.minValue);
+  const step = getProbabilityChartStep(rawRange);
+  let minValue = Math.floor(bounds.minValue / step) * step;
+  let maxValue = Math.ceil(bounds.maxValue / step) * step;
+
+  minValue = Math.max(0, Number(minValue.toFixed(4)));
+  maxValue = Math.min(1, Number(maxValue.toFixed(4)));
+
+  if (maxValue - minValue < step * 2) {
+    if (maxValue >= 1) {
+      minValue = Math.max(0, Number((maxValue - step * 2).toFixed(4)));
+    } else {
+      maxValue = Math.min(1, Number((minValue + step * 2).toFixed(4)));
+    }
+  }
+
+  return {
+    minValue,
+    maxValue,
+    step
+  };
+}
+
+function getProbabilityChartTicks(bounds) {
+  if (!bounds || typeof bounds.step !== 'number' || bounds.step <= 0) {
+    return [];
+  }
+
+  const ticks = [];
+
+  for (let value = bounds.minValue; value <= bounds.maxValue + bounds.step / 2; value += bounds.step) {
+    ticks.push(Number(value.toFixed(4)));
+  }
+
+  return ticks;
+}
+
+function buildSmoothLinePath(points) {
+  if (!Array.isArray(points) || points.length === 0) {
+    return '';
+  }
+
+  if (points.length === 1) {
+    const [point] = points;
+    return `M ${point.x} ${point.y}`;
+  }
+
+  let path = `M ${points[0].x} ${points[0].y}`;
+
+  for (let index = 0; index < points.length - 1; index += 1) {
+    const current = points[index];
+    const next = points[index + 1];
+    const midX = (current.x + next.x) / 2;
+
+    path += ` Q ${current.x} ${current.y} ${midX} ${((current.y + next.y) / 2)}`;
+  }
+
+  const lastPoint = points[points.length - 1];
+  path += ` T ${lastPoint.x} ${lastPoint.y}`;
+
+  return path;
+}
+
+function buildChartAreaPath(points, baselineY) {
+  if (!Array.isArray(points) || points.length === 0) {
+    return '';
+  }
+
+  const linePath = buildSmoothLinePath(points);
+  const firstPoint = points[0];
+  const lastPoint = points[points.length - 1];
+
+  return `${linePath} L ${lastPoint.x} ${baselineY} L ${firstPoint.x} ${baselineY} Z`;
+}
+
 function TrackingProbabilityChart({
   history,
   currentProbability,
@@ -987,32 +1123,95 @@ function TrackingProbabilityChart({
   monitoringState,
   lastQuoteAt
 }) {
-  const baseHistory = Array.isArray(history) ? history.filter((point) => typeof point?.price === 'number') : [];
-  const chartHistory = baseHistory.length > 0
+  const baseHistory = Array.isArray(history)
+    ? history
+      .filter((point) => typeof point?.price === 'number')
+      .map((point) => ({
+        ...point,
+        timestampMs: getTimestampMs(point.timestamp)
+      }))
+      .filter((point) => point.timestampMs !== null)
+    : [];
+  const fallbackTimestampMs = getTimestampMs(lastQuoteAt) ?? Date.now();
+  const seededHistory = baseHistory.length > 0
     ? baseHistory
     : typeof currentProbability === 'number'
-      ? [{ price: currentProbability, timestamp: lastQuoteAt ?? null, monitoringState }]
+      ? [{ price: currentProbability, timestamp: lastQuoteAt ?? null, timestampMs: fallbackTimestampMs, monitoringState }]
       : [];
+  const latestTimestampMs = seededHistory[seededHistory.length - 1]?.timestampMs ?? fallbackTimestampMs;
+  const windowStartMs = latestTimestampMs - TRACKED_PROBABILITY_WINDOW_MS;
+  const filteredWindowHistory = seededHistory.filter((point) => point.timestampMs >= windowStartMs);
+  const leadingPoint = seededHistory
+    .filter((point) => point.timestampMs < windowStartMs)
+    .at(-1);
+  const chartHistory = leadingPoint
+    ? [leadingPoint, ...filteredWindowHistory]
+    : filteredWindowHistory;
+  const plotArea = {
+    left: 4,
+    right: 156,
+    top: 8,
+    bottom: 82
+  };
+  const viewBox = {
+    width: 160,
+    height: 100
+  };
 
   if (chartHistory.length === 0) {
     return <div className="sparkline-empty tracking-chart-empty">No live probability history yet.</div>;
   }
 
-  const bounds = getProbabilityChartBounds([
-    ...chartHistory.map((point) => point.price),
-    entryProbability,
-    stopLossProbability,
-    takeProfitProbability
-  ].filter((value) => typeof value === 'number'));
+  const bounds = {
+    minValue: 0,
+    maxValue: 1,
+    step: 0.2
+  };
+  const ticks = getProbabilityChartTicks(bounds);
+  const displayTicks = [...ticks].reverse();
+  const plotWidth = plotArea.right - plotArea.left;
+  const plotHeight = plotArea.bottom - plotArea.top;
+  const xAxisInsetStyle = {
+    paddingLeft: `${(plotArea.left / viewBox.width) * 100}%`,
+    paddingRight: `${Math.max(0, ((viewBox.width - plotArea.right) / viewBox.width) * 100)}%`
+  };
+
+  const getPlotY = (value) => {
+    if (typeof value !== 'number' || !bounds) {
+      return plotArea.top + plotHeight / 2;
+    }
+
+    const range = bounds.maxValue - bounds.minValue || 1;
+    return plotArea.bottom - (((value - bounds.minValue) / range) * plotHeight);
+  };
 
   const chartPoints = chartHistory.map((point, index) => ({
-    x: chartHistory.length === 1 ? 50 : (index / (chartHistory.length - 1)) * 100,
-    y: getProbabilityChartY(point.price, bounds),
+    x: chartHistory.length === 1
+      ? plotArea.right
+      : Math.max(
+          plotArea.left,
+          Math.min(plotArea.right, plotArea.left + (((point.timestampMs - windowStartMs) / TRACKED_PROBABILITY_WINDOW_MS) * plotWidth))
+        ),
+    y: getPlotY(point.price),
     price: point.price,
-    timestamp: point.timestamp
+    timestamp: point.timestamp,
+    timestampMs: point.timestampMs,
+    key: `${point.timestampMs}-${index}`
   }));
   const latestPoint = chartPoints[chartPoints.length - 1] ?? null;
   const isSelling = monitoringState === 'exit-submitted-awaiting-fill';
+  const linePath = buildSmoothLinePath(chartPoints);
+  const areaPath = buildChartAreaPath(chartPoints, plotArea.bottom);
+  const timeTicks = Array.from({ length: 6 }, (_, index) => {
+    const timestampMs = windowStartMs + ((TRACKED_PROBABILITY_WINDOW_MS / 5) * index);
+    const x = plotArea.left + ((index / 5) * plotWidth);
+
+    return {
+      timestampMs,
+      x,
+      label: formatChartTime(timestampMs)
+    };
+  });
   const referenceLines = [
     {
       key: 'entry',
@@ -1038,36 +1237,86 @@ function TrackingProbabilityChart({
     <div className="tracking-chart-shell">
       <div className="tracking-chart-header">
         <div>
-          <span className="eyebrow">Live Polling</span>
+          <span className="eyebrow">Last 5 Minutes</span>
           <strong>{formatPercent(currentProbability)}</strong>
         </div>
-        <span className="tracking-chart-meta">{chartHistory.length} pts · {formatRelativeAge(lastQuoteAt)}</span>
+        <span className="tracking-chart-meta">{chartPoints.length} pts · newest {formatRelativeAge(lastQuoteAt)}</span>
       </div>
-      <svg className="tracking-chart" viewBox="0 0 100 100" preserveAspectRatio="none" aria-hidden="true">
-        {referenceLines.map((line) => {
-          const y = getProbabilityChartY(line.value, bounds);
-
-          return (
+      <div className="tracking-chart-frame">
+        <svg
+          className="tracking-chart"
+          viewBox={`0 0 ${viewBox.width} ${viewBox.height}`}
+          preserveAspectRatio="none"
+          aria-hidden="true"
+        >
+          <defs>
+            <linearGradient id="tracking-chart-area-fill" x1="0" y1="0" x2="0" y2="1">
+              <stop offset="0%" stopColor="rgba(31, 181, 255, 0.18)" />
+              <stop offset="100%" stopColor="rgba(31, 181, 255, 0.01)" />
+            </linearGradient>
+          </defs>
+          {timeTicks.map((tick) => (
             <line
-              key={line.key}
-              className={`tracking-chart-threshold ${line.className}`}
-              x1="0"
-              y1={y}
-              x2="100"
-              y2={y}
+              key={`time-grid-${tick.timestampMs}`}
+              className="tracking-chart-time-line"
+              x1={tick.x}
+              y1={plotArea.top}
+              x2={tick.x}
+              y2={plotArea.bottom}
             />
-          );
-        })}
-        {latestPoint ? (
-          <line
-            className={isSelling ? 'tracking-chart-current-line tracking-chart-current-line-selling' : 'tracking-chart-current-line'}
-            x1="0"
-            y1={latestPoint.y}
-            x2="100"
-            y2={latestPoint.y}
-          />
-        ) : null}
-      </svg>
+          ))}
+          {ticks.map((tick) => {
+            const y = getPlotY(tick);
+
+            return (
+              <line
+                key={`tick-${tick}`}
+                className="tracking-chart-grid-line"
+                x1={plotArea.left}
+                y1={y}
+                x2={plotArea.right}
+                y2={y}
+              />
+            );
+          })}
+          {areaPath ? <path d={areaPath} className="tracking-chart-area" /> : null}
+          {referenceLines.map((line) => {
+            const y = getPlotY(line.value);
+
+            return (
+              <line
+                key={line.key}
+                className={`tracking-chart-threshold ${line.className}`}
+                x1={plotArea.left}
+                y1={y}
+                x2={plotArea.right}
+                y2={y}
+              />
+            );
+          })}
+          {linePath ? (
+            <path
+              d={linePath}
+              className={isSelling ? 'tracking-chart-current-line tracking-chart-current-line-selling' : 'tracking-chart-current-line'}
+            />
+          ) : null}
+          {latestPoint ? <circle className="tracking-chart-current-dot" cx={latestPoint.x} cy={latestPoint.y} r="1.8" /> : null}
+        </svg>
+        <div className="tracking-chart-axis tracking-chart-axis-y" aria-hidden="true">
+          {displayTicks.map((tick) => (
+            <span key={`axis-y-${tick}`} className="tracking-chart-axis-label-y">
+              {formatPercent(tick)}
+            </span>
+          ))}
+        </div>
+        <div className="tracking-chart-axis tracking-chart-axis-x" aria-hidden="true" style={xAxisInsetStyle}>
+          {timeTicks.map((tick) => (
+            <span key={`axis-x-${tick.timestampMs}`} className="tracking-chart-axis-label-x">
+              {tick.label}
+            </span>
+          ))}
+        </div>
+      </div>
       <div className="tracking-chart-legend">
         {referenceLines.map((line) => (
           <span key={line.key} className="tracking-chart-legend-item">
