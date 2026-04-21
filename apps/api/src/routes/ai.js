@@ -52,17 +52,27 @@ router.post('/api/ai/analyze-event', async (request, response) => {
     }
 
     const forceRefresh = request.body?.refresh === true;
+    const tradeAmount = Number.parseFloat(request.body?.tradeAmount ?? request.body?.buyingAmount);
+    const amountContext = Number.isFinite(tradeAmount) && tradeAmount > 0
+      ? { tradeAmount }
+      : {};
     const analytics = await resolveEventAnalytics(env, input, { forceRefresh });
     const prompt = buildEventAnalysisPrompt(analytics.event, analytics.aggregation, analytics.statisticalModel);
     const result = await runAiTest(env, prompt);
-    const decisionPrompt = buildDecisionEnginePrompt(analytics.event, analytics.aggregation, analytics.statisticalModel);
+    const decisionPrompt = buildDecisionEnginePrompt(
+      analytics.event,
+      analytics.aggregation,
+      analytics.statisticalModel,
+      amountContext
+    );
     const decisionResult = await runAiJson(env, decisionPrompt);
     const decisionEngine = combineDecisionRecommendation(
       analytics.event,
       analytics.aggregation,
       analytics.statisticalModel,
       decisionResult.parsed,
-      decisionResult.response
+      decisionResult.response,
+      amountContext
     );
 
     response.json({

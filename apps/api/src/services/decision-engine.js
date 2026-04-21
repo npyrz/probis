@@ -50,6 +50,36 @@ function getDefaultRiskTargets(currentProbability, edge) {
   };
 }
 
+function getAiRiskTargets(aiRecommendation, currentProbability, edge) {
+  const defaultTargets = getDefaultRiskTargets(currentProbability, edge);
+  const stopLossProbability = typeof aiRecommendation?.stopLossProbability === 'number'
+    ? clamp(aiRecommendation.stopLossProbability, 0.02, 0.97)
+    : defaultTargets.stopLossProbability;
+  const takeProfitProbability = typeof aiRecommendation?.takeProfitProbability === 'number'
+    ? clamp(aiRecommendation.takeProfitProbability, 0.03, 0.98)
+    : defaultTargets.takeProfitProbability;
+
+  if (
+    typeof currentProbability !== 'number'
+    || typeof stopLossProbability !== 'number'
+    || typeof takeProfitProbability !== 'number'
+    || stopLossProbability >= currentProbability
+    || takeProfitProbability <= currentProbability
+    || stopLossProbability >= takeProfitProbability
+  ) {
+    return defaultTargets;
+  }
+
+  const downside = currentProbability - stopLossProbability;
+  const upside = takeProfitProbability - currentProbability;
+
+  return {
+    stopLossProbability,
+    takeProfitProbability,
+    riskRewardRatio: downside > 0 ? upside / downside : null
+  };
+}
+
 function findModelOutcome(statisticalModel, marketQuestion, outcomeLabel) {
   const market = statisticalModel.markets.find((candidate) => candidate.question === marketQuestion);
   const outcome = market?.outcomes.find((candidate) => candidate.label === outcomeLabel) ?? null;
@@ -209,7 +239,7 @@ function resolveRecommendedSelection(event, statisticalModel, aiRecommendation) 
   return getRawEventFallbackSelection(event, aiRecommendation);
 }
 
-export function combineDecisionRecommendation(event, aggregation, statisticalModel, aiRecommendation, rawAnalysis) {
+export function combineDecisionRecommendation(event, aggregation, statisticalModel, aiRecommendation, rawAnalysis, options = {}) {
   const bestOpportunity = statisticalModel.summary.bestOpportunity;
   const validatedSelection = resolveRecommendedSelection(event, statisticalModel, aiRecommendation);
   const chosenMarket = validatedSelection.market;
@@ -234,7 +264,7 @@ export function combineDecisionRecommendation(event, aggregation, statisticalMod
     chosenOutcome?.estimatedProbability ?? null
   );
   const suggestedStakeFraction = getSuggestedStakeFraction(action, edge, combinedConfidence);
-  const riskTargets = getDefaultRiskTargets(chosenOutcome?.currentProbability ?? null, edge);
+  const riskTargets = getAiRiskTargets(aiRecommendation, chosenOutcome?.currentProbability ?? null, edge);
 
   return {
     generatedAt: new Date().toISOString(),
@@ -258,6 +288,7 @@ export function combineDecisionRecommendation(event, aggregation, statisticalMod
       stopLossProbability: riskTargets.stopLossProbability,
       takeProfitProbability: riskTargets.takeProfitProbability,
       riskRewardRatio: riskTargets.riskRewardRatio,
+      plannedTradeAmount: typeof options.tradeAmount === 'number' ? options.tradeAmount : null,
       thesis: aiRecommendation?.thesis ?? null,
       keyRisk: aiRecommendation?.keyRisk ?? null,
       reasons: Array.isArray(aiRecommendation?.reasons) ? aiRecommendation.reasons : []

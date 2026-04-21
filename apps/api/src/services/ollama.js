@@ -201,7 +201,7 @@ export function buildEventAnalysisPrompt(event, aggregation, statisticalModel) {
   ].join('\n');
 }
 
-export function buildDecisionEnginePrompt(event, aggregation, statisticalModel) {
+export function buildDecisionEnginePrompt(event, aggregation, statisticalModel, options = {}) {
   const topMarkets = statisticalModel.markets
     .filter((market) => Array.isArray(market.outcomes) && market.outcomes.length > 0)
     .sort((left, right) => {
@@ -250,10 +250,13 @@ export function buildDecisionEnginePrompt(event, aggregation, statisticalModel) 
     'You are a decision engine for a prediction-market trading assistant.',
     'Return exactly one JSON object and no extra text.',
     'The JSON schema is:',
-    '{"marketQuestion":"string","outcomeLabel":"string","confidence":0.0,"agreeWithModel":true,"thesis":"string","keyRisk":"string","reasons":["string","string","string"]}',
+    '{"marketQuestion":"string","outcomeLabel":"string","confidence":0.0,"agreeWithModel":true,"stopLossProbability":0.0,"takeProfitProbability":0.0,"thesis":"string","keyRisk":"string","reasons":["string","string","string"]}',
     'Choose a recommendation from the provided model-ranked live markets only.',
     'If no positive-edge opportunity is present, choose the strongest priced market from validCandidates anyway and keep confidence calibrated.',
     'Use the marketQuestion and outcomeLabel values exactly as provided in validCandidates.',
+    typeof options.tradeAmount === 'number'
+      ? `Planned buying amount: $${options.tradeAmount.toFixed(2)}. Calibrate stopLossProbability and takeProfitProbability for this amount, liquidity, edge, and confidence.`
+      : 'No planned buying amount was provided; use conservative default stopLossProbability and takeProfitProbability values.',
     `Event: ${event.title}`,
     `Slug: ${event.slug}`,
     `Event volume: ${aggregation.liquiditySnapshot.eventVolume ?? 'n/a'}`,

@@ -109,12 +109,22 @@ export async function resolveEventAggregation(input, options = {}) {
 }
 
 export async function analyzeEvent(input, options = {}) {
+  const tradeAmount = Number.parseFloat(options.tradeAmount);
+  const payload = {
+    input,
+    refresh: options.refresh === true
+  };
+
+  if (Number.isFinite(tradeAmount) && tradeAmount > 0) {
+    payload.tradeAmount = tradeAmount;
+  }
+
   const data = await requestJson('/api/ai/analyze-event', {
     method: 'POST',
     headers: {
       'Content-Type': 'application/json'
     },
-    body: JSON.stringify({ input, refresh: options.refresh === true })
+    body: JSON.stringify(payload)
   });
 
   return data;

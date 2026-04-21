@@ -2011,9 +2011,15 @@ export default function App() {
 
   async function handleAnalyze(options = {}) {
     const submittedInput = eventInput.trim();
+    const submittedTradeAmount = Number.parseFloat(tradeAmount);
 
     if (!submittedInput) {
       setError('Paste a Polymarket event URL or slug.');
+      return;
+    }
+
+    if (!Number.isFinite(submittedTradeAmount) || submittedTradeAmount <= 0) {
+      setError('Enter a buying amount greater than $0.');
       return;
     }
 
@@ -2022,7 +2028,10 @@ export default function App() {
     setIsAnalyzing(true);
 
     try {
-      const result = await analyzeEvent(submittedInput, options);
+      const result = await analyzeEvent(submittedInput, {
+        ...options,
+        tradeAmount: submittedTradeAmount
+      });
       const nextEvent = result.event ?? selectedEvent;
       const validationError = getEventValidationError(nextEvent);
 
@@ -2095,7 +2104,7 @@ export default function App() {
       setSelectedMarketId(currentSelection?.conditionId ?? fallbackSelection?.conditionId ?? null);
 
       if (decisionEngine || analysis) {
-        const result = await analyzeEvent(event.slug, { refresh: true });
+        const result = await analyzeEvent(event.slug, { refresh: true, tradeAmount });
         setAnalysis(result.analysis);
         setDecisionEngine(result.decisionEngine ?? null);
         setLastAiUpdate(new Date().toISOString());
@@ -2466,16 +2475,31 @@ export default function App() {
               <h2>Event Input</h2>
             </div>
             <form className="event-form" onSubmit={handleSubmit}>
-              <label htmlFor="event-input">Event link or slug</label>
-              <div className="input-row input-row-single">
-                <input
-                  id="event-input"
-                  name="event-input"
-                  type="text"
-                  placeholder="polymarket.com/event/..."
-                  value={eventInput}
-                  onChange={(inputEvent) => setEventInput(inputEvent.target.value)}
-                />
+              <div className="event-input-grid">
+                <label htmlFor="event-input">
+                  Event link or slug
+                  <input
+                    id="event-input"
+                    name="event-input"
+                    type="text"
+                    placeholder="polymarket.com/event/..."
+                    value={eventInput}
+                    onChange={(inputEvent) => setEventInput(inputEvent.target.value)}
+                  />
+                </label>
+                <label htmlFor="buying-amount-input">
+                  Buying amount
+                  <input
+                    id="buying-amount-input"
+                    name="buying-amount-input"
+                    type="number"
+                    min="1"
+                    step="1"
+                    inputMode="decimal"
+                    value={tradeAmount}
+                    onChange={(inputEvent) => setTradeAmount(inputEvent.target.value)}
+                  />
+                </label>
               </div>
             </form>
             <div className="action-row terminal-action-row control-actions">
@@ -2620,17 +2644,7 @@ export default function App() {
                       ) : null}
                     </div>
 
-                    <div className="trade-input-row compact-input-grid">
-                      <label>
-                        <span className="label-with-tooltip" data-tooltip="Dollar amount you plan to commit to this position." tabIndex={0}>Stake</span>
-                        <input
-                          type="number"
-                          min="1"
-                          step="1"
-                          value={tradeAmount}
-                          onChange={(event) => setTradeAmount(event.target.value)}
-                        />
-                      </label>
+                    <div className="trade-input-row trade-risk-input-grid">
                       <label>
                         <span className="label-with-tooltip" data-tooltip="Stop-loss trigger probability. If live probability drops to or below this value, the system attempts an exit." tabIndex={0}>Stop</span>
                         <input

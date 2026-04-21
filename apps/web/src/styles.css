@@ -689,6 +689,13 @@ h3 {
   gap: 6px;
 }
 
+.event-input-grid {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(96px, 124px);
+  gap: 8px;
+  align-items: end;
+}
+
 .control-card .event-form label {
   font-size: 0.92rem;
   color: #a6b6c9;
@@ -704,13 +711,15 @@ h3 {
 }
 
 .control-card .input-row input,
+.control-card .event-input-grid input,
 .control-card .input-row button,
 .control-card .control-actions .secondary-button,
 .control-card .control-actions .secondary-button-muted {
   min-height: 38px;
 }
 
-.control-card .input-row input {
+.control-card .input-row input,
+.control-card .event-input-grid input {
   padding: 8px 10px;
 }
 
@@ -1303,7 +1312,12 @@ h3 {
   grid-template-columns: repeat(3, minmax(0, 1fr));
 }
 
+.trade-risk-input-grid {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
 .input-row input,
+.event-input-grid input,
 .market-toolbar select,
 .trade-input-row input {
   width: 100%;
@@ -1675,6 +1689,7 @@ button {
   }
 
   .input-row,
+  .event-input-grid,
   .control-actions {
     grid-template-columns: 1fr;
   }
@@ -1712,6 +1727,7 @@ button {
   }
 
   .input-row,
+  .event-input-grid,
   .outcome-row,
   .trade-actions,
   .trade-history-actions,
