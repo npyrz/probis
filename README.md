@@ -10,6 +10,9 @@ The sports path follows the same rule. Team history and matchup features live in
 
 Live sports context follows the same pattern. Team and league news, game-feed state, and optional social signals are attached during aggregation as `eventIntelligence`, then passed into the prompt layer as supporting context rather than as a separate model.
 
+## Demo
+https://drive.google.com/file/d/1P1RQcepRdpn_mv2iPgkjZIttwSmiNifE/view?usp=sharing
+
 ## Quick Start
 
 You only need Node.js 20+, Ollama, and the default local API URL for a first run.
