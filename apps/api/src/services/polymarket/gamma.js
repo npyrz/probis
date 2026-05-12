@@ -1,18 +1,16 @@
 import axios from 'axios';
 import { fetchUsMarketsBySlug, getUsMarketAvailabilityForEvent } from './us-orders.js';
+import { isWeatherEvent } from '../weather/event-intelligence.js';
 
-const TOKEN_ALIASES = {
-  usho: ['house'],
-  ushouse: ['house'],
-  ussen: ['senate'],
-  ussenate: ['senate'],
-  uspres: ['president', 'presidential'],
-  dem: ['democratic', 'democrats'],
-  rep: ['republican', 'republicans'],
-  gop: ['republican', 'republicans']
-};
+const STOP_WORDS = new Set(['the', 'and', 'for', 'will', 'with', 'after', 'before']);
 
-const STOP_WORDS = new Set(['the', 'and', 'for', 'will', 'with', 'after', 'before', 'party']);
+export class UnsupportedMarketError extends Error {
+  constructor(message) {
+    super(message);
+    this.name = 'UnsupportedMarketError';
+    this.statusCode = 400;
+  }
+}
 
 function parseJsonArray(value) {
   if (Array.isArray(value)) {
@@ -60,7 +58,12 @@ function normalizeMarket(market) {
     id: market.id ?? null,
     slug: market.slug ?? null,
     question: market.question ?? '',
+    title: market.title ?? null,
     subtitle: market.subtitle ?? '',
+    description: market.description ?? '',
+    category: typeof market?.category === 'string' ? market.category.toLowerCase() : null,
+    rules: market.rules ?? market.marketRules ?? null,
+    resolutionSource: market.resolutionSource ?? market.resolution_source ?? null,
     active: Boolean(market.active),
     closed: Boolean(market.closed),
     conditionId: fallbackConditionId,
@@ -77,6 +80,9 @@ function normalizeEvent(event) {
     slug: event.slug ?? '',
     title: event.title ?? event.question ?? '',
     description: event.description ?? '',
+    category: typeof event?.category === 'string' ? event.category.toLowerCase() : null,
+    rules: event.rules ?? event.marketRules ?? null,
+    resolutionSource: event.resolutionSource ?? event.resolution_source ?? null,
     active: Boolean(event.active),
     closed: Boolean(event.closed),
     endDate: event.endDate ?? null,
@@ -144,16 +150,6 @@ async function filterEventMarketsToUs(env, event) {
   };
 }
 
-function createGammaClient(env) {
-  return axios.create({
-    baseURL: env.gammaBaseUrl,
-    timeout: 15000,
-    headers: {
-      Accept: 'application/json'
-    }
-  });
-}
-
 function createUsGatewayClient(env) {
   return axios.create({
     baseURL: env.polymarketUsGatewayUrl ?? 'https://gateway.polymarket.us',
@@ -162,6 +158,65 @@ function createUsGatewayClient(env) {
       Accept: 'application/json'
     }
   });
+}
+
+async function getUsGatewayEventsPage(env, { limit, offset }) {
+  const usClient = createUsGatewayClient(env);
+  const pathCandidates = ['/events', '/v1/events'];
+  let lastError = null;
+
+  for (const path of pathCandidates) {
+    try {
+      const response = await usClient.get(path, {
+        params: {
+          active: true,
+          closed: false,
+          limit,
+          offset
+        }
+      });
+
+      const events = Array.isArray(response.data)
+        ? response.data
+        : (Array.isArray(response.data?.events) ? response.data.events : []);
+
+      return events.map(normalizeEvent);
+    } catch (error) {
+      lastError = error;
+    }
+  }
+
+  if (lastError) {
+    throw lastError;
+  }
+
+  return [];
+}
+
+async function getUsGatewayEventBySlug(env, slug) {
+  const usClient = createUsGatewayClient(env);
+  const encodedSlug = encodeURIComponent(slug);
+  const pathCandidates = [`/events/${encodedSlug}`, `/v1/events/${encodedSlug}`];
+  let lastError = null;
+
+  for (const path of pathCandidates) {
+    try {
+      const response = await usClient.get(path);
+      const event = Array.isArray(response.data) ? response.data[0] : (response.data?.event ?? response.data);
+
+      if (event && (event.title || event.slug || event.markets)) {
+        return normalizeEvent(event);
+      }
+    } catch (error) {
+      lastError = error;
+    }
+  }
+
+  if (lastError) {
+    throw lastError;
+  }
+
+  return null;
 }
 
 function normalizeSearchText(value) {
@@ -174,24 +229,8 @@ function tokenize(value) {
     .filter((token) => token.length > 1 && !STOP_WORDS.has(token));
 }
 
-function expandTokens(tokens) {
-  const expanded = new Set(tokens);
-
-  for (const token of tokens) {
-    const aliases = TOKEN_ALIASES[token];
-    if (aliases) {
-      for (const alias of aliases) {
-        expanded.add(alias);
-      }
-    }
-  }
-
-  return [...expanded];
-}
-
 function scoreEventCandidate(slug, event) {
-  const baseTokens = tokenize(slug);
-  const tokens = expandTokens(baseTokens);
+  const tokens = tokenize(slug);
   const candidateText = normalizeSearchText(`${event.slug} ${event.title}`);
   let score = 0;
 
@@ -199,18 +238,6 @@ function scoreEventCandidate(slug, event) {
     if (candidateText.includes(token)) {
       score += token.length >= 5 ? 3 : 2;
     }
-  }
-
-  if (tokens.includes('house') && candidateText.includes('house')) {
-    score += 4;
-  }
-
-  if (tokens.includes('senate') && candidateText.includes('senate')) {
-    score += 4;
-  }
-
-  if (tokens.includes('midterms') && candidateText.includes('midterms')) {
-    score += 3;
   }
 
   if (tokens.includes('2026') && candidateText.includes('2026')) {
@@ -269,6 +296,16 @@ async function findUsEventByMarketSlug(env, slug) {
   };
 }
 
+function assertWeatherOnlyEvent(event, slug) {
+  if (isWeatherEvent(event, event?.markets ?? [])) {
+    return event;
+  }
+
+  throw new UnsupportedMarketError(
+    `Only Polymarket US weather markets are supported. The slug "${slug}" does not look like a weather market.`
+  );
+}
+
 export function extractEventSlug(input) {
   if (typeof input !== 'string' || input.trim().length === 0) {
     throw new Error('A Polymarket event URL or slug is required.');
@@ -276,12 +313,21 @@ export function extractEventSlug(input) {
 
   const trimmed = input.trim();
 
-  if (!trimmed.includes('://') && !trimmed.startsWith('polymarket.com/') && !trimmed.startsWith('polymarket.us/')) {
+  if (/^(www\.)?polymarket\./i.test(trimmed) && !/^((www\.)?polymarket\.us)\//i.test(trimmed)) {
+    throw new Error('Use a polymarket.us event URL or a market slug. Non-US URLs are not supported in this build.');
+  }
+
+  if (!trimmed.includes('://') && !trimmed.startsWith('polymarket.us/') && !trimmed.startsWith('www.polymarket.us/')) {
     return trimmed.replace(/^\/(event|events)\//, '').replace(/^\/+|\/+$/g, '');
   }
 
   const normalizedUrl = trimmed.startsWith('http') ? trimmed : `https://${trimmed}`;
   const parsedUrl = new URL(normalizedUrl);
+
+  if (parsedUrl.hostname !== 'polymarket.us' && parsedUrl.hostname !== 'www.polymarket.us') {
+    throw new Error('Use a polymarket.us event URL or a market slug. Non-US Polymarket URLs are not supported.');
+  }
+
   const segments = parsedUrl.pathname.split('/').filter(Boolean);
   const eventIndex = segments.findIndex((segment) => segment === 'event' || segment === 'events');
 
@@ -293,93 +339,66 @@ export function extractEventSlug(input) {
 }
 
 export async function fetchActiveEvents(env, { limit = 10, offset = 0 } = {}) {
-  // Prefer the Polymarket US public gateway for event browsing.
-  try {
-    const usClient = createUsGatewayClient(env);
-    const response = await usClient.get('/events', {
-      params: {
-        active: true,
-        closed: false,
-        limit,
-        offset
-      }
-    });
-    const events = Array.isArray(response.data)
-      ? response.data
-      : (Array.isArray(response.data?.events) ? response.data.events : []);
+  const events = [];
+  let pageOffset = offset;
+  const pageLimit = Math.max(limit, 25);
+  const maxPages = 8;
 
-    if (events.length > 0) {
-      return events.map(normalizeEvent);
+  for (let pageIndex = 0; events.length < limit && pageIndex < maxPages; pageIndex += 1) {
+    const page = await getUsGatewayEventsPage(env, { limit: pageLimit, offset: pageOffset });
+
+    if (page.length === 0) {
+      break;
     }
-  } catch {
-    // Fall through to Gamma.
+
+    events.push(...page.filter((event) => isWeatherEvent(event, event.markets)));
+
+    if (page.length < pageLimit) {
+      break;
+    }
+
+    pageOffset += page.length;
   }
 
-  const gammaClient = createGammaClient(env);
-  const response = await gammaClient.get('/events', {
-    params: {
-      active: true,
-      closed: false,
-      limit,
-      offset,
-      order: 'volume_24hr',
-      ascending: false
-    }
-  });
-
-  return Array.isArray(response.data) ? response.data.map(normalizeEvent) : [];
+  return events.slice(0, limit);
 }
 
 export async function fetchEventByInput(env, input) {
   const slug = extractEventSlug(input);
 
-  // Prefer the Polymarket US public gateway.
   try {
-    const usClient = createUsGatewayClient(env);
-    const response = await usClient.get(`/events/${encodeURIComponent(slug)}`);
-    const event = Array.isArray(response.data) ? response.data[0] : (response.data?.event ?? response.data);
+    const event = await getUsGatewayEventBySlug(env, slug);
 
     if (event && (event.title || event.slug || event.markets)) {
-      return filterEventMarketsToUs(env, normalizeEvent(event));
+      return assertWeatherOnlyEvent(await filterEventMarketsToUs(env, event), slug);
     }
-  } catch {
-    // Fall through to Gamma / US market slug / fallback chain.
-  }
-
-  const gammaClient = createGammaClient(env);
-
-  try {
-    const response = await gammaClient.get(`/events/slug/${encodeURIComponent(slug)}`);
-    const event = Array.isArray(response.data) ? response.data[0] : response.data;
-
-    if (!event) {
-      throw new Error(`No Polymarket event was found for slug "${slug}".`);
-    }
-
-    return filterEventMarketsToUs(env, normalizeEvent(event));
   } catch (error) {
-    const status = axios.isAxiosError(error) ? error.response?.status : undefined;
-
-    if (status && status !== 404) {
+    if (error instanceof UnsupportedMarketError) {
       throw error;
     }
+
+    const status = axios.isAxiosError(error) ? error.response?.status : undefined;
 
     const usEvent = await findUsEventByMarketSlug(env, slug);
 
     if (usEvent) {
-      return usEvent;
+      return assertWeatherOnlyEvent(usEvent, slug);
+    }
+
+    if (status && status >= 500) {
+      throw error;
     }
 
     const fallbackEvent = await findFallbackEvent(env, slug);
 
     if (!fallbackEvent) {
-      throw new Error(`No Polymarket event was found for slug "${slug}".`);
+      throw new Error(`No Polymarket US event was found for slug "${slug}".`);
     }
 
-    return filterEventMarketsToUs(env, {
+    return assertWeatherOnlyEvent(await filterEventMarketsToUs(env, {
       ...fallbackEvent,
       requestedSlug: slug,
       resolvedFromFallback: true
-    });
+    }), slug);
   }
 }

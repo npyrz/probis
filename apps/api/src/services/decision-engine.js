@@ -10,12 +10,13 @@ function clamp(value, min = 0, max = 1) {
   return Math.min(max, Math.max(min, value));
 }
 
-function getExpectedValuePerDollar(currentProbability, modelProbability) {
+function getExpectedValuePerDollar(currentProbability, modelProbability, estimatedCost = 0) {
   if (typeof currentProbability !== 'number' || typeof modelProbability !== 'number' || currentProbability <= 0) {
     return null;
   }
 
-  return modelProbability / currentProbability - 1;
+  const riskAdjustedProbability = clamp(modelProbability - (estimatedCost ?? 0), 0, 1);
+  return riskAdjustedProbability / currentProbability - 1;
 }
 
 function getSuggestedStakeFraction(action, edge, combinedConfidence) {
@@ -253,15 +254,16 @@ export function combineDecisionRecommendation(event, aggregation, statisticalMod
   const agreement = aiRecommendation?.agreeWithModel ?? Boolean(bestOpportunity && chosenOutcome?.label === bestOpportunity.label);
 
   let action = 'watch';
-  if (edge > 0.01 && combinedConfidence >= 0.55 && agreement) {
+  if (edge >= 0.05 && combinedConfidence >= 0.55 && agreement) {
     action = 'buy';
-  } else if (edge < -0.01 || (llmConfidence !== null && llmConfidence < 0.4 && !agreement)) {
+  } else if (edge < 0 || (llmConfidence !== null && llmConfidence < 0.4 && !agreement)) {
     action = 'avoid';
   }
 
   const expectedValuePerDollar = getExpectedValuePerDollar(
     chosenOutcome?.currentProbability ?? null,
-    chosenOutcome?.estimatedProbability ?? null
+    chosenOutcome?.estimatedProbability ?? null,
+    chosenOutcome?.estimatedCost ?? chosenOutcome?.features?.estimatedCost ?? 0
   );
   const suggestedStakeFraction = getSuggestedStakeFraction(action, edge, combinedConfidence);
   const riskTargets = getAiRiskTargets(aiRecommendation, chosenOutcome?.currentProbability ?? null, edge);
@@ -274,6 +276,9 @@ export function combineDecisionRecommendation(event, aggregation, statisticalMod
       outcomeLabel: recommendedOutcomeLabel,
       currentProbability: chosenOutcome?.currentProbability ?? null,
       modelProbability: chosenOutcome?.estimatedProbability ?? null,
+      grossEdge: chosenOutcome?.grossEdge ?? null,
+      estimatedCost: chosenOutcome?.estimatedCost ?? chosenOutcome?.features?.estimatedCost ?? null,
+      costBreakdown: chosenOutcome?.features?.costBreakdown ?? null,
       edge,
       expectedValuePerDollar,
       combinedConfidence,

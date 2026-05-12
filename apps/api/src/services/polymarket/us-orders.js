@@ -72,7 +72,7 @@ function createPolymarketUsClient(env, timeout = 30000) {
 
 function getSignedHeaders(env, method, path) {
   if (!env.polymarketUsKeyId || !env.polymarketUsSecretKey) {
-    throw new Error('Missing POLYMARKET_US_KEY_ID/POLYMARKET_US_SECRET_KEY (or POLYMARKET_API_KEY/POLYMARKET_PRIVATE_KEY fallback).');
+    throw new Error('Missing POLYMARKET_US_KEY_ID/POLYMARKET_US_SECRET_KEY.');
   }
 
   const timestamp = String(Date.now());

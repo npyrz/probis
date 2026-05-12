@@ -1,57 +1,42 @@
 import axios from 'axios';
 
-function formatEventIntelligence(aggregation) {
-  const intelligence = aggregation?.eventIntelligence;
+function formatWeatherContext(aggregation) {
+  const weatherContext = aggregation?.weatherContext;
 
-  if (!intelligence?.available) {
-    return 'Event intelligence: unavailable';
+  if (!weatherContext?.available) {
+    return 'Weather context: unavailable';
   }
 
-  const teams = (Array.isArray(intelligence.teams) ? intelligence.teams : [])
-    .map((team) => team.displayName ?? team.teamName)
-    .filter(Boolean)
-    .join(', ');
-  const gameFeed = intelligence.gameFeed
-    ? `Game feed: ${intelligence.gameFeed.name ?? 'n/a'} | status=${intelligence.gameFeed.status ?? 'n/a'} | detail=${intelligence.gameFeed.detail ?? 'n/a'} | score=${(intelligence.gameFeed.competitors ?? []).map((competitor) => `${competitor.teamName}:${competitor.score ?? 'n/a'}`).join(', ')}`
-    : 'Game feed: unavailable';
-  const players = (Array.isArray(intelligence.playerMentions) ? intelligence.playerMentions : [])
-    .map((player) => player.name)
-    .filter(Boolean)
-    .slice(0, 8)
-    .join(', ');
-  const headlines = (Array.isArray(intelligence.articles) ? intelligence.articles : [])
+  const markets = (Array.isArray(weatherContext.markets) ? weatherContext.markets : [])
     .slice(0, 6)
-    .map((article) => {
-      const signals = Array.isArray(article.impactSignals) && article.impactSignals.length > 0
-        ? ` signals=${article.impactSignals.join('/')}`
-        : '';
-      const playersMentioned = Array.isArray(article.matchedPlayers) && article.matchedPlayers.length > 0
-        ? ` players=${article.matchedPlayers.map((player) => player.name).join(', ')}`
-        : '';
-
-      return `- ${article.headline ?? 'n/a'} | impact=${article.impactScore ?? 0}${signals}${playersMentioned} | ${article.description ?? ''}`.trim();
-    })
-    .join('\n');
-  const social = (Array.isArray(intelligence.socialPosts) ? intelligence.socialPosts : [])
-    .slice(0, 4)
-    .map((post) => {
-      const signals = Array.isArray(post.impactSignals) && post.impactSignals.length > 0
-        ? ` signals=${post.impactSignals.join('/')}`
-        : '';
-
-      return `- [${String(post.provider ?? 'social').toUpperCase()}] ${post.headline ?? 'n/a'} | impact=${post.impactScore ?? 0}${signals}`;
-    })
+    .map((market) => [
+      `- ${market.question}`,
+      `metric=${market.metric ?? 'n/a'}`,
+      `targetDate=${market.targetDate ?? market.targetDateLabel ?? 'n/a'}`,
+      `station=${market.stationName ?? market.stationCode ?? 'n/a'}`,
+      `source=${market.resolutionSourceName ?? market.resolutionSourceUrl ?? 'n/a'}`,
+      `unit=${market.unit ?? 'n/a'}`,
+      `precision=${market.precision ?? 'n/a'}`,
+      `finalization=${market.finalizationRule ?? 'n/a'}`
+    ].join(' | '))
     .join('\n');
 
   return [
-    `Event intelligence league: ${intelligence.league}`,
-    `Tracked teams: ${teams || 'n/a'}`,
-    gameFeed,
-    `Player mentions: ${players || 'none'}`,
-    'Relevant news:',
-    headlines || '- none',
-    'Relevant social:',
-    social || '- none'
+    `Weather context source: ${weatherContext.source}`,
+    `Recognized weather markets: ${weatherContext.recognizedMarketCount ?? 0}`,
+    markets || '- none',
+    `Weather snapshots: ${JSON.stringify((aggregation?.weatherSnapshots ?? []).map((snapshot) => ({
+      conditionId: snapshot.conditionId,
+      status: snapshot.status,
+      station: snapshot.stationId,
+      targetDate: snapshot.targetDate,
+      expectedHigh: snapshot.model?.expectedHigh ?? null,
+      stdDev: snapshot.model?.stdDev ?? null,
+      observedHighSoFar: snapshot.observedHighSoFar ?? null,
+      nwsForecastHigh: snapshot.nwsForecastHigh ?? null,
+      openMeteoForecastHigh: snapshot.openMeteoForecastHigh ?? null,
+      sourceRiskBuffer: snapshot.model?.sourceRiskBuffer ?? null
+    })))}`
   ].join('\n');
 }
 
@@ -195,7 +180,7 @@ export function buildEventAnalysisPrompt(event, aggregation, statisticalModel) {
     `Event liquidity: ${aggregation.liquiditySnapshot.eventLiquidity ?? 'n/a'}`,
     `Top outcome: ${statisticalModel.summary.bestOpportunity ? `${bestOpportunity.label} in ${bestOpportunity.question}` : 'n/a'}`,
     `Model methodology: ${statisticalModel.methodology.description}`,
-    formatEventIntelligence(aggregation),
+    formatWeatherContext(aggregation),
     'Live markets:',
     marketLines
   ].join('\n');
@@ -240,6 +225,8 @@ export function buildDecisionEnginePrompt(event, aggregation, statisticalModel, 
         outcomeLabel: best.label,
         marketProbability: typeof best.currentProbability === 'number' ? Number(best.currentProbability.toFixed(3)) : null,
         modelProbability: typeof best.estimatedProbability === 'number' ? Number(best.estimatedProbability.toFixed(3)) : null,
+        grossEdge: typeof best.grossEdge === 'number' ? Number(best.grossEdge.toFixed(3)) : null,
+        estimatedCost: typeof best.estimatedCost === 'number' ? Number(best.estimatedCost.toFixed(3)) : null,
         edge: typeof best.edge === 'number' ? Number(best.edge.toFixed(3)) : 0,
         confidence: typeof best.confidence === 'number' ? Number(best.confidence.toFixed(3)) : Number((market.confidence ?? 0.5).toFixed(3))
       };
@@ -252,7 +239,8 @@ export function buildDecisionEnginePrompt(event, aggregation, statisticalModel, 
     'The JSON schema is:',
     '{"marketQuestion":"string","outcomeLabel":"string","confidence":0.0,"agreeWithModel":true,"stopLossProbability":0.0,"takeProfitProbability":0.0,"thesis":"string","keyRisk":"string","reasons":["string","string","string"]}',
     'Choose a recommendation from the provided model-ranked live markets only.',
-    'If no positive-edge opportunity is present, choose the strongest priced market from validCandidates anyway and keep confidence calibrated.',
+    'edge is already net of estimated spread, slippage, and source-risk cost. Only agree with buy-like recommendations when net edge is at least 0.05.',
+    'If no positive-edge opportunity is present, choose the strongest priced market from validCandidates anyway, mark agreeWithModel false when appropriate, and keep confidence calibrated.',
     'Use the marketQuestion and outcomeLabel values exactly as provided in validCandidates.',
     typeof options.tradeAmount === 'number'
       ? `Planned buying amount: $${options.tradeAmount.toFixed(2)}. Calibrate stopLossProbability and takeProfitProbability for this amount, liquidity, edge, and confidence.`
@@ -261,7 +249,7 @@ export function buildDecisionEnginePrompt(event, aggregation, statisticalModel, 
     `Slug: ${event.slug}`,
     `Event volume: ${aggregation.liquiditySnapshot.eventVolume ?? 'n/a'}`,
     `Event liquidity: ${aggregation.liquiditySnapshot.eventLiquidity ?? 'n/a'}`,
-    formatEventIntelligence(aggregation),
+    formatWeatherContext(aggregation),
     `validCandidates: ${JSON.stringify(topMarkets)}`
   ].join('\n');
 }

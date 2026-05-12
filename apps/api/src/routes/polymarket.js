@@ -2,12 +2,20 @@ import { Router } from 'express';
 
 import { getEnv } from '../config/env.js';
 import { getPolymarketStatus } from '../services/polymarket/client.js';
-import { fetchActiveEvents, fetchEventByInput } from '../services/polymarket/gamma.js';
+import { UnsupportedMarketError, fetchActiveEvents, fetchEventByInput } from '../services/polymarket/gamma.js';
 import { invalidateEventAnalyticsCache, resolveEventAnalytics } from '../services/polymarket/event-data.js';
 import { getOpportunityScannerSnapshot } from '../services/polymarket/opportunity-scanner.js';
 import { getPolymarketUsAccountIdentity } from '../services/polymarket/us-orders.js';
 
 const router = Router();
+
+function getErrorStatus(error, fallbackStatus = 502) {
+  if (error instanceof UnsupportedMarketError) {
+    return 400;
+  }
+
+  return fallbackStatus;
+}
 
 router.get('/api/polymarket/status', async (_request, response) => {
   try {
@@ -102,7 +110,7 @@ router.get('/api/polymarket/events/resolve', async (request, response) => {
       event
     });
   } catch (error) {
-    response.status(502).json({
+    response.status(getErrorStatus(error)).json({
       ok: false,
       error: error instanceof Error ? error.message : 'Unable to resolve Polymarket event'
     });
@@ -130,7 +138,7 @@ router.get('/api/polymarket/events/aggregation', async (request, response) => {
       ...analytics
     });
   } catch (error) {
-    response.status(502).json({
+    response.status(getErrorStatus(error)).json({
       ok: false,
       error: error instanceof Error ? error.message : 'Unable to resolve Polymarket analytics'
     });

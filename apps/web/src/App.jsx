@@ -205,69 +205,24 @@ function getOpportunityClassificationClassName(value) {
   return `scanner-class-chip scanner-class-chip-${String(value ?? 'watchlist')}`;
 }
 
-function formatCompetitionPhase(value) {
-  if (value === 'playoffs') {
-    return 'Playoffs';
-  }
-
-  if (value === 'regular') {
-    return 'Regular';
-  }
-
-  return 'Unknown';
-}
-
-function formatCompetitionPhaseSource(value) {
-  if (value === 'espn-season-type') {
-    return 'ESPN Season Type';
-  }
-
-  if (value === 'text-heuristic') {
-    return 'Text Heuristic';
-  }
-
-  return 'Unavailable';
-}
-
-function formatImpactDirection(value) {
-  if (value === 'positive') {
-    return 'Positive';
-  }
-
-  if (value === 'negative') {
-    return 'Negative';
-  }
-
-  if (value === 'neutral') {
-    return 'Neutral';
-  }
-
-  return 'Unavailable';
-}
-
 function getOpportunityUniverseScope(opportunity) {
-  const sportsLeague = String(opportunity?.sportsLeague ?? '').trim().toLowerCase();
-
-  if (sportsLeague === 'nba' || sportsLeague === 'mlb') {
-    return sportsLeague;
-  }
-
   const marketCategory = String(opportunity?.marketCategory ?? opportunity?.eventCategory ?? '').trim().toLowerCase();
 
-  if (marketCategory === 'politics') {
-    return 'politics';
+  if (
+    marketCategory === 'weather'
+    || opportunity?.signalSource === 'weather-rules'
+    || Boolean(opportunity?.weatherMetric)
+    || Boolean(opportunity?.weatherResolutionSourceUrl)
+  ) {
+    return 'weather';
   }
 
   return null;
 }
 
 function formatOpportunitySignalSource(signalSource) {
-  if (signalSource === 'sports-model') {
-    return 'Sports Model';
-  }
-
-  if (signalSource === 'politics-model') {
-    return 'Politics Model';
+  if (signalSource === 'weather-rules') {
+    return 'Weather Rules';
   }
 
   return 'Microstructure';
@@ -693,58 +648,12 @@ function getMarketDisplayMetrics(market, aggregation, statisticalModel) {
   };
 }
 
-function getModelOutcome(modelMarket, outcomeLabel) {
-  return modelMarket?.outcomes?.find((outcome) => outcome.label === outcomeLabel) ?? null;
-}
-
-function getSportsMarketOutcome(modelMarket, outcomeLabel) {
-  return modelMarket?.sportsContext?.outcomes?.find((outcome) => outcome.label === outcomeLabel) ?? null;
-}
-
-function getSportsProbabilityBreakdown(market, modelMarket) {
-  if (!market || !modelMarket?.sportsContext) {
-    return [];
-  }
-
-  return (Array.isArray(market.outcomes) ? market.outcomes : [])
-    .map((outcome) => {
-      const sportsOutcome = getSportsMarketOutcome(modelMarket, outcome.label);
-      const modelOutcome = getModelOutcome(modelMarket, outcome.label);
-
-      if (!sportsOutcome || !modelOutcome) {
-        return null;
-      }
-
-      return {
-        label: outcome.label,
-        marketProbability: typeof outcome.probability === 'number' ? outcome.probability : modelOutcome.currentProbability,
-        rawSportsProbability: sportsOutcome.rawFairProbability ?? null,
-        calibratedSportsProbability: sportsOutcome.fairProbability ?? null,
-        finalModelProbability: modelOutcome.estimatedProbability ?? null,
-        edge: modelOutcome.edge ?? null,
-        confidence: modelOutcome.confidence ?? null
-      };
-    })
-    .filter(Boolean)
-    .sort((left, right) => (right.finalModelProbability ?? -1) - (left.finalModelProbability ?? -1));
-}
-
-function getSportsLeagues(statisticalModel) {
-  return [...new Set(
-    (Array.isArray(statisticalModel?.markets) ? statisticalModel.markets : [])
-      .map((market) => market?.sportsContext?.league)
-      .filter(Boolean)
-  )];
-}
-
 function getRecommendationSource(modelMarket) {
-  const league = String(modelMarket?.sportsContext?.league ?? '').trim().toUpperCase();
-
-  if (league === 'NBA' || league === 'MLB') {
+  if (modelMarket?.weatherContext) {
     return {
-      label: league,
-      detail: 'sports model',
-      className: `market-chip market-chip-league market-chip-league-${league.toLowerCase()}`
+      label: 'WEATHER',
+      detail: 'weather rules',
+      className: 'market-chip market-chip-league market-chip-league-weather'
     };
   }
 
@@ -755,51 +664,46 @@ function getRecommendationSource(modelMarket) {
   };
 }
 
-function formatSignedDecimal(value, digits = 2) {
+function hasWeatherContext(statisticalModel) {
+  return (Array.isArray(statisticalModel?.markets) ? statisticalModel.markets : [])
+    .some((market) => Boolean(market?.weatherContext));
+}
+
+function getWeatherResolutionContext(modelMarket) {
+  return modelMarket?.weatherContext ?? null;
+}
+
+function formatWeatherMetric(value) {
+  const normalized = String(value ?? '').trim();
+
+  if (!normalized) {
+    return 'n/a';
+  }
+
+  return normalized
+    .split('-')
+    .map((part) => part.charAt(0).toUpperCase() + part.slice(1))
+    .join(' ');
+}
+
+function formatWeatherUnit(value) {
+  if (value === 'F') {
+    return 'Fahrenheit';
+  }
+
+  if (value === 'C') {
+    return 'Celsius';
+  }
+
+  return value ?? 'n/a';
+}
+
+function formatTemperature(value, unit = 'F') {
   if (typeof value !== 'number' || Number.isNaN(value)) {
     return 'n/a';
   }
 
-  const prefix = value > 0 ? '+' : '';
-  return `${prefix}${value.toFixed(digits)}`;
-}
-
-function formatStarterSummary(pitcher) {
-  if (!pitcher?.name) {
-    return 'n/a';
-  }
-
-  const record = String(pitcher.record ?? '').trim();
-  return record ? `${pitcher.name} ${record}` : pitcher.name;
-}
-
-function getEventIntelligenceSummary(aggregation) {
-  return aggregation?.eventIntelligence?.available ? aggregation.eventIntelligence : null;
-}
-
-function formatImpactScore(value) {
-  if (typeof value !== 'number' || Number.isNaN(value)) {
-    return 'n/a';
-  }
-
-  return value.toFixed(0);
-}
-
-function getRecommendedStarterContext(modelMarket) {
-  const features = modelMarket?.sportsContext?.features;
-  const probablePitchers = features?.probablePitchers ?? null;
-
-  if (!probablePitchers?.home && !probablePitchers?.away) {
-    return null;
-  }
-
-  return {
-    source: features?.probablePitcherSource ?? null,
-    diff: features?.probablePitcherDiff ?? null,
-    home: probablePitchers.home ?? null,
-    away: probablePitchers.away ?? null,
-    recentForm: features?.probablePitcherRecentForm ?? null
-  };
+  return `${value.toFixed(1)}°${unit || 'F'}`;
 }
 
 function getRecommendedMarket(selectedEvent, decisionEngine) {
@@ -1531,6 +1435,11 @@ export default function App() {
   const selectedMarket = visibleMarkets.find((market) => market.conditionId === selectedMarketId) ?? rankedMarkets[0]?.market ?? null;
   const selectedHistoricalMarket = selectedMarket ? findHistoricalMarket(aggregation, selectedMarket.conditionId) : null;
   const selectedModelMarket = selectedMarket ? getModelMarket(statisticalModel, selectedMarket.conditionId) : null;
+  const primaryWeatherModelMarket = selectedModelMarket?.weatherContext
+    ? selectedModelMarket
+    : (Array.isArray(statisticalModel?.markets) ? statisticalModel.markets : []).find((market) => market?.weatherContext) ?? null;
+  const selectedWeatherContext = primaryWeatherModelMarket?.weatherContext ?? null;
+  const selectedWeatherSnapshot = primaryWeatherModelMarket?.weatherSnapshot ?? null;
   const recommendedMarket = getRecommendedMarket(selectedEvent, decisionEngine);
   const tradeSuggestion = buildTradeSuggestion(decisionEngine, tradeAmount, riskInputs);
   const activeTradeIntents = tradeHistory.filter((intent) => intent.status === 'tracking');
@@ -1539,7 +1448,8 @@ export default function App() {
     .filter(Boolean)
     .sort((left, right) => new Date(right).getTime() - new Date(left).getTime())[0] ?? null;
   const opportunityBoard = (scannerSnapshot?.opportunities ?? []).filter((opportunity) => {
-    return getOpportunityUniverseScope(opportunity) !== null;
+    return getOpportunityUniverseScope(opportunity) !== null
+      && String(opportunity?.outcomeLabel ?? '').trim().toLowerCase() === 'yes';
   });
   const scannerLastUpdatedAge = formatRelativeAge(scannerSnapshot?.generatedAt, liveClock);
   const filteredTradeHistory = tradeHistory.filter((intent) => {
@@ -1570,18 +1480,10 @@ export default function App() {
   const recommendationActionLabel = formatRecommendationActionLabel(decisionEngine?.action, currentRecommendation?.outcomeLabel);
   const recommendationExpectedValue = resolveRecommendationExpectedValue(currentRecommendation);
   const parsedOperatorNotes = parseOperatorNotes(analysis);
-  const selectedSportsProbabilityBreakdown = getSportsProbabilityBreakdown(selectedMarket, selectedModelMarket);
   const recommendedModelMarket = recommendedMarket ? getModelMarket(statisticalModel, recommendedMarket.conditionId) : null;
-  const recommendedSportsOutcome = currentRecommendation
-    ? getSportsMarketOutcome(recommendedModelMarket, currentRecommendation.outcomeLabel)
-    : null;
-  const recommendedModelOutcome = currentRecommendation
-    ? getModelOutcome(recommendedModelMarket, currentRecommendation.outcomeLabel)
-    : null;
-  const eventSportsLeagues = getSportsLeagues(statisticalModel);
+  const eventHasWeatherContext = hasWeatherContext(statisticalModel);
   const recommendationSource = getRecommendationSource(recommendedModelMarket);
-  const recommendedStarterContext = getRecommendedStarterContext(recommendedModelMarket);
-  const eventIntelligence = getEventIntelligenceSummary(aggregation);
+  const recommendedWeatherContext = getWeatherResolutionContext(recommendedModelMarket);
   const statusPopup = error
     ? { kind: 'error', message: error, dismiss: () => setError('') }
     : notice
@@ -1988,7 +1890,7 @@ export default function App() {
     }
 
     startTransition(() => {
-      void handleAnalyze();
+      void handleResolveEvent(eventInput.trim());
     });
   }
 
@@ -2055,11 +1957,8 @@ export default function App() {
       setEventInput(nextEvent?.slug ?? submittedInput);
       setLastMarketUpdate(new Date().toISOString());
       setLastAiUpdate(new Date().toISOString());
-      const sportsNotice = result.sportsSync?.updated
-        ? ` Synced ${result.sportsSync.league} ${result.sportsSync.season ?? ''} history.`.trim()
-        : '';
       setNotice(
-        `${options.refresh ? 'Refreshed analytics and reran the decision engine.' : 'AI analysis updated.'}${sportsNotice ? ` ${sportsNotice}` : ''}`
+        options.refresh ? 'Refreshed analytics and reran the decision engine.' : 'AI analysis updated.'
       );
     } catch (analysisError) {
       setError(analysisError instanceof Error ? analysisError.message : 'Unable to run AI analysis');
@@ -2477,12 +2376,12 @@ export default function App() {
             <form className="event-form" onSubmit={handleSubmit}>
               <div className="event-input-grid">
                 <label htmlFor="event-input">
-                  Event link or slug
+                  Weather slug
                   <input
                     id="event-input"
                     name="event-input"
                     type="text"
-                    placeholder="polymarket.com/event/..."
+                    placeholder="polymarket.us/event/weather-..."
                     value={eventInput}
                     onChange={(inputEvent) => setEventInput(inputEvent.target.value)}
                   />
@@ -2502,10 +2401,18 @@ export default function App() {
                 </label>
               </div>
             </form>
-            <div className="action-row terminal-action-row control-actions">
+            <div className="action-row terminal-action-row control-actions control-actions-three">
               <button
                 type="button"
                 className="secondary-button"
+                onClick={() => void handleResolveEvent(eventInput.trim())}
+                disabled={!eventInput.trim() || isPending || isAnalyzing || isRefreshing}
+              >
+                {isPending ? 'Loading...' : 'Load Slug'}
+              </button>
+              <button
+                type="button"
+                className="secondary-button secondary-button-muted"
                 onClick={() => void handleAnalyze()}
                 disabled={!eventInput.trim() || isPending || isAnalyzing || isRefreshing}
               >
@@ -2513,7 +2420,7 @@ export default function App() {
               </button>
               <button
                 type="button"
-                className="secondary-button secondary-button-muted"
+                className="ghost-button"
                 onClick={() => void handleRefreshData()}
                 disabled={!eventInput.trim() || isRefreshing || isInvalidating}
               >
@@ -2525,14 +2432,13 @@ export default function App() {
                 <div className="market-controls-event-header">
                   <div className="market-chip-row market-controls-chip-row">
                     <span className="market-chip market-chip-muted">{selectedEvent.slug}</span>
-                    {eventSportsLeagues.map((league) => (
-                      <span key={league} className={`market-chip market-chip-league market-chip-league-${league.toLowerCase()}`}>
-                        {league}
+                    {eventHasWeatherContext ? (
+                      <span className="market-chip market-chip-league market-chip-league-weather">
+                        Weather
                       </span>
-                    ))}
-                    {eventSportsLeagues.length === 0 ? (
+                    ) : (
                       <span className="market-chip market-chip-market-only">MARKET ONLY</span>
-                    ) : null}
+                    )}
                     <button
                       type="button"
                       className="market-chip-button"
@@ -2569,6 +2475,62 @@ export default function App() {
                   ))}
                 </div>
 
+                {selectedWeatherContext ? (
+                  <section className="weather-slug-summary">
+                    <div className="panel-heading panel-heading-inline">
+                      <div>
+                        <p className="eyebrow">Weather Rules</p>
+                        <h2>Slug Info</h2>
+                      </div>
+                      <span className="market-chip market-chip-league market-chip-league-weather">
+                        {formatWeatherMetric(selectedWeatherContext.metric)}
+                      </span>
+                    </div>
+                    <div className="decision-rationale-grid compact-preview-grid">
+                      <article>
+                        <span>Station</span>
+                        <strong>{selectedWeatherSnapshot?.stationId ?? selectedWeatherContext.stationCode ?? 'n/a'}</strong>
+                      </article>
+                      <article>
+                        <span>Location</span>
+                        <strong>{selectedWeatherContext.location ?? selectedWeatherSnapshot?.stationName ?? 'n/a'}</strong>
+                      </article>
+                      <article>
+                        <span>Target Date</span>
+                        <strong>{selectedWeatherContext.targetDate ?? selectedWeatherContext.targetDateLabel ?? 'n/a'}</strong>
+                      </article>
+                      <article>
+                        <span>Expected High</span>
+                        <strong>{formatTemperature(selectedWeatherSnapshot?.model?.expectedHigh, selectedWeatherContext.unit ?? 'F')}</strong>
+                      </article>
+                      <article>
+                        <span>Observed High</span>
+                        <strong>{formatTemperature(selectedWeatherSnapshot?.observedHighSoFar, selectedWeatherContext.unit ?? 'F')}</strong>
+                      </article>
+                      <article>
+                        <span>Model State</span>
+                        <strong>{selectedWeatherSnapshot?.status ?? 'rules only'}</strong>
+                      </article>
+                    </div>
+                    <p className="event-meta">
+                      {selectedWeatherContext.resolutionSourceName ?? 'Resolution source unavailable'}
+                      {selectedWeatherContext.finalizationRule ? ` • ${selectedWeatherContext.finalizationRule}` : ''}
+                    </p>
+                    {selectedWeatherContext.resolutionSourceUrl ? (
+                      <div className="trade-actions">
+                        <a
+                          className="ghost-button"
+                          href={selectedWeatherContext.resolutionSourceUrl}
+                          target="_blank"
+                          rel="noreferrer"
+                        >
+                          Open Source
+                        </a>
+                      </div>
+                    ) : null}
+                  </section>
+                ) : null}
+
                 {selectedEvent.usFiltered && tradableMarkets.length === 0 ? (
                   <p className="empty-state">No markets are currently available via your connected Polymarket US API key.</p>
                 ) : null}
@@ -2602,7 +2564,7 @@ export default function App() {
                   <p className="recommendation-market-copy">{recommendationHeadline}</p>
                   <div className="decision-rationale-grid compact-preview-grid recommendation-summary-grid">
                     <article>
-                      <span className="label-with-tooltip" data-tooltip="Overall confidence in this recommendation after combining the sports model, market behavior, and agreement checks." tabIndex={0}>Confidence</span>
+                      <span className="label-with-tooltip" data-tooltip="Overall confidence in this recommendation after combining the model, market behavior, and agreement checks." tabIndex={0}>Confidence</span>
                       <strong>{formatPercent(currentRecommendation.combinedConfidence)}</strong>
                     </article>
                     <article>
@@ -2613,13 +2575,17 @@ export default function App() {
                       <span className="label-with-tooltip" data-tooltip="The gap between the model's probability and the current market probability for this outcome." tabIndex={0}>Edge</span>
                       <strong>{formatSignedPercent(currentRecommendation.edge)}</strong>
                     </article>
+                    <article>
+                      <span className="label-with-tooltip" data-tooltip="Estimated spread, slippage, and source-risk cost subtracted from gross model edge." tabIndex={0}>Cost</span>
+                      <strong>{formatPercent(currentRecommendation.estimatedCost)}</strong>
+                    </article>
                   </div>
                   <div className="market-chip-row recommendation-source-row">
                     <span
                       className={recommendationSource.className}
-                      title={recommendationSource.detail === 'sports model'
-                        ? 'This recommendation is driven by the sports model layer for this matchup.'
-                        : 'This recommendation is being driven by market pricing without sports-model support.'}
+                      title={recommendationSource.detail === 'weather rules'
+                        ? 'This recommendation includes parsed weather resolution rules for this market.'
+                        : 'This recommendation is being driven by market pricing without weather-rule context.'}
                     >
                       {recommendationSource.detail}
                     </span>
@@ -2739,7 +2705,7 @@ export default function App() {
                   </div>
                   <div className="decision-rationale-grid compact-preview-grid">
                     <article>
-                      <span className="label-with-tooltip" data-tooltip="Overall confidence after combining the sports model, market data, and agreement checks." tabIndex={0}>Combined Confidence</span>
+                      <span className="label-with-tooltip" data-tooltip="Overall confidence after combining market data and agreement checks." tabIndex={0}>Combined Confidence</span>
                       <strong>{formatPercent(currentRecommendation.combinedConfidence)}</strong>
                     </article>
                     <article>
@@ -2757,168 +2723,66 @@ export default function App() {
                   </div>
                 </section>
 
-                {recommendedSportsOutcome && recommendedModelOutcome ? (
+                {recommendedWeatherContext ? (
                   <section className="panel-card terminal-card compact-card ai-reasoning-card">
                     <div className="panel-heading">
-                      <p className="eyebrow">Sports Pricing</p>
-                      <h2>Why This Team</h2>
+                      <p className="eyebrow">Weather Rules</p>
+                      <h2>Resolution Context</h2>
                     </div>
                     <div className="decision-rationale-grid compact-preview-grid">
                       <article>
-                        <span className="label-with-tooltip" data-tooltip="The live Polymarket probability for this outcome right now." tabIndex={0}>Market Price</span>
-                        <strong>{formatPercent(currentRecommendation.currentProbability)}</strong>
+                        <span>Metric</span>
+                        <strong>{formatWeatherMetric(recommendedWeatherContext.metric)}</strong>
                       </article>
                       <article>
-                        <span className="label-with-tooltip" data-tooltip="The sports-only estimate after calibration. This is the cleaner pre-market model view to compare against the live market." tabIndex={0}>Sports Model</span>
-                        <strong>{formatPercent(recommendedSportsOutcome.fairProbability)}</strong>
+                        <span>Target Date</span>
+                        <strong>{recommendedWeatherContext.targetDate ?? recommendedWeatherContext.targetDateLabel ?? 'n/a'}</strong>
                       </article>
                       <article>
-                        <span className="label-with-tooltip" data-tooltip="The final probability after blending the sports model with live market behavior and market quality signals." tabIndex={0}>Final Blended Model</span>
-                        <strong>{formatPercent(recommendedModelOutcome.estimatedProbability)}</strong>
+                        <span>Station</span>
+                        <strong>{recommendedWeatherContext.stationCode ?? recommendedWeatherContext.stationName ?? 'n/a'}</strong>
                       </article>
                       <article>
-                        <span className="label-with-tooltip" data-tooltip="How reliable the sports model believes this matchup estimate is. Higher confidence means the model sees a cleaner signal." tabIndex={0}>Sports Confidence</span>
-                        <strong>{formatPercent(recommendedSportsOutcome.modelConfidence)}</strong>
+                        <span>Unit</span>
+                        <strong>{formatWeatherUnit(recommendedWeatherContext.unit)}</strong>
+                      </article>
+                      <article>
+                        <span>Precision</span>
+                        <strong>{recommendedWeatherContext.precision ?? 'n/a'}</strong>
+                      </article>
+                      <article>
+                        <span>Finalization</span>
+                        <strong>{recommendedWeatherContext.finalizationRule ?? 'n/a'}</strong>
+                      </article>
+                      <article>
+                        <span>Expected High</span>
+                        <strong>{formatTemperature(recommendedModelMarket?.weatherSnapshot?.model?.expectedHigh, recommendedWeatherContext.unit ?? 'F')}</strong>
+                      </article>
+                      <article>
+                        <span>Observed High</span>
+                        <strong>{formatTemperature(recommendedModelMarket?.weatherSnapshot?.observedHighSoFar, recommendedWeatherContext.unit ?? 'F')}</strong>
+                      </article>
+                      <article>
+                        <span>NWS High</span>
+                        <strong>{formatTemperature(recommendedModelMarket?.weatherSnapshot?.nwsForecastHigh, recommendedWeatherContext.unit ?? 'F')}</strong>
+                      </article>
+                      <article>
+                        <span>Open-Meteo High</span>
+                        <strong>{formatTemperature(recommendedModelMarket?.weatherSnapshot?.openMeteoForecastHigh, recommendedWeatherContext.unit ?? 'F')}</strong>
                       </article>
                     </div>
-                  </section>
-                ) : null}
-
-                {recommendedStarterContext ? (
-                  <section className="panel-card terminal-card compact-card ai-reasoning-card">
-                    <div className="panel-heading">
-                      <p className="eyebrow">MLB Starter Context</p>
-                      <h2>Probable Starters</h2>
-                    </div>
-                    <div className="decision-rationale-grid compact-preview-grid">
-                      <article>
-                        <span>Starter Source</span>
-                        <strong>{recommendedStarterContext.source ?? 'n/a'}</strong>
-                      </article>
-                      <article>
-                        <span>Starter Signal</span>
-                        <strong>{formatSignedDecimal(recommendedStarterContext.diff)}</strong>
-                      </article>
-                      <article>
-                        <span>Home Starter</span>
-                        <strong>{formatStarterSummary(recommendedStarterContext.home)}</strong>
-                      </article>
-                      <article>
-                        <span>Away Starter</span>
-                        <strong>{formatStarterSummary(recommendedStarterContext.away)}</strong>
-                      </article>
-                    </div>
-                    <div className="operator-notes-copy">
-                      <p>
-                        Home recent form: {recommendedStarterContext.recentForm?.home
-                          ? `${recommendedStarterContext.recentForm.home.startCount} starts, ${formatSignedDecimal(recommendedStarterContext.recentForm.home.decayedScoreDiff)} score diff, ${formatPercent(recommendedStarterContext.recentForm.home.decayedWinRate)}`
-                          : 'n/a'}
-                      </p>
-                      <p>
-                        Away recent form: {recommendedStarterContext.recentForm?.away
-                          ? `${recommendedStarterContext.recentForm.away.startCount} starts, ${formatSignedDecimal(recommendedStarterContext.recentForm.away.decayedScoreDiff)} score diff, ${formatPercent(recommendedStarterContext.recentForm.away.decayedWinRate)}`
-                          : 'n/a'}
-                      </p>
-                    </div>
-                  </section>
-                ) : null}
-
-                {eventIntelligence ? (
-                  <section className="panel-card terminal-card compact-card ai-reasoning-card">
-                    <div className="panel-heading">
-                      <p className="eyebrow">Live Feed</p>
-                      <h2>News And Game Context</h2>
-                    </div>
-                    <div className="decision-rationale-grid compact-preview-grid">
-                      <article>
-                        <span>League</span>
-                        <strong>{eventIntelligence.league}</strong>
-                      </article>
-                      <article>
-                        <span>Game Status</span>
-                        <strong>{eventIntelligence.gameFeed?.status ?? 'n/a'}</strong>
-                      </article>
-                      <article>
-                        <span>Game Detail</span>
-                        <strong>{eventIntelligence.gameFeed?.detail ?? 'n/a'}</strong>
-                      </article>
-                      <article>
-                        <span>Player Mentions</span>
-                        <strong>{eventIntelligence.playerMentions?.length ?? 0}</strong>
-                      </article>
-                      <article>
-                        <span>Social Posts</span>
-                        <strong>{eventIntelligence.socialPosts?.length ?? 0}</strong>
-                      </article>
-                    </div>
-                    {eventIntelligence.gameFeed ? (
-                      <div className="operator-notes-copy">
-                        <p>{eventIntelligence.gameFeed.name ?? 'Live game feed unavailable'}</p>
-                        {(eventIntelligence.gameFeed.competitors ?? []).map((competitor) => (
-                          <p key={`${competitor.teamId}-${competitor.homeAway}`}>
-                            {competitor.teamName}: score {competitor.score ?? 'n/a'} | record {competitor.record ?? 'n/a'} | {competitor.homeAway ?? 'n/a'}
-                          </p>
-                        ))}
+                    {recommendedWeatherContext.resolutionSourceUrl ? (
+                      <div className="trade-actions">
+                        <a
+                          className="ghost-button"
+                          href={recommendedWeatherContext.resolutionSourceUrl}
+                          target="_blank"
+                          rel="noreferrer"
+                        >
+                          Open Source
+                        </a>
                       </div>
                     ) : null}
-                    {(eventIntelligence.articles ?? []).length > 0 ? (
-                      <div className="operator-notes-copy">
-                        {eventIntelligence.articles.slice(0, 5).map((article) => (
-                          <p key={article.id ?? article.headline}>
-                            [{formatImpactScore(article.impactScore)}] {article.headline}: {article.description ?? 'No summary'}
-                          </p>
-                        ))}
-                      </div>
-                    ) : null}
-                    {(eventIntelligence.socialPosts ?? []).length > 0 ? (
-                      <div className="operator-notes-copy">
-                        {eventIntelligence.socialPosts.slice(0, 4).map((post) => (
-                          <p key={post.id ?? post.headline}>
-                            [{String(post.provider ?? 'social').toUpperCase()} {formatImpactScore(post.impactScore)}] {post.headline}
-                          </p>
-                        ))}
-                      </div>
-                    ) : null}
-                  </section>
-                ) : null}
-
-                {selectedSportsProbabilityBreakdown.length > 0 ? (
-                  <section className="panel-card terminal-card compact-card ai-reasoning-card">
-                    <div className="panel-heading">
-                      <p className="eyebrow">Selected Market</p>
-                      <h2>Sports Probability Breakdown</h2>
-                    </div>
-                    <div className="sports-breakdown-list">
-                      {selectedSportsProbabilityBreakdown.map((outcome) => (
-                        <section key={outcome.label} className="sports-breakdown-row">
-                          <div className="sports-breakdown-row-header">
-                            <h3>{outcome.label}</h3>
-                          </div>
-                          <div className="decision-rationale-grid compact-preview-grid sports-breakdown-grid">
-                            <article>
-                              <span className="label-with-tooltip" data-tooltip="The live market probability for this team right now." tabIndex={0}>Market</span>
-                              <strong>{formatPercent(outcome.marketProbability)}</strong>
-                            </article>
-                            <article>
-                              <span className="label-with-tooltip" data-tooltip="The raw sports-only estimate before calibration." tabIndex={0}>Raw Model</span>
-                              <strong>{formatPercent(outcome.rawSportsProbability)}</strong>
-                            </article>
-                            <article>
-                              <span className="label-with-tooltip" data-tooltip="The calibrated sports model after historical reliability adjustments." tabIndex={0}>Calibrated</span>
-                              <strong>{formatPercent(outcome.calibratedSportsProbability)}</strong>
-                            </article>
-                            <article>
-                              <span className="label-with-tooltip" data-tooltip="The final blended estimate after combining sports and market context." tabIndex={0}>Final</span>
-                              <strong>{formatPercent(outcome.finalModelProbability)}</strong>
-                            </article>
-                            <article>
-                              <span className="label-with-tooltip" data-tooltip="The difference between the final model and the current market price." tabIndex={0}>Edge</span>
-                              <strong>{formatSignedPercent(outcome.edge)}</strong>
-                            </article>
-                          </div>
-                        </section>
-                      ))}
-                    </div>
                   </section>
                 ) : null}
               </>
@@ -2976,7 +2840,7 @@ export default function App() {
             {!scannerSnapshot ? (
               <p className="empty-state">Loading scanner snapshot.</p>
             ) : opportunityBoard.length === 0 ? (
-              <p className="empty-state">No ranked Politics, NBA, or MLB opportunities are available right now.</p>
+              <p className="empty-state">No ranked weather opportunities are available right now.</p>
             ) : (
               <div className="opportunity-board-list">
                 {opportunityBoard.map((opportunity) => (
@@ -2985,18 +2849,18 @@ export default function App() {
                     className="trade-history-item opportunity-board-item"
                   >
                     {(() => {
-                      const universeScope = getOpportunityUniverseScope(opportunity);
-                      const teamImpactSummary = Array.isArray(opportunity.teamImpactSummary)
-                        ? opportunity.teamImpactSummary
+                      const weatherDistribution = Array.isArray(opportunity.weatherDistribution)
+                        ? opportunity.weatherDistribution
                         : [];
-                      const hasNonZeroImpactDelta = typeof opportunity.sportsImpactProbabilityDelta === 'number'
-                        && Math.abs(opportunity.sportsImpactProbabilityDelta) >= 0.001;
-                      const hasSportsAuditDetails = opportunity.signalSource === 'sports-model'
-                        || opportunity.signalSource === 'politics-model'
-                        || hasNonZeroImpactDelta
-                        || Boolean(opportunity.sportsPhase)
-                        || Boolean(opportunity.sportsPhaseSource)
-                        || teamImpactSummary.length > 0;
+                      const hasWeatherAuditDetails = Boolean(
+                        opportunity.weatherMetric
+                        || opportunity.weatherStationCode
+                        || opportunity.weatherStationName
+                        || opportunity.weatherTargetDate
+                        || opportunity.weatherResolutionSourceUrl
+                        || opportunity.weatherPrecision
+                        || opportunity.weatherFinalizationRule
+                      );
 
                       return (
                         <>
@@ -3011,15 +2875,9 @@ export default function App() {
                         <span className={getOpportunityClassificationClassName(opportunity.classification)}>
                           {formatOpportunityClassification(opportunity.classification)}
                         </span>
-                        {opportunity.sportsLeague ? (
-                          <span className={`market-chip market-chip-league market-chip-league-${opportunity.sportsLeague.toLowerCase()}`}>
-                            {opportunity.sportsLeague}
-                          </span>
-                        ) : universeScope === 'politics' ? (
-                          <span className="market-chip market-chip-league market-chip-league-politics">
-                            Politics
-                          </span>
-                        ) : null}
+                        <span className="market-chip market-chip-league market-chip-league-weather">
+                          Weather
+                        </span>
                       </div>
                     </div>
 
@@ -3041,6 +2899,14 @@ export default function App() {
                         <strong>{formatPercent(opportunity.modelProbability)}</strong>
                       </article>
                       <article>
+                        <span>Net Edge</span>
+                        <strong>{formatSignedPercent(opportunity.edge)}</strong>
+                      </article>
+                      <article>
+                        <span>Est. Cost</span>
+                        <strong>{formatPercent(opportunity.estimatedCost)}</strong>
+                      </article>
+                      <article>
                         <span>Liquidity</span>
                         <strong>{formatCompactNumber(opportunity.marketLiquidity ?? opportunity.eventLiquidity)}</strong>
                       </article>
@@ -3058,53 +2924,119 @@ export default function App() {
                       </article>
                     </div>
 
-                    {hasSportsAuditDetails ? (
+                    {weatherDistribution.length > 0 ? (
+                      <section className="opportunity-distribution">
+                        <div className="panel-heading panel-heading-inline opportunity-distribution-heading">
+                          <div>
+                            <p className="eyebrow">Model Distribution</p>
+                            <h2>{opportunity.weatherStationCode ?? 'Station'} {opportunity.weatherTargetDate ?? ''}</h2>
+                          </div>
+                          <span className="market-chip market-chip-muted">
+                            {formatTemperature(opportunity.weatherExpectedHigh, opportunity.weatherUnit ?? 'F')} mean
+                          </span>
+                        </div>
+                        <div className="opportunity-distribution-list">
+                          {weatherDistribution.map((bucket) => (
+                            <article
+                              key={`${opportunity.eventSlug}-${bucket.conditionId}-${bucket.label}`}
+                              className={bucket.conditionId === opportunity.conditionId
+                                ? 'opportunity-distribution-row opportunity-distribution-row-active'
+                                : 'opportunity-distribution-row'}
+                            >
+                              <div className="opportunity-distribution-label">
+                                <strong>{bucket.label}</strong>
+                                <span>{formatSignedPercent(bucket.edge)}</span>
+                              </div>
+                              <div className="opportunity-distribution-bars">
+                                <div className="opportunity-distribution-bar-line">
+                                  <span>Model</span>
+                                  <div className="opportunity-distribution-track">
+                                    <div
+                                      className="opportunity-distribution-fill opportunity-distribution-fill-model"
+                                      style={{ width: `${Math.max(2, Math.min(100, (bucket.modelProbability ?? 0) * 100))}%` }}
+                                    />
+                                  </div>
+                                  <strong>{formatPercent(bucket.modelProbability)}</strong>
+                                </div>
+                                <div className="opportunity-distribution-bar-line">
+                                  <span>Market</span>
+                                  <div className="opportunity-distribution-track">
+                                    <div
+                                      className="opportunity-distribution-fill opportunity-distribution-fill-market"
+                                      style={{ width: `${Math.max(2, Math.min(100, (bucket.marketProbability ?? 0) * 100))}%` }}
+                                    />
+                                  </div>
+                                  <strong>{formatPercent(bucket.marketProbability)}</strong>
+                                </div>
+                              </div>
+                            </article>
+                          ))}
+                        </div>
+                      </section>
+                    ) : null}
+
+                    {hasWeatherAuditDetails ? (
                       <section className="opportunity-board-audit">
-                        <p className="eyebrow opportunity-board-audit-eyebrow">Model Audit</p>
+                        <p className="eyebrow opportunity-board-audit-eyebrow">Weather Rules</p>
                         <div className="decision-rationale-grid compact-preview-grid opportunity-board-audit-grid">
                           <article>
-                            <span>Model</span>
+                            <span>Signal</span>
                             <strong>{formatOpportunitySignalSource(opportunity.signalSource)}</strong>
                           </article>
                           <article>
-                            <span>Market Category</span>
-                            <strong>{universeScope === 'politics' ? 'Politics' : (opportunity.sportsLeague ?? 'Unknown')}</strong>
+                            <span>Metric</span>
+                            <strong>{formatWeatherMetric(opportunity.weatherMetric)}</strong>
                           </article>
                           <article>
-                            <span>Competition Phase</span>
-                            <strong>{formatCompetitionPhase(opportunity.sportsPhase)}</strong>
+                            <span>Target Date</span>
+                            <strong>{opportunity.weatherTargetDate ?? opportunity.weatherTargetDateLabel ?? 'n/a'}</strong>
                           </article>
                           <article>
-                            <span>Phase Source</span>
-                            <strong>{formatCompetitionPhaseSource(opportunity.sportsPhaseSource)}</strong>
+                            <span>Station</span>
+                            <strong>{opportunity.weatherStationCode ?? opportunity.weatherStationName ?? 'n/a'}</strong>
                           </article>
                           <article>
-                            <span>Impact Direction</span>
-                            <strong>{formatImpactDirection(opportunity.sportsImpactDirection)}</strong>
+                            <span>Unit</span>
+                            <strong>{formatWeatherUnit(opportunity.weatherUnit)}</strong>
                           </article>
                           <article>
-                            <span>Impact Delta</span>
-                            <strong>{formatSignedPercent(opportunity.sportsImpactProbabilityDelta)}</strong>
+                            <span>Precision</span>
+                            <strong>{opportunity.weatherPrecision ?? 'n/a'}</strong>
+                          </article>
+                          <article>
+                            <span>Expected High</span>
+                            <strong>{formatTemperature(opportunity.weatherExpectedHigh, opportunity.weatherUnit ?? 'F')}</strong>
+                          </article>
+                          <article>
+                            <span>Observed High</span>
+                            <strong>{formatTemperature(opportunity.weatherObservedHighSoFar, opportunity.weatherUnit ?? 'F')}</strong>
+                          </article>
+                          <article>
+                            <span>NWS High</span>
+                            <strong>{formatTemperature(opportunity.weatherNwsForecastHigh, opportunity.weatherUnit ?? 'F')}</strong>
+                          </article>
+                          <article>
+                            <span>Open-Meteo High</span>
+                            <strong>{formatTemperature(opportunity.weatherOpenMeteoForecastHigh, opportunity.weatherUnit ?? 'F')}</strong>
                           </article>
                         </div>
 
-                        {teamImpactSummary.length > 0 ? (
-                          <div className="opportunity-board-impact-list" role="list" aria-label="Top team impacts">
-                            {teamImpactSummary.map((teamImpact) => (
-                              <article
-                                key={`${opportunity.eventSlug}-${opportunity.conditionId}-${teamImpact.teamId ?? teamImpact.teamName}`}
-                                className="opportunity-board-impact-item"
-                                role="listitem"
-                              >
-                                <span>{teamImpact.teamName ?? teamImpact.teamId ?? 'Unknown Team'}</span>
-                                <strong>{formatSignedPercent(teamImpact.probabilityDelta)}</strong>
-                                <small>{formatImpactDirection(teamImpact.direction)} impact • conf {formatPercent(teamImpact.confidence)}</small>
-                              </article>
-                            ))}
+                        <p className="event-meta">
+                          {opportunity.weatherResolutionSourceName ?? 'Resolution source unavailable'}
+                          {opportunity.weatherFinalizationRule ? ` • ${opportunity.weatherFinalizationRule}` : ''}
+                        </p>
+                        {opportunity.weatherResolutionSourceUrl ? (
+                          <div className="trade-actions">
+                            <a
+                              className="ghost-button"
+                              href={opportunity.weatherResolutionSourceUrl}
+                              target="_blank"
+                              rel="noreferrer"
+                            >
+                              Open Source
+                            </a>
                           </div>
-                        ) : (
-                          <p className="empty-state opportunity-board-impact-empty">No directional team impact entries for this row yet.</p>
-                        )}
+                        ) : null}
                       </section>
                     ) : null}
 

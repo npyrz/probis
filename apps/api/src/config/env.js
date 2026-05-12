@@ -9,7 +9,7 @@ const envFileName = process.env.NODE_ENV === 'test' ? '.env.test' : '.env';
 
 dotenv.config({ path: path.join(repoRoot, envFileName) });
 
-const requiredKeys = ['POLYMARKET_API_KEY', 'POLYMARKET_PRIVATE_KEY'];
+const requiredKeys = ['POLYMARKET_US_KEY_ID', 'POLYMARKET_US_SECRET_KEY'];
 
 export function getEnv() {
   const env = {
@@ -20,17 +20,15 @@ export function getEnv() {
     opportunityScannerBatchSize: Number.parseInt(process.env.OPPORTUNITY_SCANNER_BATCH_SIZE ?? '200', 10),
     opportunityScannerConcurrency: Number.parseInt(process.env.OPPORTUNITY_SCANNER_CONCURRENCY ?? '8', 10),
     opportunityScannerMaxOpportunities: Number.parseInt(process.env.OPPORTUNITY_SCANNER_MAX_OPPORTUNITIES ?? '0', 10),
-    polymarketApiKey: process.env.POLYMARKET_API_KEY ?? '',
-    polymarketPrivateKey: process.env.POLYMARKET_PRIVATE_KEY ?? '',
-    polymarketUsKeyId: process.env.POLYMARKET_US_KEY_ID ?? process.env.POLYMARKET_API_KEY ?? '',
-    polymarketUsSecretKey: process.env.POLYMARKET_US_SECRET_KEY ?? process.env.POLYMARKET_PRIVATE_KEY ?? '',
+    polymarketUsKeyId: process.env.POLYMARKET_US_KEY_ID ?? '',
+    polymarketUsSecretKey: process.env.POLYMARKET_US_SECRET_KEY ?? '',
     polymarketUsBaseUrl: process.env.POLYMARKET_US_BASE_URL ?? 'https://api.polymarket.us',
     polymarketUsGatewayUrl: process.env.POLYMARKET_US_GATEWAY_URL ?? 'https://gateway.polymarket.us',
-    gammaBaseUrl: process.env.GAMMA_BASE_URL ?? 'https://gamma-api.polymarket.com',
+    weatherUserAgent: process.env.WEATHER_USER_AGENT ?? 'probis-weather-edge/0.1 (local)',
     ollamaBaseUrl: process.env.OLLAMA_BASE_URL ?? 'http://localhost:11434',
     ollamaModel: process.env.OLLAMA_MODEL ?? 'gemma3:latest',
     socialRedditEnabled: process.env.SOCIAL_REDDIT_ENABLED === 'true',
-    socialRedditSubreddits: (process.env.SOCIAL_REDDIT_SUBREDDITS ?? 'nba,mlb,sportsbook,polymarket')
+    socialRedditSubreddits: (process.env.SOCIAL_REDDIT_SUBREDDITS ?? 'weather,ufc,polymarket')
       .split(',')
       .map((value) => value.trim())
       .filter(Boolean),

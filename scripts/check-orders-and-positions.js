@@ -122,8 +122,8 @@ async function getPositions(baseUrl, keyId, secret) {
 
 async function main() {
   const env = readEnv();
-  const keyId = env.POLYMARKET_US_KEY_ID || env.POLYMARKET_API_KEY;
-  const secret = env.POLYMARKET_US_SECRET_KEY || env.POLYMARKET_PRIVATE_KEY;
+  const keyId = env.POLYMARKET_US_KEY_ID;
+  const secret = env.POLYMARKET_US_SECRET_KEY;
   const baseUrl = env.POLYMARKET_US_BASE_URL || 'https://api.polymarket.us';
 
   const intents = JSON.parse(fs.readFileSync('data/trade-intents.json', 'utf8'));

@@ -421,6 +421,100 @@ select {
   font-size: 11px;
 }
 
+.opportunity-distribution {
+  display: grid;
+  gap: 8px;
+  margin: -2px 0 10px;
+  padding: 9px;
+  border: 1px solid rgba(79, 93, 110, 0.34);
+  border-radius: 8px;
+  background: rgba(7, 13, 19, 0.72);
+}
+
+.opportunity-distribution-heading {
+  margin-bottom: 0;
+}
+
+.opportunity-distribution-heading h2 {
+  font-size: 0.98rem;
+}
+
+.opportunity-distribution-list {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+  gap: 8px;
+}
+
+.opportunity-distribution-row {
+  display: grid;
+  gap: 7px;
+  padding: 8px;
+  border: 1px solid rgba(79, 93, 110, 0.28);
+  border-radius: 7px;
+  background: rgba(10, 16, 24, 0.88);
+}
+
+.opportunity-distribution-row-active {
+  border-color: rgba(95, 240, 165, 0.52);
+  box-shadow: inset 0 0 0 1px rgba(95, 240, 165, 0.12);
+}
+
+.opportunity-distribution-label,
+.opportunity-distribution-bar-line {
+  display: grid;
+  grid-template-columns: 58px minmax(0, 1fr) 52px;
+  gap: 7px;
+  align-items: center;
+}
+
+.opportunity-distribution-label {
+  grid-template-columns: minmax(0, 1fr) auto;
+}
+
+.opportunity-distribution-label strong {
+  margin: 0;
+}
+
+.opportunity-distribution-label span {
+  color: #9fb0c4;
+  font-size: 0.82rem;
+  font-variant-numeric: tabular-nums;
+}
+
+.opportunity-distribution-bar-line span,
+.opportunity-distribution-bar-line strong {
+  margin: 0;
+  color: #9fb0c4;
+  font-size: 0.8rem;
+  font-variant-numeric: tabular-nums;
+}
+
+.opportunity-distribution-bar-line strong {
+  color: #dce7f5;
+  text-align: right;
+}
+
+.opportunity-distribution-track {
+  height: 7px;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.08);
+  overflow: hidden;
+}
+
+.opportunity-distribution-fill {
+  height: 100%;
+  min-width: 2px;
+  border-radius: 999px;
+}
+
+.opportunity-distribution-fill-model {
+  background: linear-gradient(90deg, #5ff0a5, #00c6ff);
+}
+
+.opportunity-distribution-fill-market {
+  background: linear-gradient(90deg, #ffb454, #d88916);
+}
+
 .scanner-class-chip {
   display: inline-flex;
   align-items: center;
@@ -738,6 +832,10 @@ h3 {
   margin-top: 2px;
 }
 
+.control-card .control-actions-three {
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+}
+
 .control-card .control-actions .secondary-button,
 .control-card .control-actions .secondary-button-muted {
   width: 100%;
@@ -773,6 +871,23 @@ h3 {
 
 .market-controls-stats {
   margin-top: 2px;
+}
+
+.weather-slug-summary {
+  display: grid;
+  gap: 8px;
+  padding: 10px;
+  border: 1px solid rgba(79, 93, 110, 0.34);
+  border-radius: 8px;
+  background: linear-gradient(180deg, rgba(10, 18, 26, 0.94), rgba(7, 13, 19, 0.94));
+}
+
+.weather-slug-summary .panel-heading {
+  margin-bottom: 0;
+}
+
+.weather-slug-summary h2 {
+  font-size: 1rem;
 }
 
 .market-outcome-stat {
@@ -934,22 +1049,10 @@ h3 {
   letter-spacing: 0.04em;
 }
 
-.market-chip-league-nba {
-  border-color: rgba(255, 150, 92, 0.5);
-  background: rgba(96, 49, 18, 0.34);
-  color: #ffc08e;
-}
-
-.market-chip-league-politics {
-  border-color: rgba(241, 129, 129, 0.48);
-  background: rgba(111, 47, 47, 0.3);
-  color: #ffc2c2;
-}
-
-.market-chip-league-mlb {
-  border-color: rgba(109, 182, 255, 0.52);
-  background: rgba(19, 44, 84, 0.34);
-  color: #a9d4ff;
+.market-chip-league-weather {
+  border-color: rgba(97, 204, 182, 0.52);
+  background: rgba(19, 75, 70, 0.34);
+  color: #9fe8dc;
 }
 
 .market-chip-market-only {
@@ -1247,28 +1350,6 @@ h3 {
 .ai-notes-card .eyebrow,
 .ai-notes-card h2 {
   margin-bottom: 0;
-}
-
-.sports-breakdown-list {
-  display: grid;
-  gap: 10px;
-}
-
-.sports-breakdown-row {
-  display: grid;
-  gap: 8px;
-  padding: 10px 12px;
-  border-radius: 8px;
-  border: 1px solid rgba(79, 93, 110, 0.3);
-  background: linear-gradient(180deg, rgba(10, 18, 26, 0.95), rgba(7, 13, 19, 0.96));
-}
-
-.sports-breakdown-row-header h3 {
-  font-size: 1rem;
-}
-
-.sports-breakdown-grid {
-  grid-template-columns: repeat(5, minmax(0, 1fr));
 }
 
 .decision-highlight,
@@ -1691,6 +1772,10 @@ button {
   .input-row,
   .event-input-grid,
   .control-actions {
+    grid-template-columns: 1fr;
+  }
+
+  .control-card .control-actions-three {
     grid-template-columns: 1fr;
   }
 

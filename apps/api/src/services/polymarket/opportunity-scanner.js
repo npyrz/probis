@@ -1,8 +1,8 @@
 import axios from 'axios';
 
 import { buildStatisticalModel } from './statistical-model.js';
-import { inferCompetitionPhaseFromEventText, inferLeagueFromEventText } from '../sports/canonicalization.js';
-import { buildPoliticsContext } from '../politics/event-intelligence.js';
+import { buildWeatherContext, isWeatherEvent } from '../weather/event-intelligence.js';
+import { buildWeatherSnapshots } from '../weather/data-ingestion.js';
 
 const scannerState = {
   snapshot: createEmptySnapshot(),
@@ -290,11 +290,6 @@ function getImpliedSpreadFromMarket(eventMarket) {
 }
 
 async function buildLightweightAnalyticsFromEvent(env, event) {
-  const competitionPhase = inferCompetitionPhaseFromEventText(
-    event?.title,
-    event?.description,
-    ...(Array.isArray(event?.markets) ? event.markets.map((market) => market?.question) : [])
-  );
   const normalizedMarkets = normalizeEventMarkets(event?.markets);
   const rawEventLiquidity = toNumberOrNull(event?.liquidity);
   const rawEventVolume = toNumberOrNull(event?.volume);
@@ -306,6 +301,8 @@ async function buildLightweightAnalyticsFromEvent(env, event) {
     title: event.title ?? event.slug ?? null,
     category: typeof event?.category === 'string' ? event.category.toLowerCase() : null,
     description: event.description ?? '',
+    rules: event.rules ?? event.marketRules ?? null,
+    resolutionSource: event.resolutionSource ?? event.resolution_source ?? null,
     active: Boolean(event.active),
     closed: Boolean(event.closed),
     endDate: event.endDate ?? null,
@@ -316,22 +313,29 @@ async function buildLightweightAnalyticsFromEvent(env, event) {
   };
   const pricedMarkets = normalizedEvent.markets
     .filter((market) => Array.isArray(market?.outcomes) && market.outcomes.some((outcome) => typeof toNumberOrNull(outcome?.probability) === 'number'));
-  const politicsContext = await buildPoliticsContext(env, normalizedEvent, {
+  const weatherContext = buildWeatherContext(normalizedEvent, {
     markets: pricedMarkets.map((market) => ({
       conditionId: market.conditionId,
       question: market.question,
       title: market.title ?? null,
       subtitle: market.subtitle ?? null,
       category: typeof market?.category === 'string' ? market.category.toLowerCase() : null,
+      description: market.description ?? null,
+      rules: market.rules ?? market.marketRules ?? null,
+      resolutionSource: market.resolutionSource ?? market.resolution_source ?? null,
       outcomes: (Array.isArray(market.outcomes) ? market.outcomes : []).map((outcome) => ({
         label: outcome.label,
         currentProbability: toNumberOrNull(outcome?.probability)
       }))
     }))
   });
-  const politicsMarketsByConditionId = new Map(
-    (Array.isArray(politicsContext?.markets) ? politicsContext.markets : [])
+  const weatherMarketsByConditionId = new Map(
+    (Array.isArray(weatherContext?.markets) ? weatherContext.markets : [])
       .map((market) => [market.conditionId, market])
+  );
+  const weatherSnapshots = await buildWeatherSnapshots(env, weatherContext);
+  const weatherSnapshotsByConditionId = new Map(
+    weatherSnapshots.map((snapshot) => [snapshot.conditionId, snapshot])
   );
   const aggregation = {
     generatedAt: new Date().toISOString(),
@@ -348,6 +352,7 @@ async function buildLightweightAnalyticsFromEvent(env, event) {
         category: typeof market?.category === 'string' ? market.category.toLowerCase() : null,
         liquidity: toNumberOrNull(market.liquidity),
         volume: toNumberOrNull(market.volume),
+        spread: getImpliedSpreadFromMarket(market),
         liquidityShare: typeof normalizedEvent.liquidity === 'number' && normalizedEvent.liquidity > 0
           ? (toNumberOrNull(market.liquidity) ?? 0) / normalizedEvent.liquidity
           : null,
@@ -356,16 +361,8 @@ async function buildLightweightAnalyticsFromEvent(env, event) {
           : null
       }))
     },
-    sportsContext: {
-      generatedAt: new Date().toISOString(),
-      competitionPhase,
-      competitionPhaseSource: 'text-heuristic',
-      teamImpactSummary: [],
-      recognizedMarketCount: 0,
-      historyGameCount: 0,
-      markets: []
-    },
-    politicsContext,
+    weatherContext,
+    weatherSnapshots,
     historicalPrices: {
       markets: pricedMarkets.map((market) => ({
         conditionId: market.conditionId,
@@ -373,7 +370,8 @@ async function buildLightweightAnalyticsFromEvent(env, event) {
         title: market.title ?? null,
         subtitle: market.subtitle ?? null,
         category: typeof market?.category === 'string' ? market.category.toLowerCase() : null,
-        politicsContext: politicsMarketsByConditionId.get(market.conditionId) ?? null,
+        weatherContext: weatherMarketsByConditionId.get(market.conditionId) ?? null,
+        weatherSnapshot: weatherSnapshotsByConditionId.get(market.conditionId) ?? null,
         outcomes: (Array.isArray(market.outcomes) ? market.outcomes : [])
           .map((outcome) => {
             const probability = toNumberOrNull(outcome?.probability);
@@ -419,6 +417,7 @@ function selectScannerCandidate(statisticalMarket) {
   }
 
   return [...outcomes]
+    .filter((outcome) => String(outcome?.label ?? '').trim().toLowerCase() === 'yes')
     .filter((outcome) => typeof outcome.currentProbability === 'number' && typeof outcome.estimatedProbability === 'number')
     .sort((left, right) => {
       const leftScore = (left.edge ?? 0) * (left.confidence ?? statisticalMarket.confidence ?? 0);
@@ -508,12 +507,12 @@ function getProbabilityReliabilityScore(currentProbability) {
   return 1;
 }
 
-function getExpectedValuePerDollar(currentProbability, modelProbability) {
+function getExpectedValuePerDollar(currentProbability, modelProbability, estimatedCost = 0) {
   if (typeof currentProbability !== 'number' || typeof modelProbability !== 'number' || currentProbability <= 0) {
     return null;
   }
 
-  return modelProbability / currentProbability - 1;
+  return clamp(modelProbability - (estimatedCost ?? 0), 0, 1) / currentProbability - 1;
 }
 
 function classifyOpportunity(opportunity) {
@@ -522,15 +521,15 @@ function classifyOpportunity(opportunity) {
   const confidence = opportunity.confidence ?? null;
   const spread = opportunity.spread ?? null;
 
-  if (typeof expectedValue === 'number' && expectedValue >= 0.12 && typeof edge === 'number' && edge >= 0.035 && typeof confidence === 'number' && confidence >= 0.68 && (spread === null || spread <= 0.04)) {
+  if (typeof expectedValue === 'number' && expectedValue >= 0.12 && typeof edge === 'number' && edge >= 0.08 && typeof confidence === 'number' && confidence >= 0.68 && (spread === null || spread <= 0.08)) {
     return 'strong-buy';
   }
 
-  if (typeof expectedValue === 'number' && expectedValue >= 0.05 && typeof edge === 'number' && edge >= 0.015 && typeof confidence === 'number' && confidence >= 0.56) {
+  if (typeof expectedValue === 'number' && expectedValue >= 0.05 && typeof edge === 'number' && edge >= 0.05 && typeof confidence === 'number' && confidence >= 0.56 && (spread === null || spread <= 0.08)) {
     return 'soft-buy';
   }
 
-  if (typeof expectedValue === 'number' && expectedValue > 0 && typeof edge === 'number' && edge > 0.005) {
+  if (typeof expectedValue === 'number' && expectedValue > 0 && typeof edge === 'number' && edge > 0) {
     return 'watchlist';
   }
 
@@ -559,10 +558,97 @@ function scoreOpportunity(opportunity) {
   );
 }
 
+function getWeatherRangeSortValue(range) {
+  if (typeof range?.min === 'number') {
+    return range.min;
+  }
+
+  if (typeof range?.max === 'number') {
+    return range.max;
+  }
+
+  return Number.POSITIVE_INFINITY;
+}
+
+function formatTemperatureRangeLabel(range, fallbackLabel) {
+  if (!range) {
+    return String(fallbackLabel ?? '').trim() || 'Outcome';
+  }
+
+  const unit = range.unit ? `°${range.unit}` : '°';
+
+  if (typeof range.min === 'number' && typeof range.max === 'number') {
+    return range.min === range.max
+      ? `${range.min}${unit}`
+      : `${range.min}${unit}-${range.max}${unit}`;
+  }
+
+  if (typeof range.min === 'number') {
+    return `${range.min}${unit}+`;
+  }
+
+  if (typeof range.max === 'number') {
+    return `<=${range.max}${unit}`;
+  }
+
+  return String(fallbackLabel ?? '').trim() || 'Outcome';
+}
+
+function buildWeatherOutcomeDistribution(analytics) {
+  const eventMarketsByConditionId = new Map(
+    (Array.isArray(analytics?.event?.markets) ? analytics.event.markets : [])
+      .map((market) => [market.conditionId, market])
+  );
+
+  return (Array.isArray(analytics?.statisticalModel?.markets) ? analytics.statisticalModel.markets : [])
+    .map((market) => {
+      const yesOutcome = (Array.isArray(market?.outcomes) ? market.outcomes : [])
+        .find((outcome) => String(outcome?.label ?? '').trim().toLowerCase() === 'yes');
+
+      if (!yesOutcome || typeof yesOutcome.estimatedProbability !== 'number') {
+        return null;
+      }
+
+      const eventMarket = eventMarketsByConditionId.get(market.conditionId) ?? null;
+      const range = yesOutcome.features?.weatherOutcomeRange ?? market.weatherContext?.outcomes?.find((outcome) => {
+        return String(outcome?.label ?? '').trim().toLowerCase() === 'yes';
+      })?.range ?? null;
+      const label = formatTemperatureRangeLabel(
+        range,
+        eventMarket?.title ?? eventMarket?.subtitle ?? market.question
+      );
+
+      return {
+        conditionId: market.conditionId,
+        marketQuestion: market.question,
+        marketSlug: eventMarket?.slug ?? null,
+        label,
+        lowerTemp: typeof range?.min === 'number' ? range.min : null,
+        upperTemp: typeof range?.max === 'number' ? range.max : null,
+        marketProbability: yesOutcome.currentProbability ?? null,
+        modelProbability: yesOutcome.estimatedProbability,
+        grossEdge: yesOutcome.grossEdge ?? null,
+        estimatedCost: yesOutcome.estimatedCost ?? yesOutcome.features?.estimatedCost ?? null,
+        edge: yesOutcome.edge ?? null,
+        confidence: yesOutcome.confidence ?? market.confidence ?? null,
+        sortValue: getWeatherRangeSortValue(range)
+      };
+    })
+    .filter(Boolean)
+    .sort((left, right) => {
+      if (left.sortValue !== right.sortValue) {
+        return left.sortValue - right.sortValue;
+      }
+
+      return (right.modelProbability ?? 0) - (left.modelProbability ?? 0);
+    })
+    .map(({ sortValue, ...distribution }) => distribution);
+}
+
 async function buildMarketOpportunity(env, analytics, statisticalMarket) {
   const opportunity = statisticalMarket?.opportunity ?? selectScannerCandidate(statisticalMarket);
 
-  if (!opportunity) {
+  if (!opportunity || String(opportunity?.label ?? '').trim().toLowerCase() !== 'yes') {
     return null;
   }
 
@@ -576,23 +662,32 @@ async function buildMarketOpportunity(env, analytics, statisticalMarket) {
   const currentProbability = opportunity.currentProbability ?? null;
   const modelProbability = opportunity.estimatedProbability ?? null;
   const timeToResolutionMs = getTimeToResolutionMs(eventMarket.endDate ?? analytics.event.endDate ?? null);
-  const expectedValuePerDollar = getExpectedValuePerDollar(currentProbability, modelProbability);
-  const hasSportsContext = Boolean(opportunity.features?.sportsLeague ?? statisticalMarket.sportsContext?.league);
-  const inferredSportsLeague = inferLeagueFromEventText(
-    analytics.event.title,
-    analytics.event.description,
-    analytics.event.slug,
-    eventMarket.question,
-    eventMarket.slug,
-    eventMarket.category
-  );
-  const resolvedSportsLeague = opportunity.features?.sportsLeague
-    ?? statisticalMarket.sportsContext?.league
-    ?? ((eventMarket?.category === 'sports' && typeof inferredSportsLeague === 'string') ? inferredSportsLeague : null);
+  const estimatedCost = opportunity.estimatedCost ?? opportunity.features?.estimatedCost ?? null;
+  const expectedValuePerDollar = getExpectedValuePerDollar(currentProbability, modelProbability, estimatedCost ?? 0);
+  const weatherContext = statisticalMarket.weatherContext ?? null;
   const modelFamily = String(opportunity.features?.modelFamily ?? '').trim();
-  const resolvedSignalSource = modelFamily === 'sports-model'
-    ? 'sports-model'
-    : (modelFamily === 'politics-model' ? 'politics-model' : 'market-microstructure');
+  const resolvedSignalSource = modelFamily === 'weather-rules' || modelFamily === 'station-high-temp-probability'
+    ? 'weather-rules'
+    : 'market-microstructure';
+  const stationCode = opportunity.features?.weatherStationCode ?? weatherContext?.stationCode ?? null;
+  const resolutionSourceUrl = opportunity.features?.weatherResolutionSourceUrl ?? weatherContext?.resolutionSourceUrl ?? null;
+
+  if (!stationCode || !resolutionSourceUrl) {
+    return null;
+  }
+
+  if (typeof impliedSpread === 'number' && impliedSpread > 0.08) {
+    return null;
+  }
+
+  if (
+    typeof opportunity.edge !== 'number'
+    || opportunity.edge < 0.05
+    || typeof expectedValuePerDollar !== 'number'
+    || expectedValuePerDollar <= 0
+  ) {
+    return null;
+  }
 
   const result = {
     eventId: analytics.event.id,
@@ -610,6 +705,9 @@ async function buildMarketOpportunity(env, analytics, statisticalMarket) {
     outcomeLabel: opportunity.label,
     currentProbability,
     modelProbability,
+    grossEdge: opportunity.grossEdge ?? null,
+    estimatedCost,
+    costBreakdown: opportunity.features?.costBreakdown ?? null,
     edge: opportunity.edge ?? null,
     expectedValuePerDollar,
     confidence: opportunity.confidence ?? statisticalMarket.confidence ?? null,
@@ -627,28 +725,32 @@ async function buildMarketOpportunity(env, analytics, statisticalMarket) {
     midpoint: null,
     spreadSource: typeof impliedSpread === 'number' ? 'implied-market-probabilities' : 'unavailable',
     timeToResolutionMs,
-    sportsLeague: resolvedSportsLeague,
     signalSource: resolvedSignalSource,
-    sportsModel: opportunity.features?.sportsModel ?? null,
-    politicsModel: opportunity.features?.politicsModel ?? null,
-    politicsNewsImpact: opportunity.features?.politicsNewsImpact ?? null,
-    politicsSignalCount: opportunity.features?.politicsSignalCount ?? null,
-    sportsPhase: hasSportsContext
-      ? (statisticalMarket.sportsContext?.features?.competitionPhase
-        ?? analytics.aggregation?.sportsContext?.competitionPhase
-        ?? null)
-      : null,
-    sportsPhaseSource: hasSportsContext
-      ? (analytics.aggregation?.sportsContext?.competitionPhaseSource ?? null)
-      : null,
-    sportsImpactDirection: opportunity.features?.sportsImpactDirection ?? null,
-    sportsImpactProbabilityDelta: opportunity.features?.sportsImpactProbabilityDelta ?? null,
-    teamImpactSummary: Array.isArray(analytics.aggregation?.sportsContext?.teamImpactSummary)
-      ? analytics.aggregation.sportsContext.teamImpactSummary
-          .slice()
-          .sort((left, right) => Math.abs(right?.directionalScore ?? 0) - Math.abs(left?.directionalScore ?? 0))
-          .slice(0, 3)
-      : [],
+    weatherMetric: opportunity.features?.weatherMetric ?? weatherContext?.metric ?? null,
+    weatherLocation: weatherContext?.location ?? null,
+    weatherStationName: opportunity.features?.weatherStationName ?? weatherContext?.stationName ?? null,
+    weatherStationCode: opportunity.features?.weatherStationCode ?? weatherContext?.stationCode ?? null,
+    weatherTargetDate: opportunity.features?.weatherTargetDate ?? weatherContext?.targetDate ?? null,
+    weatherTargetDateLabel: opportunity.features?.weatherTargetDateLabel ?? weatherContext?.targetDateLabel ?? null,
+    weatherUnit: opportunity.features?.weatherUnit ?? weatherContext?.unit ?? null,
+    weatherResolutionSourceName: opportunity.features?.weatherResolutionSourceName ?? weatherContext?.resolutionSourceName ?? null,
+    weatherResolutionSourceUrl: opportunity.features?.weatherResolutionSourceUrl ?? weatherContext?.resolutionSourceUrl ?? null,
+    weatherPrecision: opportunity.features?.weatherPrecision ?? weatherContext?.precision ?? null,
+    weatherFinalizationRule: opportunity.features?.weatherFinalizationRule ?? weatherContext?.finalizationRule ?? null,
+    weatherOutcomeRange: opportunity.features?.weatherOutcomeRange ?? null,
+    weatherExpectedHigh: opportunity.features?.weatherExpectedHigh ?? analytics.statisticalModel?.markets?.find(
+      (candidate) => candidate.conditionId === statisticalMarket.conditionId
+    )?.weatherPrediction?.expectedHigh ?? null,
+    weatherStdDev: opportunity.features?.weatherStdDev ?? null,
+    weatherObservedHighSoFar: opportunity.features?.weatherObservedHighSoFar ?? null,
+    weatherCurrentObservedTemp: opportunity.features?.weatherCurrentObservedTemp ?? null,
+    weatherNwsForecastHigh: opportunity.features?.weatherNwsForecastHigh ?? null,
+    weatherOpenMeteoForecastHigh: opportunity.features?.weatherOpenMeteoForecastHigh ?? null,
+    weatherLatestObservationAt: opportunity.features?.weatherLatestObservationAt ?? null,
+    weatherDayPhase: opportunity.features?.weatherDayPhase ?? null,
+    weatherSimulationCount: opportunity.features?.weatherSimulationCount ?? null,
+    weatherPercentiles: opportunity.features?.weatherPercentiles ?? null,
+    weatherDistribution: buildWeatherOutcomeDistribution(analytics),
     generatedAt: analytics.statisticalModel?.generatedAt ?? analytics.aggregation?.generatedAt ?? new Date().toISOString()
   };
 
@@ -659,6 +761,13 @@ async function buildMarketOpportunity(env, analytics, statisticalMarket) {
 }
 
 async function scanEvent(env, event) {
+  if (!isWeatherEvent(event, event?.markets ?? [])) {
+    return {
+      eventSlug: event.slug,
+      opportunities: []
+    };
+  }
+
   const analytics = await buildLightweightAnalyticsFromEvent(env, event);
   const statisticalMarkets = Array.isArray(analytics.statisticalModel?.markets) ? analytics.statisticalModel.markets : [];
 
@@ -695,7 +804,8 @@ async function buildScannerSnapshot(env, reason) {
   const config = normalizeScannerConfig(env);
   const startedAt = new Date().toISOString();
   const universe = await fetchScannerUniverse(env, config);
-  const scanResults = await mapWithConcurrency(universe.markets, config.concurrency, async (event) => {
+  const weatherEvents = universe.markets.filter((event) => isWeatherEvent(event, event?.markets ?? []));
+  const scanResults = await mapWithConcurrency(weatherEvents, config.concurrency, async (event) => {
     try {
       return await scanEvent(env, event);
     } catch (error) {
@@ -747,7 +857,8 @@ async function buildScannerSnapshot(env, reason) {
     universe: {
       requestedLimit: config.universeLimit ?? 0,
       totalAvailableMarkets: universe.totalAvailableMarkets,
-      fetchedEventCount: universe.markets.length,
+      fetchedEventCount: weatherEvents.length,
+      weatherEventCount: weatherEvents.length,
       scannedEventCount: scanResults.filter(Boolean).length,
       qualifiedEventCount: qualifiedResults.length,
       opportunityCount: opportunities.length,

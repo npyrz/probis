@@ -4,6 +4,7 @@ import { getEnv } from '../config/env.js';
 import { combineDecisionRecommendation } from '../services/decision-engine.js';
 import { buildDecisionEnginePrompt, buildEventAnalysisPrompt, getOllamaStatus, runAiJson, runAiTest } from '../services/ollama.js';
 import { resolveEventAnalytics } from '../services/polymarket/event-data.js';
+import { UnsupportedMarketError } from '../services/polymarket/gamma.js';
 
 const router = Router();
 
@@ -78,7 +79,6 @@ router.post('/api/ai/analyze-event', async (request, response) => {
     response.json({
       ok: true,
       event: analytics.event,
-      sportsSync: analytics.sportsSync ?? null,
       aggregation: analytics.aggregation,
       statisticalModel: analytics.statisticalModel,
       analysis: result.response,
@@ -87,7 +87,7 @@ router.post('/api/ai/analyze-event', async (request, response) => {
       requestedModel: result.requestedModel
     });
   } catch (error) {
-    response.status(502).json({
+    response.status(error instanceof UnsupportedMarketError ? 400 : 502).json({
       ok: false,
       error: error instanceof Error ? error.message : 'Unable to analyze event'
     });
