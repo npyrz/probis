@@ -2,9 +2,11 @@ import axios from 'axios';
 
 const NWS_BASE_URL = 'https://api.weather.gov';
 const OPEN_METEO_BASE_URL = 'https://api.open-meteo.com';
+const OPEN_METEO_ARCHIVE_BASE_URL = 'https://archive-api.open-meteo.com';
 const WEATHER_TIMEOUT_MS = 4500;
 const DEFAULT_TIMEZONE = 'America/Chicago';
 const HIGH_TEMP_METRIC = 'highest-temperature';
+const HISTORICAL_LOOKBACK_YEARS = 10;
 
 function toNumberOrNull(value) {
   if (value === null || value === undefined || value === '') {
@@ -57,6 +59,16 @@ function createNwsClient(env) {
 function createOpenMeteoClient() {
   return axios.create({
     baseURL: OPEN_METEO_BASE_URL,
+    timeout: WEATHER_TIMEOUT_MS,
+    headers: {
+      Accept: 'application/json'
+    }
+  });
+}
+
+function createOpenMeteoArchiveClient() {
+  return axios.create({
+    baseURL: OPEN_METEO_ARCHIVE_BASE_URL,
     timeout: WEATHER_TIMEOUT_MS,
     headers: {
       Accept: 'application/json'
@@ -131,6 +143,36 @@ function getTargetDayBounds(targetDate, timeZone) {
   }
 
   return { start, end };
+}
+
+function shiftYear(dateString, deltaYears) {
+  const match = String(dateString ?? '').match(/^(\d{4})-(\d{2})-(\d{2})$/);
+
+  if (!match) {
+    return null;
+  }
+
+  const year = Number.parseInt(match[1], 10) + deltaYears;
+  const monthIndex = Number.parseInt(match[2], 10) - 1;
+  const day = Number.parseInt(match[3], 10);
+  const date = new Date(Date.UTC(year, monthIndex, day));
+
+  if (date.getUTCMonth() !== monthIndex) {
+    return null;
+  }
+
+  return date.toISOString().slice(0, 10);
+}
+
+function addDays(dateString, days) {
+  const date = new Date(`${dateString}T00:00:00Z`);
+
+  if (Number.isNaN(date.getTime())) {
+    return null;
+  }
+
+  date.setUTCDate(date.getUTCDate() + days);
+  return date.toISOString().slice(0, 10);
 }
 
 function compareDateStrings(left, right) {
@@ -421,7 +463,100 @@ async function fetchOpenMeteoForecast(latitude, longitude, targetDate, timezone)
   };
 }
 
-function resolveExpectedHigh({ observations, nwsForecast, openMeteoForecast, dayPhase }) {
+function getOpenMeteoArchiveRows(payload) {
+  const times = Array.isArray(payload?.daily?.time) ? payload.daily.time : [];
+  const highs = Array.isArray(payload?.daily?.temperature_2m_max) ? payload.daily.temperature_2m_max : [];
+
+  return times
+    .map((date, index) => ({
+      date,
+      tmax: toNumberOrNull(highs[index])
+    }))
+    .filter((row) => row.date && typeof row.tmax === 'number');
+}
+
+async function fetchOpenMeteoArchiveDaily(latitude, longitude, start, end, timezone) {
+  if (typeof latitude !== 'number' || typeof longitude !== 'number' || !start || !end) {
+    return {
+      rows: [],
+      metadata: null
+    };
+  }
+
+  const client = createOpenMeteoArchiveClient();
+  const response = await client.get('/v1/archive', {
+    params: {
+      latitude,
+      longitude,
+      start_date: start,
+      end_date: end,
+      daily: 'temperature_2m_max',
+      temperature_unit: 'fahrenheit',
+      timezone: timezone ?? 'auto'
+    }
+  });
+
+  return {
+    rows: getOpenMeteoArchiveRows(response.data),
+    metadata: {
+      latitude: toNumberOrNull(response.data?.latitude),
+      longitude: toNumberOrNull(response.data?.longitude),
+      elevation: toNumberOrNull(response.data?.elevation),
+      timezone: response.data?.timezone ?? null
+    }
+  };
+}
+
+async function fetchOpenMeteoHistoricalContext({ latitude, longitude, targetDate, timezone }) {
+  if (typeof latitude !== 'number' || typeof longitude !== 'number') {
+    return {
+      available: false,
+      historicalHighForSameDay: null,
+      recentStationBias: null,
+      sampleCount: 0,
+      source: 'open-meteo-archive-coordinates-unavailable'
+    };
+  }
+
+  const start = shiftYear(targetDate, -HISTORICAL_LOOKBACK_YEARS);
+  const end = shiftYear(targetDate, -1);
+  const monthDay = String(targetDate).slice(5);
+  const historical = await fetchOpenMeteoArchiveDaily(latitude, longitude, start, end, timezone);
+  const historicalRows = historical.rows;
+  const sameDayRows = historicalRows.filter((row) => String(row.date).slice(5) === monthDay);
+  const historicalHighForSameDay = average(sameDayRows.map((row) => row.tmax));
+  const yesterday = addDays(getDateStringInTimeZone(new Date(), timezone ?? DEFAULT_TIMEZONE), -1);
+  const targetPreviousDay = addDays(targetDate, -1);
+  const recentEnd = compareDateStrings(targetPreviousDay, yesterday) <= 0 ? targetPreviousDay : yesterday;
+  const recentStart = addDays(recentEnd, -30);
+  const recent = await fetchOpenMeteoArchiveDaily(latitude, longitude, recentStart, recentEnd, timezone);
+  const recentRows = recent.rows;
+  const recentAverageHigh = average(recentRows.map((row) => row.tmax));
+  const samePeriodHistoricalRows = historicalRows.filter((row) => {
+    const day = String(row.date).slice(5);
+    return day >= String(recentStart).slice(5) && day <= String(recentEnd).slice(5);
+  });
+  const samePeriodHistoricalAverageHigh = average(samePeriodHistoricalRows.map((row) => row.tmax));
+  const recentStationBias = typeof recentAverageHigh === 'number' && typeof samePeriodHistoricalAverageHigh === 'number'
+    ? recentAverageHigh - samePeriodHistoricalAverageHigh
+    : null;
+
+  return {
+    available: historicalRows.length > 0 || recentRows.length > 0,
+    historicalHighForSameDay,
+    recentStationBias,
+    recentAverageHigh,
+    samePeriodHistoricalAverageHigh,
+    sampleCount: sameDayRows.length,
+    recentSampleCount: recentRows.length,
+    gridLatitude: historical.metadata?.latitude ?? recent.metadata?.latitude ?? null,
+    gridLongitude: historical.metadata?.longitude ?? recent.metadata?.longitude ?? null,
+    gridElevation: historical.metadata?.elevation ?? recent.metadata?.elevation ?? null,
+    source: 'open-meteo-archive'
+  };
+}
+
+function resolveExpectedHigh({ observations, nwsForecast, openMeteoForecast, historicalContext, dayPhase }) {
   const forecastHigh = average([
     nwsForecast.forecastHigh,
     openMeteoForecast.forecastHigh,
@@ -433,11 +568,27 @@ function resolveExpectedHigh({ observations, nwsForecast, openMeteoForecast, day
     openMeteoForecast.remainingForecastHigh
   ]);
   const observedHighSoFar = observations.observedHighSoFar;
+  const historicalAnchor = typeof historicalContext?.historicalHighForSameDay === 'number'
+    ? historicalContext.historicalHighForSameDay + (historicalContext.recentStationBias ?? 0)
+    : null;
 
   if (dayPhase === 'past' || dayPhase === 'evening') {
     return typeof observedHighSoFar === 'number'
       ? observedHighSoFar
       : forecastHigh;
+  }
+
+  if (dayPhase === 'morning' || dayPhase === 'future') {
+    const anchoredForecast = average([
+      ...(typeof forecastHigh === 'number' ? [forecastHigh, forecastHigh, forecastHigh] : []),
+      ...(typeof historicalAnchor === 'number' ? [historicalAnchor] : [])
+    ]);
+
+    if (typeof anchoredForecast === 'number') {
+      return typeof observedHighSoFar === 'number'
+        ? Math.max(observedHighSoFar, anchoredForecast)
+        : anchoredForecast;
+    }
   }
 
   if (typeof observedHighSoFar === 'number' && typeof remainingHigh === 'number') {
@@ -451,7 +602,7 @@ function resolveExpectedHigh({ observations, nwsForecast, openMeteoForecast, day
   return forecastHigh ?? observedHighSoFar ?? null;
 }
 
-function resolveModelStdDev({ dayPhase, forecastDisagreement, hasObservations, hasForecast }) {
+function resolveModelStdDev({ dayPhase, forecastDisagreement, hasObservations, hasForecast, historicalSampleCount }) {
   let stdDev;
 
   switch (dayPhase) {
@@ -485,6 +636,10 @@ function resolveModelStdDev({ dayPhase, forecastDisagreement, hasObservations, h
 
   if (!hasForecast) {
     stdDev += 1.25;
+  }
+
+  if (historicalSampleCount >= 5) {
+    stdDev -= 0.25;
   }
 
   return Number(clamp(stdDev, 0.35, 7).toFixed(2));
@@ -557,7 +712,7 @@ async function buildWeatherSnapshot(env, weatherMarket) {
     longitude: null
   };
   const timezone = stationMetadata.timezone ?? DEFAULT_TIMEZONE;
-  const [observations, nwsForecast, openMeteoForecast] = await Promise.all([
+  const [observations, nwsForecast, openMeteoForecast, historicalContext] = await Promise.all([
     tryFetch('nws-observations', () => fetchNwsObservations(env, stationCode, targetDate, timezone), sourceErrors),
     tryFetch(
       'nws-hourly-forecast',
@@ -567,6 +722,16 @@ async function buildWeatherSnapshot(env, weatherMarket) {
     tryFetch(
       'open-meteo-forecast',
       () => fetchOpenMeteoForecast(stationMetadata.latitude, stationMetadata.longitude, targetDate, timezone),
+      sourceErrors
+    ),
+    tryFetch(
+      'open-meteo-archive-history',
+      () => fetchOpenMeteoHistoricalContext({
+        latitude: stationMetadata.latitude,
+        longitude: stationMetadata.longitude,
+        targetDate,
+        timezone
+      }),
       sourceErrors
     )
   ]);
@@ -603,13 +768,15 @@ async function buildWeatherSnapshot(env, weatherMarket) {
     observations: normalizedObservations,
     nwsForecast: normalizedNwsForecast,
     openMeteoForecast: normalizedOpenMeteoForecast,
+    historicalContext,
     dayPhase
   });
   const stdDev = resolveModelStdDev({
     dayPhase,
     forecastDisagreement,
     hasObservations: normalizedObservations.observationCount > 0,
-    hasForecast
+    hasForecast,
+    historicalSampleCount: historicalContext?.sampleCount ?? 0
   });
   const sourceRiskBuffer = resolveSourceRiskBuffer({
     stationCode,
@@ -653,6 +820,13 @@ async function buildWeatherSnapshot(env, weatherMarket) {
     dewPointF: normalizedObservations.dewPointF ?? normalizedOpenMeteoForecast.dewPointF ?? null,
     pressureHpa: normalizedOpenMeteoForecast.pressureHpa ?? null,
     precipitationChance: normalizedOpenMeteoForecast.precipitationChance ?? null,
+    historicalHighForSameDay: historicalContext?.historicalHighForSameDay ?? null,
+    recentStationBias: historicalContext?.recentStationBias ?? null,
+    historicalDataSource: historicalContext?.source ?? null,
+    historicalSampleCount: historicalContext?.sampleCount ?? 0,
+    historicalGridLatitude: historicalContext?.gridLatitude ?? null,
+    historicalGridLongitude: historicalContext?.gridLongitude ?? null,
+    historicalGridElevation: historicalContext?.gridElevation ?? null,
     shortForecast: normalizedNwsForecast.shortForecast ?? null,
     sourceErrors,
     model: {
@@ -662,6 +836,9 @@ async function buildWeatherSnapshot(env, weatherMarket) {
       stdDev,
       forecastDisagreement,
       sourceRiskBuffer,
+      historicalHighForSameDay: historicalContext?.historicalHighForSameDay ?? null,
+      recentStationBias: historicalContext?.recentStationBias ?? null,
+      historicalSampleCount: historicalContext?.sampleCount ?? 0,
       confidence: Number(confidence.toFixed(4)),
       formula: 'final_high=max(observed_high_so_far,predicted_future_hourly_max)'
     }

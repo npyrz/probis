@@ -1,3 +1,5 @@
+import { buildWeatherMlFeatures, scoreWeatherMlOutcome } from '../ml/weather-model.js';
+
 const WEATHER_HIGH_TEMP_MODEL = 'station-high-temp-probability';
 const SIMULATION_COUNT = 10_000;
 
@@ -165,7 +167,23 @@ function resolveExpectedHigh(weatherSnapshot) {
   ]);
 }
 
-function buildWeatherHighTempPrediction(weatherMarket, weatherSnapshot, marketOutcomes) {
+function getMlCalibrationForSnapshot(options, weatherSnapshot) {
+  const stationId = weatherSnapshot?.stationId;
+  const byStation = options?.mlCalibrationByStationId;
+
+  if (stationId && byStation && typeof byStation.get === 'function') {
+    return byStation.get(stationId) ?? options?.mlCalibration ?? null;
+  }
+
+  return options?.mlCalibration ?? null;
+}
+
+function getCalibrationWeight(calibration) {
+  const sampleCount = calibration?.sampleCount ?? 0;
+  return clamp(sampleCount / 100, 0, 0.65);
+}
+
+function buildWeatherHighTempPrediction(weatherMarket, weatherSnapshot, marketOutcomes, options = {}) {
   if (
     !weatherMarket
     || weatherMarket.metric !== 'highest-temperature'
@@ -175,7 +193,12 @@ function buildWeatherHighTempPrediction(weatherMarket, weatherSnapshot, marketOu
     return null;
   }
 
-  const expectedHigh = resolveExpectedHigh(weatherSnapshot);
+  const calibration = getMlCalibrationForSnapshot(options, weatherSnapshot);
+  const calibrationWeight = getCalibrationWeight(calibration);
+  const rawExpectedHigh = resolveExpectedHigh(weatherSnapshot);
+  const expectedHigh = typeof rawExpectedHigh === 'number'
+    ? rawExpectedHigh + ((calibration?.expectedHighBias ?? 0) * calibrationWeight)
+    : null;
   const stdDev = typeof weatherSnapshot?.model?.stdDev === 'number' ? weatherSnapshot.model.stdDev : 4;
 
   if (typeof expectedHigh !== 'number') {
@@ -195,6 +218,7 @@ function buildWeatherHighTempPrediction(weatherMarket, weatherSnapshot, marketOu
     ? weatherSnapshot.observedHighSoFar
     : null;
   const simulationValues = [];
+  const temperatureCounts = new Map();
 
   for (let index = 0; index < SIMULATION_COUNT; index += 1) {
     const sampledFutureHigh = expectedHigh + sampleNormal(random) * stdDev;
@@ -202,8 +226,10 @@ function buildWeatherHighTempPrediction(weatherMarket, weatherSnapshot, marketOu
       ? sampledFutureHigh
       : Math.max(observedHighSoFar, sampledFutureHigh);
     const resolvedHigh = applyTemperaturePrecision(finalHigh, weatherMarket.precision);
+    const integerHigh = Math.round(resolvedHigh);
 
     simulationValues.push(resolvedHigh);
+    temperatureCounts.set(integerHigh, (temperatureCounts.get(integerHigh) ?? 0) + 1);
 
     for (const outcome of marketOutcomes) {
       if (getOutcomeMatch(resolvedHigh, outcome.label, weatherMarket)) {
@@ -215,6 +241,17 @@ function buildWeatherHighTempPrediction(weatherMarket, weatherSnapshot, marketOu
 
   const outcomeProbabilities = Object.fromEntries(
     marketOutcomes.map((outcome) => [outcome.label, (counts.get(outcome.label) ?? 0) / SIMULATION_COUNT])
+  );
+  const temperatureDistribution = Object.fromEntries(
+    [...temperatureCounts.entries()]
+      .sort((left, right) => left[0] - right[0])
+      .map(([temp, count]) => [String(temp), count / SIMULATION_COUNT])
+  );
+  const bucketProbabilities = Object.fromEntries(
+    marketOutcomes.map((outcome) => [
+      outcome.conditionId ?? outcome.tokenId ?? outcome.label,
+      outcomeProbabilities[outcome.label] ?? 0
+    ])
   );
   const confidence = clamp(
     average([
@@ -236,6 +273,23 @@ function buildWeatherHighTempPrediction(weatherMarket, weatherSnapshot, marketOu
     confidence,
     simulationCount: SIMULATION_COUNT,
     sourceRiskBuffer: weatherSnapshot?.model?.sourceRiskBuffer ?? 0.05,
+    temperatureDistribution,
+    bucketProbabilities,
+    climateDayWindow: weatherSnapshot?.climateDayWindow ?? null,
+    sourceFreshness: weatherSnapshot?.sourceFreshness ?? {
+      isStale: Array.isArray(weatherSnapshot?.sourceErrors) && weatherSnapshot.sourceErrors.length > 0,
+      staleReasons: Array.isArray(weatherSnapshot?.sourceErrors)
+        ? weatherSnapshot.sourceErrors.map((entry) => `${entry.source}: ${entry.error}`)
+        : []
+    },
+    mlCalibration: calibration
+      ? {
+          sampleCount: calibration.sampleCount ?? 0,
+          expectedHighBias: calibration.expectedHighBias ?? 0,
+          probabilityBias: calibration.probabilityBias ?? 0,
+          weight: calibrationWeight
+        }
+      : null,
     outcomeProbabilities,
     percentiles: {
       p10: sortedValues[Math.floor(SIMULATION_COUNT * 0.1)],
@@ -245,9 +299,17 @@ function buildWeatherHighTempPrediction(weatherMarket, weatherSnapshot, marketOu
   };
 }
 
-function estimateTradingCost({ marketSnapshot, weatherMarket, weatherSnapshot, weatherPrediction }) {
-  const spread = typeof marketSnapshot?.spread === 'number' ? marketSnapshot.spread : null;
-  const liquidity = typeof marketSnapshot?.liquidity === 'number' ? marketSnapshot.liquidity : null;
+function estimateTradingCost({ outcome, marketSnapshot, weatherMarket, weatherSnapshot, weatherPrediction }) {
+  const spread = typeof outcome?.spread === 'number'
+    ? outcome.spread
+    : typeof marketSnapshot?.spread === 'number'
+      ? marketSnapshot.spread
+      : null;
+  const liquidity = typeof outcome?.askDepth === 'number' || typeof outcome?.bidDepth === 'number'
+    ? (outcome.askDepth ?? 0) + (outcome.bidDepth ?? 0)
+    : typeof marketSnapshot?.liquidity === 'number'
+      ? marketSnapshot.liquidity
+      : null;
   const spreadCost = typeof spread === 'number' ? clamp(spread, 0, 0.12) : 0.025;
   const slippageCost = typeof liquidity === 'number'
     ? liquidity < 100
@@ -274,7 +336,7 @@ function estimateTradingCost({ marketSnapshot, weatherMarket, weatherSnapshot, w
   };
 }
 
-function scoreOutcome(outcome, marketSnapshot, weatherMarket, weatherSnapshot, weatherPrediction) {
+function scoreOutcome(outcome, marketSnapshot, weatherMarket, weatherSnapshot, weatherPrediction, options = {}) {
   const summary = outcome.historySummary ?? {};
   const currentProbability = outcome.currentProbability ?? 0;
   const momentum = summary.absoluteChange ?? 0;
@@ -302,6 +364,7 @@ function scoreOutcome(outcome, marketSnapshot, weatherMarket, weatherSnapshot, w
       ? 'weather-rules'
       : 'market-microstructure';
   const cost = estimateTradingCost({
+    outcome,
     marketSnapshot,
     weatherMarket,
     weatherSnapshot,
@@ -309,12 +372,30 @@ function scoreOutcome(outcome, marketSnapshot, weatherMarket, weatherSnapshot, w
   });
 
   if (hasWeatherPrediction) {
+    const mlFeatureVector = buildWeatherMlFeatures({
+      outcome,
+      marketSnapshot,
+      weatherOutcome,
+      weatherSnapshot,
+      weatherPrediction,
+      simulationProbability: weatherProbability,
+      currentProbability,
+      estimatedCost: cost.estimatedCost
+    });
+    const mlScore = weatherOutcome?.range
+      ? scoreWeatherMlOutcome(options.weatherMlModel, mlFeatureVector)
+      : null;
+    const mlBlendWeight = mlScore?.blendWeight ?? 0;
+    const rawEstimate = mlScore
+      ? (weatherProbability * (1 - mlBlendWeight)) + (mlScore.probability * mlBlendWeight)
+      : weatherProbability;
+
     return {
       label: outcome.label,
       tokenId: outcome.tokenId,
       currentProbability,
       historySummary: summary,
-      rawEstimate: clamp(weatherProbability, 0, 1),
+      rawEstimate: clamp(rawEstimate, 0, 1),
       confidence: weatherPrediction.confidence,
       estimatedCost: cost.estimatedCost,
       features: {
@@ -342,10 +423,31 @@ function scoreOutcome(outcome, marketSnapshot, weatherMarket, weatherSnapshot, w
         weatherCurrentObservedTemp: weatherSnapshot?.currentObservedTemp ?? null,
         weatherNwsForecastHigh: weatherSnapshot?.nwsForecastHigh ?? null,
         weatherOpenMeteoForecastHigh: weatherSnapshot?.openMeteoForecastHigh ?? null,
+        weatherHistoricalHighForSameDay: weatherSnapshot?.historicalHighForSameDay ?? null,
+        weatherRecentStationBias: weatherSnapshot?.recentStationBias ?? null,
         weatherLatestObservationAt: weatherSnapshot?.latestObservationAt ?? null,
         weatherDayPhase: weatherSnapshot?.model?.dayPhase ?? null,
         weatherSimulationCount: weatherPrediction.simulationCount,
+        weatherSimulationProbability: weatherProbability,
+        weatherTemperatureDistribution: weatherPrediction.temperatureDistribution,
+        weatherBucketProbabilities: weatherPrediction.bucketProbabilities,
+        weatherClimateDayWindow: weatherPrediction.climateDayWindow,
+        weatherSourceFreshness: weatherPrediction.sourceFreshness,
         weatherPercentiles: weatherPrediction.percentiles,
+        mlCalibration: weatherPrediction.mlCalibration,
+        weatherMlProbability: mlScore?.probability ?? null,
+        weatherMlBlendWeight: mlBlendWeight,
+        weatherMlModelId: mlScore?.modelId ?? null,
+        weatherMlModelType: mlScore?.modelType ?? null,
+        weatherMlTrainedAt: mlScore?.trainedAt ?? null,
+        weatherMlSampleCount: mlScore?.sampleCount ?? null,
+        weatherMlFeatures: mlFeatureVector,
+        bestBid: outcome.bestBid ?? null,
+        bestAsk: outcome.bestAsk ?? null,
+        midpoint: outcome.midpoint ?? null,
+        spread: outcome.spread ?? null,
+        bidDepth: outcome.bidDepth ?? null,
+        askDepth: outcome.askDepth ?? null,
         estimatedCost: cost.estimatedCost,
         costBreakdown: cost.costBreakdown
       }
@@ -398,6 +500,12 @@ function scoreOutcome(outcome, marketSnapshot, weatherMarket, weatherSnapshot, w
       weatherPrecision: weatherMarket?.precision ?? null,
       weatherFinalizationRule: weatherMarket?.finalizationRule ?? null,
       weatherOutcomeRange: weatherOutcome?.range ?? null,
+      bestBid: outcome.bestBid ?? null,
+      bestAsk: outcome.bestAsk ?? null,
+      midpoint: outcome.midpoint ?? null,
+      spread: outcome.spread ?? null,
+      bidDepth: outcome.bidDepth ?? null,
+      askDepth: outcome.askDepth ?? null,
       estimatedCost: cost.estimatedCost,
       costBreakdown: cost.costBreakdown
     }
@@ -416,7 +524,7 @@ function getMarketOpportunity(outcomes) {
   return ranked[0] ?? null;
 }
 
-export function buildStatisticalModel(event, aggregation) {
+export function buildStatisticalModel(event, aggregation, options = {}) {
   const marketSnapshots = aggregation?.liquiditySnapshot?.markets ?? [];
   const historicalMarkets = aggregation?.historicalPrices?.markets ?? [];
   const weatherMarkets = aggregation?.weatherContext?.markets ?? [];
@@ -430,13 +538,31 @@ export function buildStatisticalModel(event, aggregation) {
     const weatherSnapshot = weatherSnapshots.find((candidate) => candidate.conditionId === market.conditionId)
       ?? market.weatherSnapshot
       ?? null;
-    const weatherPrediction = buildWeatherHighTempPrediction(weatherMarket, weatherSnapshot, market.outcomes);
+    const weatherPrediction = buildWeatherHighTempPrediction(weatherMarket, weatherSnapshot, market.outcomes, options);
     const scoredOutcomes = market.outcomes.map((outcome) =>
-      scoreOutcome(outcome, marketSnapshot, weatherMarket, weatherSnapshot, weatherPrediction)
+      scoreOutcome(outcome, marketSnapshot, weatherMarket, weatherSnapshot, weatherPrediction, options)
     );
     const normalizedOutcomes = normalizeProbabilities(scoredOutcomes).sort(
       (left, right) => right.estimatedProbability - left.estimatedProbability
     );
+    const adjustedWeatherPrediction = weatherPrediction
+      ? {
+          ...weatherPrediction,
+          adjustedOutcomeProbabilities: Object.fromEntries(
+            normalizedOutcomes.map((outcome) => [outcome.label, outcome.estimatedProbability])
+          ),
+          weatherMlModel: options.weatherMlModel
+            ? {
+                status: options.weatherMlModel.status,
+                modelId: options.weatherMlModel.modelId,
+                modelType: options.weatherMlModel.modelType,
+                trainedAt: options.weatherMlModel.trainedAt,
+                blendWeight: options.weatherMlModel.blendWeight,
+                sampleCount: options.weatherMlModel.training?.sampleCount ?? null
+              }
+            : null
+        }
+      : null;
     const marketConfidence = average(normalizedOutcomes.map((outcome) => outcome.confidence)) ?? 0;
     const bestOpportunity = getMarketOpportunity(normalizedOutcomes);
 
@@ -445,7 +571,7 @@ export function buildStatisticalModel(event, aggregation) {
       question: market.question,
       weatherContext: weatherMarket,
       weatherSnapshot,
-      weatherPrediction,
+      weatherPrediction: adjustedWeatherPrediction,
       confidence: marketConfidence,
       opportunity: bestOpportunity,
       outcomes: normalizedOutcomes
@@ -476,10 +602,12 @@ export function buildStatisticalModel(event, aggregation) {
         'nws_hourly_forecast',
         'open_meteo_hourly_forecast',
         'outcome_temperature_ranges',
-        'estimated_cost'
+        'estimated_cost',
+        'ml_calibration_from_settled_paper_predictions',
+        'weather_ml_artifact_from_python_worker'
       ],
       description:
-        'Models Polymarket US highest-temperature weather markets by parsing the resolving station/source from market rules, ingesting station observations and forecasts, simulating final_high=max(observed_high_so_far,predicted_future_hourly_max), mapping simulations to outcome bins, and ranking only net edge after estimated spread, slippage, and source-risk cost.'
+        'Models Polymarket US highest-temperature weather markets by parsing the resolving station/source from market rules, ingesting station observations and forecasts, simulating final_high=max(observed_high_so_far,predicted_future_hourly_max), optionally blending a Python-trained ML calibration artifact into outcome probabilities, and ranking only net edge after estimated spread, slippage, and source-risk cost.'
     },
     summary: {
       eventSlug: event.slug,

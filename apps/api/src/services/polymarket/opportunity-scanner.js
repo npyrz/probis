@@ -1,8 +1,11 @@
 import axios from 'axios';
 
 import { buildStatisticalModel } from './statistical-model.js';
+import { fetchClobMarketSnapshots } from './clob.js';
 import { buildWeatherContext, isWeatherEvent } from '../weather/event-intelligence.js';
 import { buildWeatherSnapshots } from '../weather/data-ingestion.js';
+import { loadWeatherMlModel } from '../ml/weather-model.js';
+import { getMlCalibrationStats, persistEventAnalytics, persistPaperOpportunities } from '../persistence/postgres.js';
 
 const scannerState = {
   snapshot: createEmptySnapshot(),
@@ -198,7 +201,7 @@ function normalizeMarketOutcomes(market) {
 
         return {
           label,
-          tokenId: outcome.tokenId ?? null,
+          tokenId: outcome.tokenId ?? outcome.token_id ?? outcome.assetId ?? outcome.asset_id ?? null,
           probability: toNumberOrNull(outcome.probability)
         };
       })
@@ -209,6 +212,7 @@ function normalizeMarketOutcomes(market) {
     .map((label) => String(label ?? '').trim())
     .filter(Boolean);
   const prices = parseStringArray(market?.outcomePrices).map((price) => toNumberOrNull(price));
+  const tokenIds = parseStringArray(market?.clobTokenIds);
   const sidePriceByLabel = new Map();
 
   if (Array.isArray(market?.marketSides)) {
@@ -231,7 +235,7 @@ function normalizeMarketOutcomes(market) {
 
     return {
       label,
-      tokenId: null,
+      tokenId: tokenIds[index] ?? null,
       probability
     };
   });
@@ -277,6 +281,14 @@ function normalizeEventMarkets(markets) {
 }
 
 function getImpliedSpreadFromMarket(eventMarket) {
+  const clobSpreads = (Array.isArray(eventMarket?.outcomes) ? eventMarket.outcomes : [])
+    .map((outcome) => toNumberOrNull(outcome?.spread))
+    .filter((value) => typeof value === 'number');
+
+  if (clobSpreads.length > 0) {
+    return Math.min(...clobSpreads);
+  }
+
   const probabilities = (Array.isArray(eventMarket?.outcomes) ? eventMarket.outcomes : [])
     .map((outcome) => toNumberOrNull(outcome?.probability))
     .filter((value) => typeof value === 'number');
@@ -313,8 +325,33 @@ async function buildLightweightAnalyticsFromEvent(env, event) {
   };
   const pricedMarkets = normalizedEvent.markets
     .filter((market) => Array.isArray(market?.outcomes) && market.outcomes.some((outcome) => typeof toNumberOrNull(outcome?.probability) === 'number'));
+  const clobSnapshots = await fetchClobMarketSnapshots(env, pricedMarkets, { includeHistory: false });
+  const pricedMarketsWithClob = pricedMarkets.map((market) => ({
+    ...market,
+    outcomes: market.outcomes.map((outcome) => {
+      const clobSnapshot = outcome.tokenId ? clobSnapshots.byTokenId.get(String(outcome.tokenId)) : null;
+
+      return {
+        ...outcome,
+        probability: clobSnapshot?.midpoint ?? outcome.probability,
+        gammaProbability: outcome.probability ?? null,
+        midpoint: clobSnapshot?.midpoint ?? null,
+        bestBid: clobSnapshot?.bestBid ?? null,
+        bestAsk: clobSnapshot?.bestAsk ?? null,
+        spread: clobSnapshot?.spread ?? null,
+        bidDepth: clobSnapshot?.bidDepth ?? null,
+        askDepth: clobSnapshot?.askDepth ?? null
+      };
+    })
+  }));
+  const pricedMarketsWithClobByConditionId = new Map(
+    pricedMarketsWithClob.map((market) => [market.conditionId, market])
+  );
+  normalizedEvent.markets = normalizedEvent.markets.map((market) =>
+    pricedMarketsWithClobByConditionId.get(market.conditionId) ?? market
+  );
   const weatherContext = buildWeatherContext(normalizedEvent, {
-    markets: pricedMarkets.map((market) => ({
+    markets: pricedMarketsWithClob.map((market) => ({
       conditionId: market.conditionId,
       question: market.question,
       title: market.title ?? null,
@@ -342,11 +379,11 @@ async function buildLightweightAnalyticsFromEvent(env, event) {
     liquiditySnapshot: {
       eventLiquidity: normalizedEvent.liquidity,
       eventVolume: normalizedEvent.volume,
-      liveMarketCount: pricedMarkets.length,
-      pricedOutcomeCount: pricedMarkets.reduce((count, market) => {
+      liveMarketCount: pricedMarketsWithClob.length,
+      pricedOutcomeCount: pricedMarketsWithClob.reduce((count, market) => {
         return count + market.outcomes.filter((outcome) => typeof toNumberOrNull(outcome?.probability) === 'number').length;
       }, 0),
-      markets: pricedMarkets.map((market) => ({
+      markets: pricedMarketsWithClob.map((market) => ({
         conditionId: market.conditionId,
         question: market.question,
         category: typeof market?.category === 'string' ? market.category.toLowerCase() : null,
@@ -364,7 +401,7 @@ async function buildLightweightAnalyticsFromEvent(env, event) {
     weatherContext,
     weatherSnapshots,
     historicalPrices: {
-      markets: pricedMarkets.map((market) => ({
+      markets: pricedMarketsWithClob.map((market) => ({
         conditionId: market.conditionId,
         question: market.question,
         title: market.title ?? null,
@@ -384,6 +421,13 @@ async function buildLightweightAnalyticsFromEvent(env, event) {
               label: outcome.label,
               tokenId: outcome.tokenId ?? null,
               currentProbability: probability,
+              gammaProbability: outcome.gammaProbability ?? null,
+              bestBid: outcome.bestBid ?? null,
+              bestAsk: outcome.bestAsk ?? null,
+              midpoint: outcome.midpoint ?? null,
+              spread: outcome.spread ?? null,
+              bidDepth: outcome.bidDepth ?? null,
+              askDepth: outcome.askDepth ?? null,
               historySummary: {
                 pointCount: 1,
                 firstPrice: probability,
@@ -400,13 +444,29 @@ async function buildLightweightAnalyticsFromEvent(env, event) {
       }))
     }
   };
-  const statisticalModel = buildStatisticalModel(normalizedEvent, aggregation);
-
-  return {
+  const stationIds = [...new Set(weatherSnapshots.map((snapshot) => snapshot?.stationId).filter(Boolean))];
+  const calibrationEntries = await Promise.all(stationIds.map(async (stationId) => [
+    stationId,
+    await getMlCalibrationStats(env, { stationId })
+  ]));
+  const [mlCalibration, weatherMlModel] = await Promise.all([
+    getMlCalibrationStats(env),
+    loadWeatherMlModel(env)
+  ]);
+  const statisticalModel = buildStatisticalModel(normalizedEvent, aggregation, {
+    mlCalibrationByStationId: new Map(calibrationEntries),
+    mlCalibration,
+    weatherMlModel
+  });
+  const analytics = {
     event: normalizedEvent,
     aggregation,
     statisticalModel
   };
+
+  void persistEventAnalytics(env, analytics);
+
+  return analytics;
 }
 
 function selectScannerCandidate(statisticalMarket) {
@@ -720,10 +780,16 @@ async function buildMarketOpportunity(env, analytics, statisticalMarket) {
       (candidate) => candidate.conditionId === statisticalMarket.conditionId
     )?.liquidityShare ?? null,
     spread: impliedSpread,
-    bestBid: null,
-    bestAsk: null,
-    midpoint: null,
-    spreadSource: typeof impliedSpread === 'number' ? 'implied-market-probabilities' : 'unavailable',
+    bestBid: opportunity.features?.bestBid ?? null,
+    bestAsk: opportunity.features?.bestAsk ?? null,
+    midpoint: opportunity.features?.midpoint ?? null,
+    bidDepth: opportunity.features?.bidDepth ?? null,
+    askDepth: opportunity.features?.askDepth ?? null,
+    spreadSource: opportunity.features?.spread !== null && opportunity.features?.spread !== undefined
+      ? 'polymarket-clob'
+      : typeof impliedSpread === 'number'
+        ? 'implied-market-probabilities'
+        : 'unavailable',
     timeToResolutionMs,
     signalSource: resolvedSignalSource,
     weatherMetric: opportunity.features?.weatherMetric ?? weatherContext?.metric ?? null,
@@ -746,9 +812,15 @@ async function buildMarketOpportunity(env, analytics, statisticalMarket) {
     weatherCurrentObservedTemp: opportunity.features?.weatherCurrentObservedTemp ?? null,
     weatherNwsForecastHigh: opportunity.features?.weatherNwsForecastHigh ?? null,
     weatherOpenMeteoForecastHigh: opportunity.features?.weatherOpenMeteoForecastHigh ?? null,
+    weatherHistoricalHighForSameDay: opportunity.features?.weatherHistoricalHighForSameDay ?? null,
+    weatherRecentStationBias: opportunity.features?.weatherRecentStationBias ?? null,
     weatherLatestObservationAt: opportunity.features?.weatherLatestObservationAt ?? null,
     weatherDayPhase: opportunity.features?.weatherDayPhase ?? null,
     weatherSimulationCount: opportunity.features?.weatherSimulationCount ?? null,
+    weatherTemperatureDistribution: opportunity.features?.weatherTemperatureDistribution ?? null,
+    weatherBucketProbabilities: opportunity.features?.weatherBucketProbabilities ?? null,
+    weatherClimateDayWindow: opportunity.features?.weatherClimateDayWindow ?? null,
+    weatherSourceFreshness: opportunity.features?.weatherSourceFreshness ?? null,
     weatherPercentiles: opportunity.features?.weatherPercentiles ?? null,
     weatherDistribution: buildWeatherOutcomeDistribution(analytics),
     generatedAt: analytics.statisticalModel?.generatedAt ?? analytics.aggregation?.generatedAt ?? new Date().toISOString()
@@ -846,6 +918,8 @@ async function buildScannerSnapshot(env, reason) {
       ...opportunity,
       rank: index + 1
     }));
+
+  void persistPaperOpportunities(env, opportunities);
 
   return {
     status: 'ready',

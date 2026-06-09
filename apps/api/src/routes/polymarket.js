@@ -6,6 +6,7 @@ import { UnsupportedMarketError, fetchActiveEvents, fetchEventByInput } from '..
 import { invalidateEventAnalyticsCache, resolveEventAnalytics } from '../services/polymarket/event-data.js';
 import { getOpportunityScannerSnapshot } from '../services/polymarket/opportunity-scanner.js';
 import { getPolymarketUsAccountIdentity } from '../services/polymarket/us-orders.js';
+import { getPaperTradingAccuracy } from '../services/persistence/postgres.js';
 
 const router = Router();
 
@@ -86,6 +87,23 @@ router.get('/api/polymarket/scanner', async (request, response) => {
     response.status(502).json({
       ok: false,
       error: error instanceof Error ? error.message : 'Unable to load opportunity scanner snapshot'
+    });
+  }
+});
+
+router.get('/api/polymarket/paper-accuracy', async (_request, response) => {
+  try {
+    const env = getEnv();
+    const accuracy = await getPaperTradingAccuracy(env);
+
+    response.json({
+      ok: true,
+      accuracy
+    });
+  } catch (error) {
+    response.status(502).json({
+      ok: false,
+      error: error instanceof Error ? error.message : 'Unable to load paper-trading accuracy'
     });
   }
 });

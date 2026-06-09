@@ -40,6 +40,33 @@ function formatWeatherContext(aggregation) {
   ].join('\n');
 }
 
+function formatWeatherPredictionContext(statisticalModel) {
+  const weatherMarkets = (Array.isArray(statisticalModel?.markets) ? statisticalModel.markets : [])
+    .filter((market) => market?.weatherPrediction)
+    .slice(0, 4)
+    .map((market) => {
+      const prediction = market.weatherPrediction;
+      const topTemps = Object.entries(prediction.temperatureDistribution ?? {})
+        .sort((left, right) => (right[1] ?? 0) - (left[1] ?? 0))
+        .slice(0, 5)
+        .map(([temp, probability]) => `${temp}F=${Number(probability * 100).toFixed(1)}%`)
+        .join(', ');
+
+      return [
+        `- ${market.question}`,
+        `expectedHigh=${prediction.expectedHigh ?? 'n/a'}`,
+        `stdDev=${prediction.stdDev ?? 'n/a'}`,
+        `confidence=${prediction.confidence ?? 'n/a'}`,
+        `climateWindow=${prediction.climateDayWindow?.startLocal ?? 'n/a'} to ${prediction.climateDayWindow?.endLocal ?? 'n/a'}`,
+        `sourceStale=${prediction.sourceFreshness?.isStale === true}`,
+        `topIntegerTemps=${topTemps || 'n/a'}`
+      ].join(' | ');
+    })
+    .join('\n');
+
+  return weatherMarkets ? `Weather prediction distributions:\n${weatherMarkets}` : 'Weather prediction distributions: unavailable';
+}
+
 function getErrorMessage(error) {
   if (error instanceof Error) {
     return error.message;
@@ -181,6 +208,7 @@ export function buildEventAnalysisPrompt(event, aggregation, statisticalModel) {
     `Top outcome: ${statisticalModel.summary.bestOpportunity ? `${bestOpportunity.label} in ${bestOpportunity.question}` : 'n/a'}`,
     `Model methodology: ${statisticalModel.methodology.description}`,
     formatWeatherContext(aggregation),
+    formatWeatherPredictionContext(statisticalModel),
     'Live markets:',
     marketLines
   ].join('\n');
@@ -250,6 +278,7 @@ export function buildDecisionEnginePrompt(event, aggregation, statisticalModel, 
     `Event volume: ${aggregation.liquiditySnapshot.eventVolume ?? 'n/a'}`,
     `Event liquidity: ${aggregation.liquiditySnapshot.eventLiquidity ?? 'n/a'}`,
     formatWeatherContext(aggregation),
+    formatWeatherPredictionContext(statisticalModel),
     `validCandidates: ${JSON.stringify(topMarkets)}`
   ].join('\n');
 }

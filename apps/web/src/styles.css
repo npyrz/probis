@@ -552,6 +552,135 @@ select {
   padding: 11px;
 }
 
+.chicago-tracker-card {
+  display: grid;
+  gap: 10px;
+}
+
+.compact-button {
+  padding: 7px 9px;
+  min-height: 32px;
+}
+
+.chicago-status-grid {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+.chicago-window-line {
+  margin-bottom: 0;
+}
+
+.chicago-recommendation {
+  display: grid;
+  gap: 8px;
+  padding: 9px;
+  border: 1px solid rgba(95, 240, 165, 0.28);
+  border-radius: 8px;
+  background: rgba(8, 18, 19, 0.72);
+}
+
+.chicago-recommendation h3 {
+  font-size: 1rem;
+}
+
+.chicago-temp-strip {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.chicago-market-catalog {
+  display: grid;
+  gap: 8px;
+  padding-top: 8px;
+  border-top: 1px solid rgba(79, 93, 110, 0.28);
+}
+
+.chicago-market-catalog .panel-heading {
+  margin-bottom: 0;
+}
+
+.chicago-alert-list {
+  display: grid;
+  gap: 7px;
+  padding-top: 8px;
+  border-top: 1px solid rgba(79, 93, 110, 0.28);
+}
+
+.chicago-alert-row {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  gap: 8px;
+  align-items: start;
+  padding: 8px;
+  border: 1px solid rgba(79, 93, 110, 0.3);
+  border-radius: 8px;
+  background: rgba(8, 14, 21, 0.72);
+}
+
+.chicago-alert-row > div {
+  min-width: 0;
+  display: grid;
+  gap: 3px;
+}
+
+.chicago-alert-row strong,
+.chicago-alert-row p,
+.chicago-alert-row span {
+  overflow-wrap: anywhere;
+}
+
+.chicago-alert-row p {
+  margin: 0;
+  color: #aebdd0;
+  font-size: 0.82rem;
+}
+
+.chicago-alert-row > div > span {
+  color: #7f90a6;
+  font-size: 0.76rem;
+}
+
+.chicago-market-date-list {
+  display: grid;
+  gap: 8px;
+}
+
+.chicago-market-date-row {
+  display: grid;
+  gap: 6px;
+}
+
+.chicago-market-date-header {
+  display: flex;
+  justify-content: space-between;
+  gap: 8px;
+  color: #dbe7f5;
+  font-size: 0.9rem;
+}
+
+.chicago-market-date-header span {
+  color: #8fa3bb;
+  white-space: nowrap;
+}
+
+.chicago-market-bucket-strip {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 5px;
+}
+
+.chicago-bucket-distribution {
+  margin: 0;
+}
+
+.chicago-bucket-list {
+  grid-template-columns: 1fr;
+  max-height: 360px;
+  overflow-y: auto;
+  padding-right: 2px;
+}
+
 .panel-heading {
   margin-bottom: 10px;
 }

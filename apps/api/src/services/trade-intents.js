@@ -4,6 +4,7 @@ import { randomUUID } from 'node:crypto';
 import { fileURLToPath } from 'node:url';
 
 import { fetchEventByInput } from './polymarket/gamma.js';
+import { getPolymarketMarketDataPolicy } from './polymarket/client.js';
 import {
   findRecentFilledSellOrderForIntent,
   getLiveOutcomeProbabilityFromUsMarket,
@@ -22,6 +23,11 @@ const currentDirectory = path.dirname(fileURLToPath(import.meta.url));
 const repoRoot = path.resolve(currentDirectory, '../../../../');
 const DATA_DIRECTORY = path.join(repoRoot, 'data');
 const TRADE_INTENTS_FILE = path.join(DATA_DIRECTORY, 'trade-intents.json');
+const KMDW_LIVE_TRADING_POLICY_ID = 'kmdw-paper-manual-only-v1';
+const KMDW_POSITION_LIFECYCLE_POLICY_ID = 'kmdw-paper-position-lifecycle-v1';
+const KMDW_MARKET_DATA_POLICY_ID = 'kmdw-rest-polling-market-data-v1';
+const KMDW_LIVE_TRADING_BLOCK_REASON = 'Live trading is intentionally disabled for KMDW weather signals. Keep this intent paper/manual-only and submit any order outside Probis after human source and quote review.';
+const KMDW_MARKET_DATA_STREAMING_BLOCK_REASON = 'Streaming KMDW market data is not implemented. KMDW weather markets use REST polling for the near-term plan.';
 
 async function ensureStore() {
   await mkdir(DATA_DIRECTORY, { recursive: true });
@@ -95,7 +101,7 @@ function buildExecutionRequestShape(payload) {
   const takeProfitProbability = Number.parseFloat(payload?.tradeSuggestion?.takeProfitProbability ?? NaN);
   const marketSlug = payload.marketSlug ?? null;
 
-  return {
+  const baseRequest = {
     requestId: randomUUID(),
     requestType: 'market-buy-intent',
     venue: 'polymarket-us',
@@ -119,6 +125,267 @@ function buildExecutionRequestShape(payload) {
       credentialsConfigured: true
     }
   };
+  const overrideRequest = payload.executionRequest && typeof payload.executionRequest === 'object'
+    ? payload.executionRequest
+    : {};
+
+  return {
+    ...baseRequest,
+    ...overrideRequest,
+    constraints: {
+      ...baseRequest.constraints,
+      ...(overrideRequest.constraints ?? {})
+    }
+  };
+}
+
+function tradeIntentText(intent) {
+  return [
+    intent?.eventSlug,
+    intent?.eventTitle,
+    intent?.input,
+    intent?.marketSlug,
+    intent?.marketQuestion,
+    intent?.analysis,
+    intent?.executionRequest?.requestType,
+    intent?.executionRequest?.mode,
+    intent?.recommendation?.marketQuestion,
+    intent?.recommendation?.thesis,
+    intent?.recommendation?.keyRisk,
+    ...(Array.isArray(intent?.recommendation?.reasons) ? intent.recommendation.reasons : [])
+  ].filter(Boolean).join(' ').toLowerCase();
+}
+
+function isKmdwWeatherIntent(intent) {
+  const requestType = String(intent?.executionRequest?.requestType ?? '').trim();
+  const constraints = intent?.executionRequest?.constraints ?? {};
+  const hasPaperManualConstraint = constraints.kmdwPaperManualOnly === true
+    || (constraints.liveTradingAllowed === false && constraints.requiresManualSubmission === true && constraints.sourceAuditRequired === true);
+
+  if (requestType === 'kmdw-paper-signal' || hasPaperManualConstraint) {
+    return true;
+  }
+
+  return /\b(kmdw|climdw|midway)\b/.test(tradeIntentText(intent));
+}
+
+export function getTradeIntentLiveTradingPolicy(intent) {
+  if (!isKmdwWeatherIntent(intent)) {
+    return {
+      scope: 'standard-polymarket-us',
+      policyId: 'standard-live-routing',
+      liveTradingAllowed: true,
+      requiresManualSubmission: false,
+      blocker: null
+    };
+  }
+
+  return {
+    scope: 'kmdw-weather',
+    policyId: KMDW_LIVE_TRADING_POLICY_ID,
+    liveTradingAllowed: false,
+    requiresManualSubmission: true,
+    liveRoutingBlocked: true,
+    blocker: KMDW_LIVE_TRADING_BLOCK_REASON
+  };
+}
+
+export function buildKmdwIntentMarketDataPolicy(intent) {
+  const existing = intent?.executionRequest?.marketDataPolicy ?? intent?.marketDataPolicy ?? {};
+  const basePolicy = getPolymarketMarketDataPolicy({});
+
+  return {
+    ...basePolicy,
+    ...existing,
+    policyId: KMDW_MARKET_DATA_POLICY_ID,
+    parentPolicyId: existing.parentPolicyId ?? basePolicy.policyId,
+    scope: 'kmdw-weather-market-data',
+    stationId: 'KMDW',
+    transport: 'polling',
+    mode: 'rest-polling',
+    pollingEnabled: true,
+    streamingEnabled: false,
+    polling: {
+      ...basePolicy.polling,
+      ...(existing.polling ?? {}),
+      enabled: true
+    },
+    streaming: {
+      ...basePolicy.streaming,
+      ...(existing.streaming ?? {}),
+      enabled: false,
+      supported: false,
+      websocketClient: false,
+      reason: KMDW_MARKET_DATA_STREAMING_BLOCK_REASON
+    },
+    note: KMDW_MARKET_DATA_STREAMING_BLOCK_REASON
+  };
+}
+
+export function buildKmdwIntentPositionLifecycle(intent, { currentProbability = null } = {}) {
+  const existing = intent?.executionRequest?.positionLifecycle ?? intent?.positionLifecycle ?? {};
+  const stopLossProbability = Number.parseFloat(intent?.tradeSuggestion?.stopLossProbability ?? intent?.monitoring?.stopLossProbability ?? NaN);
+  const takeProfitProbability = Number.parseFloat(intent?.tradeSuggestion?.takeProfitProbability ?? intent?.monitoring?.takeProfitProbability ?? NaN);
+  const current = Number.parseFloat(currentProbability ?? intent?.monitoring?.currentProbability ?? NaN);
+  let recommendedAction = existing.recommendedAction ?? 'manual-review-required';
+  let manualAction = existing.manualAction ?? 'review';
+  let state = existing.state ?? 'paper-review';
+  let urgency = existing.urgency ?? 'base';
+  let instruction = existing.instruction ?? 'Review KMDW paper exposure manually; Probis live routing is disabled.';
+
+  if (Number.isFinite(current) && Number.isFinite(stopLossProbability) && current <= stopLossProbability) {
+    recommendedAction = 'manual-flatten-stop-loss';
+    manualAction = 'flatten';
+    state = 'paper-flatten-stop-loss';
+    urgency = 'critical-window';
+    instruction = 'KMDW paper stop-loss threshold is breached. Manually flatten outside Probis; automated live exits are disabled.';
+  } else if (Number.isFinite(current) && Number.isFinite(takeProfitProbability) && current >= takeProfitProbability) {
+    recommendedAction = 'manual-reduce-take-profit';
+    manualAction = 'reduce';
+    state = 'paper-reduce-take-profit';
+    urgency = 'hot-window';
+    instruction = 'KMDW paper take-profit threshold is reached. Manually reduce or flatten outside Probis; automated live exits are disabled.';
+  }
+
+  const monitoringState = manualAction === 'flatten'
+    ? 'kmdw-manual-flatten-required'
+    : manualAction === 'reduce'
+      ? 'kmdw-manual-reduce-required'
+      : manualAction === 'close-paper'
+        ? 'kmdw-paper-close-required'
+        : 'kmdw-paper-monitoring';
+
+  return {
+    ...existing,
+    policyId: KMDW_POSITION_LIFECYCLE_POLICY_ID,
+    stationId: 'KMDW',
+    mode: 'paper-manual-only',
+    targetDate: existing.targetDate ?? null,
+    dayPhase: existing.dayPhase ?? null,
+    state,
+    manualAction,
+    recommendedAction,
+    urgency,
+    livePositionAllowed: false,
+    liveReduceAllowed: false,
+    liveFlattenAllowed: false,
+    automatedExitAllowed: false,
+    monitoringState,
+    instruction,
+    rules: Array.isArray(existing.rules) && existing.rules.length > 0
+      ? existing.rules
+      : [
+        'KMDW signals are paper/manual-only inside Probis.',
+        'Do not submit automated live entry, reduce, flatten, or exit orders for KMDW.',
+        'Reduce late-afternoon paper exposure manually before late prints.',
+        'Flatten evening paper exposure manually before final print or settlement ambiguity.'
+      ],
+    evaluatedAt: new Date().toISOString()
+  };
+}
+
+export function hardenTradeIntentLiveRouting(intent) {
+  const policy = getTradeIntentLiveTradingPolicy(intent);
+
+  if (policy.liveTradingAllowed !== false) {
+    return intent;
+  }
+
+  const constraints = intent?.executionRequest?.constraints ?? {};
+  const lifecycle = buildKmdwIntentPositionLifecycle(intent);
+  const marketDataPolicy = buildKmdwIntentMarketDataPolicy(intent);
+  const alreadyHardened = intent?.liveTradingPolicy?.policyId === policy.policyId
+    && intent?.liveTradingPolicy?.liveTradingAllowed === false
+    && intent?.liveTradingPolicy?.requiresManualSubmission === true
+    && intent?.executionRequest?.requestType === 'kmdw-paper-signal'
+    && intent?.executionRequest?.readyForExecution === false
+    && intent?.executionRequest?.positionLifecycle?.policyId === KMDW_POSITION_LIFECYCLE_POLICY_ID
+    && intent?.executionRequest?.marketDataPolicy?.policyId === KMDW_MARKET_DATA_POLICY_ID
+    && intent?.executionRequest?.marketDataPolicy?.streamingEnabled === false
+    && constraints.kmdwPaperManualOnly === true
+    && constraints.requiresManualSubmission === true
+    && constraints.liveTradingAllowed === false
+    && constraints.automatedExecutionAllowed === false
+    && constraints.liveReduceAllowed === false
+    && constraints.liveFlattenAllowed === false
+    && constraints.automatedExitAllowed === false
+    && constraints.liveRoutingBlocked === true
+    && constraints.venueOrderSubmissionAllowed === false
+    && constraints.sourceAuditRequired === true
+    && constraints.positionLifecyclePolicyId === KMDW_POSITION_LIFECYCLE_POLICY_ID
+    && constraints.pollingMarketDataRequired === true
+    && constraints.streamingMarketDataAllowed === false
+    && constraints.marketDataPolicyId === KMDW_MARKET_DATA_POLICY_ID
+    && constraints.marketDataTransport === 'polling';
+
+  if (alreadyHardened) {
+    return intent;
+  }
+
+  return {
+    ...intent,
+    liveTradingPolicy: {
+      scope: policy.scope,
+      policyId: policy.policyId,
+      liveTradingAllowed: false,
+      requiresManualSubmission: true,
+      liveRoutingBlocked: true,
+      blocker: policy.blocker
+    },
+    executionRequest: {
+      ...(intent?.executionRequest ?? {}),
+      requestType: 'kmdw-paper-signal',
+      readyForExecution: false,
+      liveRoutingBlockedReason: policy.blocker,
+      positionLifecycle: lifecycle,
+      marketDataPolicy,
+      constraints: {
+        ...(intent?.executionRequest?.constraints ?? {}),
+        kmdwPaperManualOnly: true,
+        requiresManualSubmission: true,
+        liveTradingAllowed: false,
+        automatedExecutionAllowed: false,
+        liveReduceAllowed: false,
+        liveFlattenAllowed: false,
+        automatedExitAllowed: false,
+        liveRoutingBlocked: true,
+        venueOrderSubmissionAllowed: false,
+        pollingMarketDataRequired: true,
+        streamingMarketDataAllowed: false,
+        sourceAuditRequired: true,
+        positionLifecyclePolicyId: KMDW_POSITION_LIFECYCLE_POLICY_ID,
+        marketDataPolicyId: KMDW_MARKET_DATA_POLICY_ID,
+        marketDataTransport: 'polling',
+        policyId: policy.policyId,
+        policyScope: policy.scope,
+        manualReviewRequired: true
+      }
+    }
+  };
+}
+
+export function getTradeIntentLiveRoutingBlocker(intent) {
+  const policy = getTradeIntentLiveTradingPolicy(intent);
+
+  if (policy.liveTradingAllowed === false) {
+    return policy.blocker;
+  }
+
+  const constraints = intent?.executionRequest?.constraints ?? {};
+
+  if (constraints.liveTradingAllowed === false) {
+    return 'Live trading is disabled for this intent.';
+  }
+
+  if (constraints.requiresManualSubmission === true) {
+    return 'This intent requires manual submission and cannot be routed automatically.';
+  }
+
+  if (constraints.liveRoutingBlocked === true || constraints.venueOrderSubmissionAllowed === false) {
+    return 'Live order routing is blocked for this intent.';
+  }
+
+  return null;
 }
 
 function buildMonitoringState(intent) {
@@ -811,6 +1078,12 @@ async function syncTrackingIntentsWithVenue(env, intents) {
 }
 
 async function executeTriggeredExit(env, intent, exitReason, monitoringState) {
+  const liveRoutingBlocker = getTradeIntentLiveRoutingBlocker(hardenTradeIntentLiveRouting(intent));
+
+  if (liveRoutingBlocker) {
+    throw new Error(liveRoutingBlocker);
+  }
+
   const resolvedMarket = await resolveIntentMarketMetadata(env, intent);
   const executableIntent = {
     ...intent,
@@ -898,6 +1171,27 @@ async function evaluateMonitoringState(env, intent, trackedQuote) {
     : (Number.parseInt(String(intent.monitoring?.exitAttemptFailures ?? '0'), 10) || 0);
   const MAX_EXIT_ATTEMPTS = 3;
   const exitAttemptsExhausted = previousExitAttempts >= MAX_EXIT_ATTEMPTS;
+  const liveRoutingBlocker = getTradeIntentLiveRoutingBlocker(hardenTradeIntentLiveRouting(intent));
+
+  if (liveRoutingBlocker) {
+    const hardenedIntent = hardenTradeIntentLiveRouting(intent);
+    const lifecycle = buildKmdwIntentPositionLifecycle(hardenedIntent, { currentProbability });
+
+    return {
+      ...hardenedIntent,
+      executionRequest: {
+        ...hardenedIntent.executionRequest,
+        positionLifecycle: lifecycle
+      },
+      monitoring: {
+        ...baseMonitoring,
+        state: lifecycle.monitoringState,
+        exitReason: lifecycle.manualAction === 'flatten' ? lifecycle.recommendedAction : null,
+        notes: lifecycle.instruction
+      },
+      updatedAt: new Date().toISOString()
+    };
+  }
 
   if (intent.monitoring?.state === 'exit-submitted-awaiting-fill') {
     return {
@@ -1033,6 +1327,8 @@ export function buildTradeIntentPayload(payload) {
   const tradeAmount = Number.parseFloat(payload?.tradeAmount ?? payload?.tradeSuggestion?.amount ?? NaN);
   const stopLossProbability = Number.parseFloat(payload?.tradeSuggestion?.stopLossProbability ?? NaN);
   const takeProfitProbability = Number.parseFloat(payload?.tradeSuggestion?.takeProfitProbability ?? NaN);
+  const hasExplicitConfirmedAt = Object.prototype.hasOwnProperty.call(payload ?? {}, 'confirmedAt');
+  const confirmedAt = hasExplicitConfirmedAt ? payload.confirmedAt : new Date().toISOString();
 
   if (!payload?.eventSlug || !payload?.marketQuestion || !payload?.outcomeLabel) {
     throw new Error('Trade intent requires eventSlug, marketQuestion, and outcomeLabel.');
@@ -1050,11 +1346,11 @@ export function buildTradeIntentPayload(payload) {
     throw new Error('Trade intent requires a takeProfitProbability between 0 and 1.');
   }
 
-  return {
+  return hardenTradeIntentLiveRouting({
     id: randomUUID(),
-    status: payload.status ?? (payload.confirmedAt ? 'confirmed' : 'draft'),
+    status: payload.status ?? (confirmedAt ? 'confirmed' : 'draft'),
     createdAt: new Date().toISOString(),
-    confirmedAt: payload.confirmedAt ?? new Date().toISOString(),
+    confirmedAt,
     eventSlug: payload.eventSlug,
     eventTitle: payload.eventTitle ?? null,
     input: payload.input ?? payload.eventSlug,
@@ -1093,7 +1389,25 @@ export function buildTradeIntentPayload(payload) {
     },
     analysis: payload.analysis ?? null,
     generatedAt: payload.generatedAt ?? new Date().toISOString()
-  };
+  });
+}
+
+export function getTradeIntentExecutionBlocker(intent) {
+  if (intent?.status !== 'confirmed') {
+    return 'Only confirmed trade intents can be submitted for live trading.';
+  }
+
+  if (!intent?.confirmedAt) {
+    return 'Trade intent must be confirmed before live trading can start.';
+  }
+
+  const liveRoutingBlocker = getTradeIntentLiveRoutingBlocker(hardenTradeIntentLiveRouting(intent));
+
+  if (liveRoutingBlocker) {
+    return liveRoutingBlocker;
+  }
+
+  return null;
 }
 
 export async function createTradeIntent(payload) {
@@ -1110,9 +1424,10 @@ export async function listTradeIntents(limit = 10, env = null) {
   const syncedIntents = env ? await syncTrackingIntentsWithVenue(env, intents) : intents;
   let verificationBackfilled = false;
   const verifiedIntents = syncedIntents.map((intent) => {
-    const nextIntent = ensureApiVerificationField(intent);
+    const verifiedIntent = ensureApiVerificationField(intent);
+    const nextIntent = hardenTradeIntentLiveRouting(verifiedIntent);
 
-    if (nextIntent !== intent) {
+    if (nextIntent !== intent || verifiedIntent !== intent) {
       verificationBackfilled = true;
     }
 
@@ -1137,7 +1452,7 @@ export async function updateTradeIntent(id, payload) {
   const nextTradeAmount = Number.isFinite(editablePatch.tradeAmount)
     ? editablePatch.tradeAmount
     : existing.tradeAmount;
-  const updatedIntent = {
+  let updatedIntent = {
     ...existing,
     ...editablePatch,
     tradeAmount: nextTradeAmount,
@@ -1171,6 +1486,7 @@ export async function updateTradeIntent(id, payload) {
     readyForExecution: existing.executionRequest?.readyForExecution ?? updatedIntent.executionRequest.readyForExecution,
     preparedAt: existing.executionRequest?.preparedAt ?? null
   };
+  updatedIntent = hardenTradeIntentLiveRouting(updatedIntent);
 
   await writeTradeIntents(replaceTradeIntent(intents, updatedIntent));
   return updatedIntent;
@@ -1188,10 +1504,20 @@ export async function deleteTradeIntent(id) {
 export async function executeTradeIntent(env, id) {
   const intents = await readTradeIntents();
   const existing = findTradeIntentOrThrow(intents, id);
+  const hardenedExisting = hardenTradeIntentLiveRouting(existing);
+  const executionBlocker = getTradeIntentExecutionBlocker(hardenedExisting);
 
-  const resolvedMarket = await resolveIntentMarketMetadata(env, existing);
+  if (executionBlocker) {
+    if (hardenedExisting !== existing) {
+      await writeTradeIntents(replaceTradeIntent(intents, hardenedExisting));
+    }
+
+    throw new Error(executionBlocker);
+  }
+
+  const resolvedMarket = await resolveIntentMarketMetadata(env, hardenedExisting);
   const executableIntent = {
-    ...existing,
+    ...hardenedExisting,
     marketSlug: resolvedMarket.marketSlug,
     conditionId: resolvedMarket.conditionId
   };
@@ -1328,14 +1654,24 @@ export async function pollTrackingTradeIntents(env) {
 export async function sellTradeIntent(env, id) {
   const intents = await readTradeIntents();
   const existing = findTradeIntentOrThrow(intents, id);
+  const hardenedExisting = hardenTradeIntentLiveRouting(existing);
+  const liveRoutingBlocker = getTradeIntentLiveRoutingBlocker(hardenedExisting);
 
-  if (existing.status !== 'tracking') {
+  if (liveRoutingBlocker) {
+    if (hardenedExisting !== existing) {
+      await writeTradeIntents(replaceTradeIntent(intents, hardenedExisting));
+    }
+
+    throw new Error(liveRoutingBlocker);
+  }
+
+  if (hardenedExisting.status !== 'tracking') {
     throw new Error('Sell Now is only available for tracked positions.');
   }
 
-  const resolvedMarket = await resolveIntentMarketMetadata(env, existing);
+  const resolvedMarket = await resolveIntentMarketMetadata(env, hardenedExisting);
   const executableIntent = {
-    ...existing,
+    ...hardenedExisting,
     marketSlug: resolvedMarket.marketSlug,
     conditionId: resolvedMarket.conditionId
   };

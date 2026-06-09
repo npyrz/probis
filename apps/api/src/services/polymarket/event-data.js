@@ -1,6 +1,8 @@
 import { buildEventAggregation } from './aggregation.js';
 import { extractEventSlug, fetchEventByInput } from './gamma.js';
 import { buildStatisticalModel } from './statistical-model.js';
+import { loadWeatherMlModel } from '../ml/weather-model.js';
+import { getMlCalibrationStats, persistEventAnalytics } from '../persistence/postgres.js';
 
 const analyticsCache = new Map();
 
@@ -39,16 +41,42 @@ export function invalidateEventAnalyticsCache(input) {
   analyticsCache.delete(getCacheKey(input));
 }
 
+async function buildMlCalibrationOptions(env, aggregation) {
+  const stationIds = [...new Set(
+    (Array.isArray(aggregation?.weatherSnapshots) ? aggregation.weatherSnapshots : [])
+      .map((snapshot) => snapshot?.stationId)
+      .filter(Boolean)
+  )];
+  const entries = await Promise.all(stationIds.map(async (stationId) => [
+    stationId,
+    await getMlCalibrationStats(env, { stationId })
+  ]));
+  const [mlCalibration, weatherMlModel] = await Promise.all([
+    getMlCalibrationStats(env),
+    loadWeatherMlModel(env)
+  ]);
+
+  return {
+    mlCalibrationByStationId: new Map(entries),
+    mlCalibration,
+    weatherMlModel
+  };
+}
+
 export async function resolveEventWithAggregation(env, input) {
   const event = await fetchEventByInput(env, input);
   const aggregation = await buildEventAggregation(env, event);
-  const statisticalModel = buildStatisticalModel(event, aggregation);
-
-  return {
+  const calibrationOptions = await buildMlCalibrationOptions(env, aggregation);
+  const statisticalModel = buildStatisticalModel(event, aggregation, calibrationOptions);
+  const result = {
     ...event,
     aggregation,
     statisticalModel
   };
+
+  void persistEventAnalytics(env, { event, aggregation, statisticalModel });
+
+  return result;
 }
 
 export async function resolveEventAnalytics(env, input, options = {}) {
@@ -62,7 +90,8 @@ export async function resolveEventAnalytics(env, input, options = {}) {
   }
 
   const aggregation = await buildEventAggregation(env, event);
-  const statisticalModel = buildStatisticalModel(event, aggregation);
+  const calibrationOptions = await buildMlCalibrationOptions(env, aggregation);
+  const statisticalModel = buildStatisticalModel(event, aggregation, calibrationOptions);
 
   const result = {
     event: {
@@ -91,6 +120,8 @@ export async function resolveEventAnalytics(env, input, options = {}) {
     aggregation,
     statisticalModel
   };
+
+  void persistEventAnalytics(env, result);
 
   setCachedAnalytics(cacheKey, result, env.analyticsCacheTtlMs);
 

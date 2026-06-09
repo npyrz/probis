@@ -14,7 +14,18 @@
     "dev:api": "npm run dev --workspace @probis/api",
     "dev:web": "npm run dev --workspace @probis/web",
     "build": "npm run build --workspaces",
-    "start": "npm run start --workspace @probis/api"
+    "start": "npm run start --workspace @probis/api",
+    "test": "node --test apps/api/test/*.test.js",
+    "weather:snapshot": "node apps/api/src/scripts/chicago-snapshot.js",
+    "weather:backtest": "node apps/api/src/scripts/chicago-backtest.js",
+    "weather:source-audit": "node apps/api/src/scripts/chicago-source-audit.js",
+    "weather:alerts": "node apps/api/src/scripts/chicago-alerts.js",
+    "weather:archive-backfill": "node apps/api/src/scripts/chicago-archive-backfill.js",
+    "weather:forecast-vintage-backfill": "node apps/api/src/scripts/chicago-forecast-vintage-backfill.js",
+    "weather:market-board-backfill": "node apps/api/src/scripts/chicago-market-board-backfill.js",
+    "weather:model-train": "node apps/api/src/scripts/chicago-model-train.js",
+    "weather:model-evaluate": "node apps/api/src/scripts/chicago-model-evaluate.js",
+    "train:weather-ml": "python3 workers/weather_ml/train_weather_model.py"
   },
   "devDependencies": {
     "concurrently": "^9.2.1"

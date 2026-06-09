@@ -16,6 +16,23 @@ import { getEnv } from '../config/env.js';
 
 const router = Router();
 
+function getTradeIntentRouteErrorStatus(message, fallbackStatus = 400) {
+  if (message.includes('was not found')) {
+    return 404;
+  }
+
+  if (
+    message.includes('Live trading is intentionally disabled')
+    || message.includes('Live trading is disabled')
+    || message.includes('requires manual submission')
+    || message.includes('Live order routing is blocked')
+  ) {
+    return 409;
+  }
+
+  return fallbackStatus;
+}
+
 router.get('/api/trades/intents', async (request, response) => {
   try {
     const env = getEnv();
@@ -99,7 +116,7 @@ router.post('/api/trades/intents/:id/execute', async (request, response) => {
     });
   } catch (error) {
     const message = error instanceof Error ? error.message : 'Unable to execute trade intent';
-    const status = message.includes('was not found') ? 404 : 400;
+    const status = getTradeIntentRouteErrorStatus(message);
 
     response.status(status).json({
       ok: false,
@@ -156,7 +173,7 @@ router.post('/api/trades/intents/:id/sell', async (request, response) => {
     });
   } catch (error) {
     const message = error instanceof Error ? error.message : 'Unable to sell trade intent';
-    const status = message.includes('was not found') ? 404 : 400;
+    const status = getTradeIntentRouteErrorStatus(message);
 
     response.status(status).json({
       ok: false,

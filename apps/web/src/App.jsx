@@ -2,15 +2,24 @@ import { useEffect, useState, useTransition } from 'react';
 
 import {
   analyzeEvent,
+  createChicagoTradeIntent,
   createTradeIntent,
   deleteTradeIntent as deleteTradeIntentRequest,
   executeTradeIntent as executeTradeIntentRequest,
   fetchActiveEvents,
+  fetchChicagoAlerts,
+  fetchChicagoBacktest,
+  fetchChicagoMarketCatalog,
+  fetchChicagoSnapshot,
+  fetchChicagoSignalDrift,
+  fetchChicagoSourceAudit,
   fetchOpportunityScanner,
+  fetchPaperAccuracy,
   fetchStatus,
   fetchTradeIntents,
   invalidateEventAggregationCache,
   pollTrackedTradeIntents,
+  repriceChicagoMarkets,
   resolveEvent,
   resolveEventAggregation,
   sellTradeIntent as sellTradeIntentRequest,
@@ -20,6 +29,44 @@ import {
 const TRADE_DRAFT_STORAGE_KEY = 'probis.tradeDraft';
 const TRACKED_PROBABILITY_HISTORY_LIMIT = 72;
 const TRACKED_PROBABILITY_WINDOW_MS = 5 * 60 * 1000;
+const DEFAULT_MARKET_DATA_QUOTE_POLL_INTERVAL_MS = 5000;
+const DEFAULT_MARKET_DATA_BOARD_POLL_INTERVAL_MS = 120000;
+const DEFAULT_KMDW_SNAPSHOT_POLL_INTERVAL_MS = 180000;
+
+function positiveIntervalMs(value, fallback) {
+  const parsed = Number.parseInt(value, 10);
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : fallback;
+}
+
+function formatPollingInterval(value) {
+  const milliseconds = positiveIntervalMs(value, null);
+
+  if (!milliseconds) {
+    return 'n/a';
+  }
+
+  if (milliseconds < 1000) {
+    return `${milliseconds}ms`;
+  }
+
+  if (milliseconds < 60000) {
+    return `${Math.round(milliseconds / 1000)}s`;
+  }
+
+  return `${Math.round(milliseconds / 60000)}m`;
+}
+
+function getMarketDataPollingInterval(policy, key, fallback) {
+  return positiveIntervalMs(policy?.polling?.[key], fallback);
+}
+
+function formatMarketDataMode(policy) {
+  if (policy?.transport === 'polling' && policy?.streamingEnabled === false) {
+    return 'POLLING';
+  }
+
+  return policy?.transport ? String(policy.transport).toUpperCase() : 'POLLING';
+}
 
 function formatCompactNumber(value) {
   if (typeof value !== 'number' || Number.isNaN(value)) {
@@ -39,6 +86,15 @@ function formatSignedPercent(value) {
 
   const prefix = value > 0 ? '+' : '';
   return `${prefix}${(value * 100).toFixed(1)}%`;
+}
+
+function formatSignedProbabilityPoints(value) {
+  if (typeof value !== 'number' || Number.isNaN(value)) {
+    return 'n/a';
+  }
+
+  const prefix = value > 0 ? '+' : '';
+  return `${prefix}${(value * 100).toFixed(1)}pp`;
 }
 
 function formatDate(value) {
@@ -315,10 +371,52 @@ function formatMonitoringStateLabel(state) {
     return 'Exit Failed — Cash Out Manually';
   }
 
+  if (normalized === 'kmdw-manual-flatten-required') {
+    return 'KMDW Manual Flatten';
+  }
+
+  if (normalized === 'kmdw-manual-reduce-required') {
+    return 'KMDW Manual Reduce';
+  }
+
+  if (normalized === 'kmdw-paper-close-required') {
+    return 'KMDW Paper Close';
+  }
+
+  if (normalized === 'kmdw-paper-monitoring') {
+    return 'KMDW Paper Monitoring';
+  }
+
   return normalized
     .split('-')
     .map((token) => token.charAt(0).toUpperCase() + token.slice(1))
     .join(' ');
+}
+
+function formatPositionLifecycleAction(lifecycle) {
+  const action = String(lifecycle?.recommendedAction ?? '').trim();
+
+  switch (action) {
+    case 'manual-reduce-before-late-print':
+      return 'Reduce Manual';
+    case 'manual-flatten-before-final-print':
+      return 'Flatten Manual';
+    case 'close-paper-position-after-climdw':
+      return 'Close Paper';
+    case 'manual-flatten-stop-loss':
+      return 'Flatten Stop';
+    case 'manual-reduce-take-profit':
+      return 'Reduce Profit';
+    case 'manual-risk-review':
+    case 'manual-review-only':
+      return 'Review';
+    case 'wait-for-live-climate-day':
+      return 'Wait';
+    default:
+      return action
+        ? action.split('-').map((token) => token.charAt(0).toUpperCase() + token.slice(1)).join(' ')
+        : 'Manual';
+  }
 }
 
 function getMonitoringStateChipClass(state) {
@@ -332,8 +430,16 @@ function getMonitoringStateChipClass(state) {
     return 'market-chip market-chip-warning';
   }
 
-  if (normalized.endsWith('-failed') || normalized === 'exit-failed-needs-manual-sell') {
+  if (normalized.endsWith('-failed') || normalized === 'exit-failed-needs-manual-sell' || normalized === 'kmdw-manual-flatten-required') {
     return 'market-chip market-chip-alert';
+  }
+
+  if (normalized === 'kmdw-manual-reduce-required' || normalized === 'kmdw-paper-close-required') {
+    return 'market-chip market-chip-warning';
+  }
+
+  if (normalized === 'kmdw-paper-monitoring') {
+    return 'market-chip market-chip-muted';
   }
 
   if (normalized === 'active') {
@@ -341,6 +447,20 @@ function getMonitoringStateChipClass(state) {
   }
 
   return 'market-chip';
+}
+
+function getChicagoAlertChipClass(severity) {
+  const normalized = String(severity ?? '').trim().toLowerCase();
+
+  if (normalized === 'critical') {
+    return 'market-chip market-chip-alert';
+  }
+
+  if (normalized === 'warning') {
+    return 'market-chip market-chip-warning';
+  }
+
+  return 'market-chip market-chip-muted';
 }
 
 function hasApiVerifiedFilledPosition(intent) {
@@ -372,6 +492,24 @@ function isTradeIntentNotFoundError(error) {
 }
 
 function getExecutePrecheckMessage(intent) {
+  const constraints = intent?.executionRequest?.constraints ?? {};
+
+  if (
+    intent?.liveTradingPolicy?.liveTradingAllowed === false
+    || constraints.kmdwPaperManualOnly === true
+    || constraints.liveTradingAllowed === false
+    || constraints.liveRoutingBlocked === true
+    || constraints.venueOrderSubmissionAllowed === false
+  ) {
+    return intent?.liveTradingPolicy?.blocker
+      ?? intent?.executionRequest?.liveRoutingBlockedReason
+      ?? 'Live trading is disabled for this paper/manual-only intent.';
+  }
+
+  if (constraints.requiresManualSubmission === true) {
+    return 'This intent requires manual submission and cannot be started automatically.';
+  }
+
   if (!intent?.confirmedAt) {
     return 'Confirm and save this trade intent first.';
   }
@@ -704,6 +842,99 @@ function formatTemperature(value, unit = 'F') {
   }
 
   return `${value.toFixed(1)}°${unit || 'F'}`;
+}
+
+function formatTemperatureDelta(value, unit = 'F') {
+  if (typeof value !== 'number' || Number.isNaN(value)) {
+    return 'n/a';
+  }
+
+  const prefix = value > 0 ? '+' : '';
+  return `${prefix}${value.toFixed(1)}°${unit || 'F'}`;
+}
+
+function formatClimateWindow(window) {
+  if (!window?.startLocal || !window?.endLocal) {
+    return 'n/a';
+  }
+
+  return `${window.startLocal} to ${window.endLocal}`;
+}
+
+function formatSignalDriftStatus(drift) {
+  if (!drift?.enabled || !drift.status || drift.status === 'insufficient-history') {
+    return 'n/a';
+  }
+
+  return String(drift.status).toUpperCase();
+}
+
+function buildSignalDriftMeta(drift) {
+  if (!drift?.enabled) {
+    return '';
+  }
+
+  if (drift.status === 'insufficient-history') {
+    return `Drift needs 2 KMDW snapshots; currently ${drift.snapshotCount ?? 0}.`;
+  }
+
+  const changes = Array.isArray(drift.changes) ? drift.changes : [];
+  const parts = [`Drift ${drift.status ?? 'n/a'}`];
+  const edgeChange = changes.find((change) => change.name === 'risk-adjusted-edge');
+  const priceChange = changes.find((change) => change.name === 'market-price');
+  const thresholdChange = changes.find((change) => change.name === 'threshold-status');
+  const bucketChange = changes.find((change) => change.name === 'best-bucket');
+
+  if (typeof edgeChange?.delta === 'number') {
+    parts.push(`edge ${formatSignedProbabilityPoints(edgeChange.delta)}`);
+  }
+
+  if (typeof priceChange?.delta === 'number') {
+    parts.push(`price ${formatSignedProbabilityPoints(priceChange.delta)}`);
+  }
+
+  if (thresholdChange) {
+    parts.push(`threshold ${thresholdChange.from ?? 'n/a'} to ${thresholdChange.to ?? 'n/a'}`);
+  }
+
+  if (bucketChange) {
+    parts.push('bucket changed');
+  }
+
+  return parts.join(' • ');
+}
+
+function formatTemperatureBucketLabel(bucket) {
+  if (!bucket) {
+    return 'Bucket';
+  }
+
+  if (typeof bucket.lowTemp === 'number' && typeof bucket.highTemp === 'number') {
+    return bucket.lowTemp === bucket.highTemp
+      ? `${bucket.lowTemp}°F`
+      : `${bucket.lowTemp}-${bucket.highTemp}°F`;
+  }
+
+  if (typeof bucket.lowTemp === 'number') {
+    return `${bucket.lowTemp}°F+`;
+  }
+
+  if (typeof bucket.highTemp === 'number') {
+    return `${bucket.highTemp}°F or lower`;
+  }
+
+  return bucket.outcomeLabel ?? 'Bucket';
+}
+
+function getTopTemperatureDistributionRows(distribution, limit = 5) {
+  return Object.entries(distribution ?? {})
+    .map(([temp, probability]) => ({
+      temp: Number.parseInt(temp, 10),
+      probability
+    }))
+    .filter((row) => Number.isFinite(row.temp) && typeof row.probability === 'number')
+    .sort((left, right) => right.probability - left.probability)
+    .slice(0, limit);
 }
 
 function getRecommendedMarket(selectedEvent, decisionEngine) {
@@ -1397,6 +1628,15 @@ export default function App() {
   const [status, setStatus] = useState(null);
   const [activeEvents, setActiveEvents] = useState([]);
   const [scannerSnapshot, setScannerSnapshot] = useState(null);
+  const [paperAccuracy, setPaperAccuracy] = useState(null);
+  const [chicagoSnapshot, setChicagoSnapshot] = useState(null);
+  const [chicagoMarketCatalog, setChicagoMarketCatalog] = useState(null);
+  const [chicagoRecommendations, setChicagoRecommendations] = useState(null);
+  const [chicagoBacktest, setChicagoBacktest] = useState(null);
+  const [chicagoSourceAudit, setChicagoSourceAudit] = useState(null);
+  const [chicagoSignalDrift, setChicagoSignalDrift] = useState(null);
+  const [chicagoAlerts, setChicagoAlerts] = useState(null);
+  const [chicagoError, setChicagoError] = useState('');
   const [selectedEvent, setSelectedEvent] = useState(null);
   const [aggregation, setAggregation] = useState(null);
   const [statisticalModel, setStatisticalModel] = useState(null);
@@ -1418,6 +1658,8 @@ export default function App() {
   const [lastAiUpdate, setLastAiUpdate] = useState(null);
   const [lastTradeUpdate, setLastTradeUpdate] = useState(null);
   const [isRefreshing, setIsRefreshing] = useState(false);
+  const [isRefreshingChicago, setIsRefreshingChicago] = useState(false);
+  const [isSavingChicagoIntent, setIsSavingChicagoIntent] = useState(false);
   const [isInvalidating, setIsInvalidating] = useState(false);
   const [isAnalyzing, setIsAnalyzing] = useState(false);
   const [isSavingTradeIntent, setIsSavingTradeIntent] = useState(false);
@@ -1484,6 +1726,75 @@ export default function App() {
   const eventHasWeatherContext = hasWeatherContext(statisticalModel);
   const recommendationSource = getRecommendationSource(recommendedModelMarket);
   const recommendedWeatherContext = getWeatherResolutionContext(recommendedModelMarket);
+  const chicagoBucketRows = (chicagoSnapshot?.markets?.buckets ?? []).map((bucket) => {
+    const modelProbability = chicagoSnapshot?.prediction?.bucketProbabilities?.[bucket.conditionId] ?? null;
+    const marketProbability = typeof bucket.bestAsk === 'number'
+      ? bucket.bestAsk
+      : bucket.marketProbability;
+
+    return {
+      ...bucket,
+      displayLabel: formatTemperatureBucketLabel(bucket),
+      modelProbability,
+      marketProbability,
+      edge: typeof modelProbability === 'number' && typeof marketProbability === 'number'
+        ? modelProbability - marketProbability
+        : null
+    };
+  }).sort((left, right) => {
+    const leftValue = typeof left.lowTemp === 'number' ? left.lowTemp : Number.NEGATIVE_INFINITY;
+    const rightValue = typeof right.lowTemp === 'number' ? right.lowTemp : Number.NEGATIVE_INFINITY;
+    return leftValue - rightValue;
+  });
+  const chicagoBestRecommendation = chicagoRecommendations?.recommendations?.best
+    ?? chicagoSnapshot?.recommendations?.best
+    ?? null;
+  const chicagoTopTemps = getTopTemperatureDistributionRows(chicagoSnapshot?.prediction?.temperatureDistribution, 4);
+  const chicagoBacktestSummary = chicagoBacktest?.summary ?? null;
+  const chicagoSourceAuditLabel = !chicagoSourceAudit?.enabled
+    ? 'Audit off'
+    : (chicagoSourceAudit.marketCount ?? 0) === 0
+      ? 'n/a'
+      : (chicagoSourceAudit.changedCount ?? 0) > 0
+        ? `${chicagoSourceAudit.changedCount} changed`
+        : (chicagoSourceAudit.blockedCount ?? 0) > 0
+          ? `${chicagoSourceAudit.blockedCount} blocked`
+          : 'STABLE';
+  const chicagoSignalDriftLabel = formatSignalDriftStatus(chicagoSignalDrift);
+  const chicagoSignalDriftMeta = buildSignalDriftMeta(chicagoSignalDrift);
+  const activeChicagoAlerts = Array.isArray(chicagoAlerts?.alerts) ? chicagoAlerts.alerts : [];
+  const chicagoAlertSummary = chicagoAlerts?.summary ?? chicagoAlerts ?? null;
+  const chicagoAlertLabel = !chicagoAlerts?.enabled
+    ? 'Alerts off'
+    : (chicagoAlertSummary?.activeCount ?? activeChicagoAlerts.length) > 0
+      ? `${chicagoAlertSummary?.activeCount ?? activeChicagoAlerts.length} active`
+      : 'CLEAR';
+  const marketDataPolicy = chicagoSnapshot?.marketDataPolicy ?? status?.polymarket?.marketData ?? null;
+  const marketDataModeLabel = formatMarketDataMode(marketDataPolicy);
+  const marketDataStatusPollIntervalMs = getMarketDataPollingInterval(
+    marketDataPolicy,
+    'statusPollIntervalMs',
+    DEFAULT_MARKET_DATA_QUOTE_POLL_INTERVAL_MS
+  );
+  const trackedMarketPollIntervalMs = getMarketDataPollingInterval(
+    marketDataPolicy,
+    'quotePollIntervalMs',
+    DEFAULT_MARKET_DATA_QUOTE_POLL_INTERVAL_MS
+  );
+  const boardPollIntervalMs = getMarketDataPollingInterval(
+    marketDataPolicy,
+    'boardPollIntervalMs',
+    DEFAULT_MARKET_DATA_BOARD_POLL_INTERVAL_MS
+  );
+  const chicagoTrackerPollIntervalMs = getMarketDataPollingInterval(
+    marketDataPolicy,
+    'kmdwSnapshotPollIntervalMs',
+    DEFAULT_KMDW_SNAPSHOT_POLL_INTERVAL_MS
+  );
+  const marketDataCadenceLabel = `Quotes ${formatPollingInterval(trackedMarketPollIntervalMs)} / KMDW ${formatPollingInterval(chicagoTrackerPollIntervalMs)}`;
+  const chicagoMarketDateGroups = chicagoMarketCatalog?.dateGroups
+    ?? chicagoSnapshot?.markets?.dateGroups
+    ?? [];
   const statusPopup = error
     ? { kind: 'error', message: error, dismiss: () => setError('') }
     : notice
@@ -1566,6 +1877,71 @@ export default function App() {
     setTradeHistory(nextIntents);
     syncTradeDraftFromHistory(nextIntents);
     return nextIntents;
+  }
+
+  async function refreshChicagoTracker(options = {}) {
+    setIsRefreshingChicago(true);
+
+    try {
+      const snapshotRequest = options.force
+        ? repriceChicagoMarkets()
+        : fetchChicagoSnapshot();
+      const [snapshot, catalog, backtest] = await Promise.all([
+        snapshotRequest,
+        fetchChicagoMarketCatalog({ daysAhead: 4 }),
+        fetchChicagoBacktest()
+      ]);
+      const [sourceAudit, signalDrift, alerts] = await Promise.all([
+        fetchChicagoSourceAudit(snapshot?.targetDate),
+        fetchChicagoSignalDrift(snapshot?.targetDate),
+        fetchChicagoAlerts(snapshot?.targetDate, { limit: 8 })
+      ]);
+
+      setChicagoSnapshot(snapshot);
+      setChicagoMarketCatalog(catalog);
+      setChicagoRecommendations({ recommendations: snapshot?.recommendations ?? null });
+      setChicagoBacktest(backtest);
+      setChicagoSourceAudit(sourceAudit);
+      setChicagoSignalDrift(signalDrift);
+      setChicagoAlerts(alerts);
+      setChicagoError('');
+    } catch (refreshError) {
+      const message = refreshError instanceof Error ? refreshError.message : 'Unable to load Chicago tracker';
+      setChicagoError(message);
+
+      if (!options.silent) {
+        setError(message);
+      }
+    } finally {
+      setIsRefreshingChicago(false);
+    }
+  }
+
+  async function handleCreateChicagoTradeDraft() {
+    if (!chicagoBestRecommendation?.conditionId) {
+      return;
+    }
+
+    setIsSavingChicagoIntent(true);
+    setError('');
+    setNotice('');
+
+    try {
+      const intent = await createChicagoTradeIntent({
+        date: chicagoSnapshot?.targetDate,
+        conditionId: chicagoBestRecommendation.conditionId
+      });
+
+      setTradeHistory((previous) => [intent, ...previous.filter((existingIntent) => existingIntent.id !== intent.id)].slice(0, 6));
+      setLastTradeUpdate(new Date().toISOString());
+      setNotice('Saved KMDW paper signal as a draft trade intent. Live routing remains disabled.');
+    } catch (draftError) {
+      const message = draftError instanceof Error ? draftError.message : 'Unable to save KMDW trade draft';
+      setChicagoError(message);
+      setError(message);
+    } finally {
+      setIsSavingChicagoIntent(false);
+    }
   }
 
   async function applyStoredTradeDraft(storedDraft, successMessage = null) {
@@ -1703,11 +2079,12 @@ export default function App() {
 
     async function loadInitialData() {
       try {
-        const [nextStatus, nextEvents, nextTradeHistory, nextScannerSnapshot] = await Promise.all([
+        const [nextStatus, nextEvents, nextTradeHistory, nextScannerSnapshot, nextPaperAccuracy] = await Promise.all([
           fetchStatus(),
           fetchActiveEvents(5),
           fetchTradeIntents(6),
-          fetchOpportunityScanner()
+          fetchOpportunityScanner(),
+          fetchPaperAccuracy()
         ]);
 
         if (isCancelled) {
@@ -1718,9 +2095,11 @@ export default function App() {
         setActiveEvents(nextEvents);
         setTradeHistory(nextTradeHistory);
         setScannerSnapshot(nextScannerSnapshot);
+        setPaperAccuracy(nextPaperAccuracy);
         setLastMarketUpdate(new Date().toISOString());
         setLastTradeUpdate(new Date().toISOString());
         setNotice('');
+        void refreshChicagoTracker({ silent: true });
       } catch (loadError) {
         if (!isCancelled) {
           setError(loadError instanceof Error ? loadError.message : 'Unable to load initial data');
@@ -1767,13 +2146,13 @@ export default function App() {
           isFetching = false;
         }
       })();
-    }, 5000);
+    }, marketDataStatusPollIntervalMs);
 
     return () => {
       isCancelled = true;
       window.clearInterval(intervalId);
     };
-  }, [hasLoadedInitialData]);
+  }, [hasLoadedInitialData, marketDataStatusPollIntervalMs]);
 
   useEffect(() => {
     if (!hasLoadedInitialData) {
@@ -1792,10 +2171,14 @@ export default function App() {
         isFetching = true;
 
         try {
-          const nextScannerSnapshot = await fetchOpportunityScanner();
+          const [nextScannerSnapshot, nextPaperAccuracy] = await Promise.all([
+            fetchOpportunityScanner(),
+            fetchPaperAccuracy()
+          ]);
 
           if (!isCancelled) {
             setScannerSnapshot(nextScannerSnapshot);
+            setPaperAccuracy(nextPaperAccuracy);
           }
         } catch {
           // Keep the last known board snapshot during background refresh failures.
@@ -1803,13 +2186,27 @@ export default function App() {
           isFetching = false;
         }
       })();
-    }, 120000);
+    }, boardPollIntervalMs);
 
     return () => {
       isCancelled = true;
       window.clearInterval(intervalId);
     };
-  }, [hasLoadedInitialData]);
+  }, [hasLoadedInitialData, boardPollIntervalMs]);
+
+  useEffect(() => {
+    if (!hasLoadedInitialData) {
+      return undefined;
+    }
+
+    const intervalId = window.setInterval(() => {
+      void refreshChicagoTracker({ silent: true });
+    }, chicagoTrackerPollIntervalMs);
+
+    return () => {
+      window.clearInterval(intervalId);
+    };
+  }, [hasLoadedInitialData, chicagoTrackerPollIntervalMs]);
 
   useEffect(() => {
     if (activeTradeIntents.length === 0) {
@@ -1831,12 +2228,12 @@ export default function App() {
           // Ignore background polling failures and keep the last known state in the UI.
         }
       })();
-    }, 5000);
+    }, trackedMarketPollIntervalMs);
 
     return () => {
       window.clearInterval(intervalId);
     };
-  }, [activeTradeIntents.map((intent) => intent.id).join('|')]);
+  }, [activeTradeIntents.map((intent) => intent.id).join('|'), trackedMarketPollIntervalMs]);
 
   async function handleResolveEvent(submittedInput, options = {}) {
     setError('');
@@ -2217,6 +2614,13 @@ export default function App() {
     setError('');
     setNotice('');
 
+    const precheckMessage = getExecutePrecheckMessage(intent);
+
+    if (precheckMessage) {
+      setError(precheckMessage);
+      return;
+    }
+
     if (!intent.confirmedAt) {
       setError('Confirm and save this trade intent before starting live trading.');
       return;
@@ -2352,6 +2756,10 @@ export default function App() {
             <strong>{activeTradeIntents.length}</strong>
           </article>
           <article>
+            <span>Market Data</span>
+            <strong>{marketDataModeLabel}</strong>
+          </article>
+          <article>
             <span>Last Polymarket Quote</span>
             <strong>{formatDateTime(latestPolymarketQuoteAt)}</strong>
           </article>
@@ -2368,6 +2776,334 @@ export default function App() {
 
       <section className="dashboard-grid dashboard-grid-no-explorer">
         <aside className="dashboard-sidebar">
+          <section className="control-card terminal-card compact-card chicago-tracker-card">
+            <div className="panel-heading panel-heading-inline">
+              <div>
+                <p className="eyebrow">KMDW Tracker</p>
+                <h2>Chicago High Temp</h2>
+              </div>
+              <button
+                type="button"
+                className="ghost-button compact-button"
+                onClick={() => void refreshChicagoTracker({ force: true })}
+                disabled={isRefreshingChicago}
+              >
+                {isRefreshingChicago ? 'Refreshing...' : 'Refresh'}
+              </button>
+            </div>
+
+            {chicagoError ? (
+              <p className="error-banner">{chicagoError}</p>
+            ) : null}
+
+            {chicagoSnapshot ? (
+              <>
+                <div className="decision-rationale-grid compact-preview-grid chicago-status-grid">
+                  <article>
+                    <span>Date</span>
+                    <strong>{chicagoSnapshot.targetDate}</strong>
+                  </article>
+                  <article>
+                    <span>Observed High</span>
+                    <strong>{formatTemperature(chicagoSnapshot.observations?.observedHighSoFar, 'F')}</strong>
+                  </article>
+                  <article>
+                    <span>Current KMDW</span>
+                    <strong>{formatTemperature(chicagoSnapshot.observations?.currentObservedTemp, 'F')}</strong>
+                  </article>
+                  <article>
+                    <span>Model Mean</span>
+                    <strong>{formatTemperature(chicagoSnapshot.prediction?.expectedHigh, 'F')}</strong>
+                  </article>
+                  <article>
+                    <span>Market Blend</span>
+                    <strong>{formatPercent(chicagoSnapshot.prediction?.marketBlendWeight)}</strong>
+                  </article>
+                  <article>
+                    <span>Market Data</span>
+                    <strong>{marketDataModeLabel}</strong>
+                  </article>
+                  <article>
+                    <span>CLIMDW</span>
+                    <strong>{chicagoSnapshot.settlement?.status ?? 'n/a'}</strong>
+                  </article>
+                  <article>
+                    <span>Backtest</span>
+                    <strong>{chicagoBacktest?.enabled
+                      ? `${formatPercent(chicagoBacktestSummary?.hitRate)} / ${chicagoBacktestSummary?.settledActionableCount ?? 0}`
+                      : 'DB off'}</strong>
+                  </article>
+                  <article>
+                    <span>Brier Δ</span>
+                    <strong>{formatSignedPercent(chicagoBacktestSummary?.benchmarks?.edgeVsMarket?.brierImprovement)}</strong>
+                  </article>
+                  <article>
+                    <span>Weather Δ</span>
+                    <strong>{formatSignedPercent(chicagoBacktestSummary?.benchmarks?.edgeVsWeatherOnly?.brierImprovement)}</strong>
+                  </article>
+                  <article>
+                    <span>Cal Err</span>
+                    <strong>{formatPercent(chicagoBacktestSummary?.benchmarks?.fusedModel?.calibration?.meanAbsoluteCalibrationError)}</strong>
+                  </article>
+                  <article>
+                    <span>Net P&L</span>
+                    <strong>{formatSignedCurrency(
+                      chicagoBacktestSummary?.fillAdjusted?.trading?.netOneSharePnl
+                        ?? chicagoBacktestSummary?.trading?.netOneSharePnl
+                    )}</strong>
+                  </article>
+                  <article>
+                    <span>Max DD</span>
+                    <strong>{formatCurrency(
+                      chicagoBacktestSummary?.fillAdjusted?.trading?.maxDrawdown
+                        ?? chicagoBacktestSummary?.trading?.maxDrawdown
+                    )}</strong>
+                  </article>
+                  <article>
+                    <span>Freshness</span>
+                    <strong>{chicagoSnapshot.prediction?.sourceFreshness?.isStale ? 'STALE' : 'FRESH'}</strong>
+                  </article>
+                  <article>
+                    <span>Forecast</span>
+                    <strong>{chicagoSnapshot.forecasts?.cache?.status ?? chicagoSnapshot.forecasts?.status ?? 'n/a'}</strong>
+                  </article>
+                  <article>
+                    <span>Source Audit</span>
+                    <strong>{chicagoSourceAuditLabel}</strong>
+                  </article>
+                  <article>
+                    <span>Drift</span>
+                    <strong>{chicagoSignalDriftLabel}</strong>
+                  </article>
+                  <article>
+                    <span>Alerts</span>
+                    <strong>{chicagoAlertLabel}</strong>
+                  </article>
+                  <article>
+                    <span>Fill Rate</span>
+                    <strong>{formatPercent(chicagoBacktestSummary?.fillAdjusted?.fillRate)}</strong>
+                  </article>
+                  <article>
+                    <span>Threshold</span>
+                    <strong>{chicagoSnapshot.prediction?.thresholdDiagnostics?.status ?? 'n/a'}</strong>
+                  </article>
+                </div>
+
+                <p className="event-meta chicago-window-line">
+                  {formatClimateWindow(chicagoSnapshot.climateDayWindow)}
+                </p>
+                <p className="event-meta">
+                  Latest obs {formatDateTime(chicagoSnapshot.observations?.latestObservationAt)}
+                  {chicagoSnapshot.settlement?.maxTempF !== null && chicagoSnapshot.settlement?.maxTempF !== undefined
+                    ? ` • CLIMDW max ${formatTemperature(chicagoSnapshot.settlement.maxTempF, 'F')}`
+                    : ''}
+                </p>
+                <p className="event-meta">
+                  Market data {marketDataCadenceLabel} / streaming off
+                </p>
+                {chicagoSourceAudit?.enabled && (chicagoSourceAudit.marketCount ?? 0) > 0 ? (
+                  <p className="event-meta">
+                    Source audit {chicagoSourceAudit.verifiedCount ?? 0}/{chicagoSourceAudit.marketCount ?? 0} verified
+                    {(chicagoSourceAudit.changedCount ?? 0) > 0 ? ` • ${chicagoSourceAudit.changedCount} changed` : ''}
+                    {(chicagoSourceAudit.missingHashCount ?? 0) > 0 ? ` • ${chicagoSourceAudit.missingHashCount} missing hash` : ''}
+                  </p>
+                ) : null}
+                {chicagoSnapshot.prediction?.thresholdDiagnostics ? (
+                  <p className="event-meta">
+                    Threshold {chicagoSnapshot.prediction.thresholdDiagnostics.status}
+                    {typeof chicagoSnapshot.prediction.thresholdDiagnostics.topBucketMargin === 'number'
+                      ? ` • bucket gap ${formatSignedPercent(chicagoSnapshot.prediction.thresholdDiagnostics.topBucketMargin)}`
+                      : ''}
+                    {typeof chicagoSnapshot.prediction.thresholdDiagnostics.nearestBoundary?.distanceF === 'number'
+                      ? ` • ${chicagoSnapshot.prediction.thresholdDiagnostics.nearestBoundary.distanceF.toFixed(1)}°F from boundary`
+                      : ''}
+                  </p>
+                ) : null}
+                {chicagoSignalDriftMeta ? (
+                  <p className="event-meta">{chicagoSignalDriftMeta}</p>
+                ) : null}
+                {activeChicagoAlerts.length > 0 ? (
+                  <div className="chicago-alert-list">
+                    {activeChicagoAlerts.slice(0, 5).map((alert) => (
+                      <article className="chicago-alert-row" key={alert.id ?? alert.alertKey}>
+                        <span className={getChicagoAlertChipClass(alert.severity)}>
+                          {String(alert.severity ?? 'info').toUpperCase()}
+                        </span>
+                        <div>
+                          <strong>{alert.title}</strong>
+                          <p>{alert.message}</p>
+                          <span>{formatDateTime(alert.triggeredAt)}</span>
+                        </div>
+                      </article>
+                    ))}
+                  </div>
+                ) : null}
+
+                {chicagoMarketDateGroups.length > 0 ? (
+                  <section className="chicago-market-catalog">
+                    <div className="panel-heading panel-heading-inline">
+                      <div>
+                        <p className="eyebrow">KMDW Market Dates</p>
+                        <h2>Current + Upcoming</h2>
+                      </div>
+                      <span className="market-chip market-chip-muted">{chicagoMarketDateGroups.length}</span>
+                    </div>
+                    <div className="chicago-market-date-list">
+                      {chicagoMarketDateGroups.map((group) => (
+                        <article key={group.targetDate ?? 'undated'} className="chicago-market-date-row">
+                          <div className="chicago-market-date-header">
+                            <strong>{group.targetDate ?? 'Undated'}</strong>
+                            <span>{group.verifiedCount ?? 0}/{group.bucketCount ?? 0} verified</span>
+                          </div>
+                          <div className="chicago-market-bucket-strip">
+                            {(group.markets ?? []).slice(0, 6).map((market) => (
+                              <span key={market.conditionId ?? market.marketSlug} className="market-chip market-chip-muted">
+                                {formatTemperatureBucketLabel(market)}
+                              </span>
+                            ))}
+                          </div>
+                        </article>
+                      ))}
+                    </div>
+                  </section>
+                ) : null}
+
+                {chicagoBestRecommendation ? (
+                  <section className="chicago-recommendation">
+                    <p className="eyebrow">Best Gate Result</p>
+                    <h3>{formatTemperatureBucketLabel(chicagoBestRecommendation)}</h3>
+                    <div className="decision-rationale-grid compact-preview-grid">
+                      <article>
+                        <span>Action</span>
+                        <strong>{chicagoBestRecommendation.action === 'recommend-buy-yes' ? 'BUY YES' : 'WATCH'}</strong>
+                      </article>
+                      <article>
+                        <span>Fair</span>
+                        <strong>{formatPercent(chicagoBestRecommendation.fairProbability)}</strong>
+                      </article>
+                      <article>
+                        <span>Entry</span>
+                        <strong>{formatPercent(chicagoBestRecommendation.marketPrice)}</strong>
+                      </article>
+                      <article>
+                        <span>Edge</span>
+                        <strong>{formatSignedPercent(chicagoBestRecommendation.riskAdjustedEdge ?? chicagoBestRecommendation.edge)}</strong>
+                      </article>
+                      <article>
+                        <span>Cost</span>
+                        <strong>{formatPercent(chicagoBestRecommendation.estimatedCost)}</strong>
+                      </article>
+                      <article>
+                        <span>Max Entry</span>
+                        <strong>{formatPercent(chicagoBestRecommendation.maxEntryPrice)}</strong>
+                      </article>
+                      <article>
+                        <span>Limit</span>
+                        <strong>{formatPercent(chicagoBestRecommendation.executionPlan?.limitPrice)}</strong>
+                      </article>
+                      <article>
+                        <span>Fill</span>
+                        <strong>{chicagoBestRecommendation.executionPlan?.executable ? 'READY' : 'BLOCKED'}</strong>
+                      </article>
+                      <article>
+                        <span>Lifecycle</span>
+                        <strong>{formatPositionLifecycleAction(chicagoBestRecommendation.executionPlan?.positionLifecycle)}</strong>
+                      </article>
+                      <article>
+                        <span>Size</span>
+                        <strong>{formatCurrency(chicagoBestRecommendation.suggestedSize)}</strong>
+                      </article>
+                      <article>
+                        <span>Score</span>
+                        <strong>{formatPercent(chicagoBestRecommendation.score)}</strong>
+                      </article>
+                    </div>
+                    <p className="event-meta">{chicagoBestRecommendation.reason}</p>
+                    {chicagoBestRecommendation.executionPlan?.instruction ? (
+                      <p className="event-meta">{chicagoBestRecommendation.executionPlan.instruction}</p>
+                    ) : null}
+                    {chicagoBestRecommendation.executionPlan?.positionLifecycle?.instruction ? (
+                      <p className="event-meta">{chicagoBestRecommendation.executionPlan.positionLifecycle.instruction}</p>
+                    ) : null}
+                    <button
+                      type="button"
+                      className="secondary-button secondary-button-muted"
+                      onClick={() => void handleCreateChicagoTradeDraft()}
+                      disabled={
+                        isSavingChicagoIntent
+                        || chicagoBestRecommendation.executionPlan?.executable !== true
+                        || chicagoBestRecommendation.action !== 'recommend-buy-yes'
+                      }
+                      title={chicagoBestRecommendation.executionPlan?.executable === true
+                        ? 'Save this KMDW paper signal to the trade-intent review list.'
+                        : 'KMDW paper signal is blocked by the current execution gates.'}
+                    >
+                      {isSavingChicagoIntent ? 'Saving Draft...' : 'Save KMDW Draft'}
+                    </button>
+                  </section>
+                ) : null}
+
+                {chicagoTopTemps.length > 0 ? (
+                  <div className="chicago-temp-strip">
+                    {chicagoTopTemps.map((row) => (
+                      <span key={row.temp} className="market-chip market-chip-muted">
+                        {row.temp}°F {formatPercent(row.probability)}
+                      </span>
+                    ))}
+                  </div>
+                ) : null}
+
+                {chicagoBucketRows.length > 0 ? (
+                  <section className="opportunity-distribution chicago-bucket-distribution">
+                    <div className="panel-heading panel-heading-inline opportunity-distribution-heading">
+                      <div>
+                        <p className="eyebrow">Buckets</p>
+                        <h2>Fused vs Market</h2>
+                      </div>
+                      <span className="market-chip market-chip-muted">{chicagoBucketRows.length}</span>
+                    </div>
+                    <div className="opportunity-distribution-list chicago-bucket-list">
+                      {chicagoBucketRows.map((bucket) => (
+                        <article key={bucket.conditionId} className="opportunity-distribution-row">
+                          <div className="opportunity-distribution-label">
+                            <strong>{bucket.displayLabel}</strong>
+                            <span>{formatSignedPercent(bucket.edge)}</span>
+                          </div>
+                          <div className="opportunity-distribution-bars">
+                            <div className="opportunity-distribution-bar-line">
+                              <span>Fused</span>
+                              <div className="opportunity-distribution-track">
+                                <div
+                                  className="opportunity-distribution-fill opportunity-distribution-fill-model"
+                                  style={{ width: `${Math.max(2, Math.min(100, (bucket.modelProbability ?? 0) * 100))}%` }}
+                                />
+                              </div>
+                              <strong>{formatPercent(bucket.modelProbability)}</strong>
+                            </div>
+                            <div className="opportunity-distribution-bar-line">
+                              <span>Market</span>
+                              <div className="opportunity-distribution-track">
+                                <div
+                                  className="opportunity-distribution-fill opportunity-distribution-fill-market"
+                                  style={{ width: `${Math.max(2, Math.min(100, (bucket.marketProbability ?? 0) * 100))}%` }}
+                                />
+                              </div>
+                              <strong>{formatPercent(bucket.marketProbability)}</strong>
+                            </div>
+                          </div>
+                        </article>
+                      ))}
+                    </div>
+                  </section>
+                ) : (
+                  <p className="empty-state">No active Chicago bucket markets were found from Polymarket US search.</p>
+                )}
+              </>
+            ) : (
+              <p className="empty-state">Chicago tracker loads after the API starts.</p>
+            )}
+          </section>
+
           <section className="control-card terminal-card compact-card">
             <div className="panel-heading">
               <p className="eyebrow">Market Controls</p>
@@ -2825,6 +3561,11 @@ export default function App() {
             <div className="action-row">
               <span className="market-chip market-chip-muted">{opportunityBoard.length} ranked</span>
               <span className="market-chip market-chip-muted">
+                Paper {paperAccuracy?.enabled
+                  ? `${formatPercent(paperAccuracy.accuracy)} / ${paperAccuracy.settledPredictionCount ?? 0}`
+                  : 'DB off'}
+              </span>
+              <span className="market-chip market-chip-muted">
                 {scannerSnapshot?.status === 'refreshing' || scannerSnapshot?.status === 'loading'
                   ? 'Refreshing'
                   : `Updated ${scannerLastUpdatedAge}`}
@@ -3018,6 +3759,14 @@ export default function App() {
                           <article>
                             <span>Open-Meteo High</span>
                             <strong>{formatTemperature(opportunity.weatherOpenMeteoForecastHigh, opportunity.weatherUnit ?? 'F')}</strong>
+                          </article>
+                          <article>
+                            <span>Archive Same Day</span>
+                            <strong>{formatTemperature(opportunity.weatherHistoricalHighForSameDay, opportunity.weatherUnit ?? 'F')}</strong>
+                          </article>
+                          <article>
+                            <span>Station Bias</span>
+                            <strong>{formatTemperatureDelta(opportunity.weatherRecentStationBias, opportunity.weatherUnit ?? 'F')}</strong>
                           </article>
                         </div>
 
@@ -3303,7 +4052,7 @@ export default function App() {
                             type="button"
                             className="secondary-button secondary-button-muted"
                             onClick={() => void handleExecuteTradeIntent(intent)}
-                            disabled={isMutatingHistory || intent.status === 'tracking'}
+                            disabled={isMutatingHistory || intent.status === 'tracking' || Boolean(precheckMessage)}
                             title={precheckMessage ?? 'Submit live buy order and transition to actively trading.'}
                           >
                             Start Trading
