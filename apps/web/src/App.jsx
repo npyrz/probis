@@ -15,7 +15,7 @@ import {
   updateTradeIntent as updateTradeIntentRequest
 } from './lib/api.js';
 
-const DEFAULT_CATALOG_DAYS_AHEAD = 7;
+const DEFAULT_CATALOG_DAYS_AHEAD = 14;
 const DEFAULT_KMDW_SNAPSHOT_POLL_INTERVAL_MS = 180000;
 
 function numberOrNull(value) {
@@ -79,7 +79,7 @@ function formatDate(value) {
     return 'n/a';
   }
 
-  const parsed = new Date(value);
+  const parsed = new Date(/^\d{4}-\d{2}-\d{2}$/.test(String(value)) ? `${value}T00:00:00` : value);
 
   if (Number.isNaN(parsed.getTime())) {
     return String(value);
@@ -89,6 +89,23 @@ function formatDate(value) {
     month: 'short',
     day: 'numeric',
     year: 'numeric'
+  }).format(parsed);
+}
+
+function formatShortDate(value) {
+  if (!value) {
+    return 'n/a';
+  }
+
+  const parsed = new Date(`${value}T00:00:00`);
+
+  if (Number.isNaN(parsed.getTime())) {
+    return String(value);
+  }
+
+  return new Intl.DateTimeFormat('en-US', {
+    month: 'short',
+    day: 'numeric'
   }).format(parsed);
 }
 
@@ -257,6 +274,24 @@ function getVerificationLabel(bucket) {
   return 'REVIEW';
 }
 
+function compareRankedRows(left, right) {
+  const leftPassed = left.status === 'passed' ? 1 : 0;
+  const rightPassed = right.status === 'passed' ? 1 : 0;
+
+  if (leftPassed !== rightPassed) {
+    return rightPassed - leftPassed;
+  }
+
+  const leftRankValue = left.score ?? left.riskAdjustedEdge ?? left.edge ?? -Infinity;
+  const rightRankValue = right.score ?? right.riskAdjustedEdge ?? right.edge ?? -Infinity;
+
+  if (leftRankValue !== rightRankValue) {
+    return rightRankValue - leftRankValue;
+  }
+
+  return String(left.targetDate ?? '').localeCompare(String(right.targetDate ?? ''));
+}
+
 function buildRankedBetRows(snapshot) {
   const buckets = Array.isArray(snapshot?.markets?.buckets) ? snapshot.markets.buckets : [];
   const recommendations = Array.isArray(snapshot?.recommendations?.recommendations)
@@ -286,6 +321,7 @@ function buildRankedBetRows(snapshot) {
 
       return {
         conditionId,
+        targetDate: recommendation?.targetDate ?? bucket.targetDate ?? snapshot?.targetDate ?? null,
         marketSlug: recommendation?.marketSlug ?? bucket.marketSlug ?? null,
         eventSlug: bucket.eventSlug ?? null,
         eventTitle: bucket.eventTitle ?? null,
@@ -311,32 +347,51 @@ function buildRankedBetRows(snapshot) {
         recommendation
       };
     })
-    .sort((left, right) => {
-      const leftPassed = left.status === 'passed' ? 1 : 0;
-      const rightPassed = right.status === 'passed' ? 1 : 0;
-
-      if (leftPassed !== rightPassed) {
-        return rightPassed - leftPassed;
-      }
-
-      const leftRankValue = left.score ?? left.riskAdjustedEdge ?? left.edge ?? -Infinity;
-      const rightRankValue = right.score ?? right.riskAdjustedEdge ?? right.edge ?? -Infinity;
-
-      return rightRankValue - leftRankValue;
-    });
+    .sort(compareRankedRows);
 }
 
-function buildCatalogRows(catalog) {
-  const dateGroups = Array.isArray(catalog?.dateGroups) ? catalog.dateGroups : [];
+function buildBoardRankedRows(snapshots) {
+  return (Array.isArray(snapshots) ? snapshots : [])
+    .flatMap((boardSnapshot) => buildRankedBetRows(boardSnapshot))
+    .sort(compareRankedRows);
+}
 
-  return dateGroups.flatMap((group) => {
-    const markets = Array.isArray(group.markets) ? group.markets : [];
+function getCatalogTargetDates(catalog, fallbackDate = null) {
+  const groupedDates = (Array.isArray(catalog?.dateGroups) ? catalog.dateGroups : [])
+    .map((group) => group.targetDate)
+    .filter(Boolean);
+  const bucketDates = (Array.isArray(catalog?.buckets) ? catalog.buckets : [])
+    .map((bucket) => bucket.targetDate)
+    .filter(Boolean);
+  const dates = [...groupedDates, ...bucketDates, fallbackDate].filter(Boolean);
 
-    return markets.map((market) => ({
-      ...market,
-      targetDate: market.targetDate ?? group.targetDate ?? null
-    }));
-  });
+  return [...new Set(dates)]
+    .sort((left, right) => String(left).localeCompare(String(right)))
+    .slice(0, DEFAULT_CATALOG_DAYS_AHEAD + 1);
+}
+
+function sortSnapshotsByDate(snapshots) {
+  return (Array.isArray(snapshots) ? snapshots : [])
+    .filter(Boolean)
+    .sort((left, right) => String(left.targetDate ?? '').localeCompare(String(right.targetDate ?? '')));
+}
+
+function formatDateRange(rows, fallbackDate = null) {
+  const dates = [...new Set(
+    (Array.isArray(rows) ? rows : [])
+      .map((row) => row.targetDate)
+      .filter(Boolean)
+  )].sort((left, right) => String(left).localeCompare(String(right)));
+
+  if (dates.length === 0) {
+    return fallbackDate ?? 'n/a';
+  }
+
+  if (dates.length === 1) {
+    return dates[0];
+  }
+
+  return `${formatShortDate(dates[0])} to ${formatShortDate(dates[dates.length - 1])}`;
 }
 
 function getTemperatureDistributionRows(snapshot) {
@@ -384,15 +439,59 @@ function getSharesEstimate(amount, price) {
   return tradeAmount / entryPrice;
 }
 
-function formatTradeStatus(intent) {
-  return formatStatus(intent?.status ?? 'not prepared');
+function getGateSeverity(gate) {
+  return gate?.severity ?? (gate?.name === 'spread <= 5pp' ? 'warning' : 'blocker');
+}
+
+function isSpreadWarningBlocker(blocker) {
+  const text = String(blocker ?? '').trim().toLowerCase();
+  return text === 'gate failed: spread <= 5pp' || text === 'spread <= 5pp';
+}
+
+function getTradeBlockers(row) {
+  const executionBlockers = Array.isArray(row?.recommendation?.executionPlan?.blockers)
+    ? row.recommendation.executionPlan.blockers.filter(Boolean).filter((blocker) => !isSpreadWarningBlocker(blocker))
+    : [];
+
+  if (executionBlockers.length > 0) {
+    return executionBlockers;
+  }
+
+  return (Array.isArray(row?.gates) ? row.gates : [])
+    .filter((gate) => !gate.passed && getGateSeverity(gate) !== 'warning')
+    .map((gate) => gate.name)
+    .filter(Boolean);
+}
+
+function getTradeWarnings(row) {
+  const executionWarnings = Array.isArray(row?.recommendation?.executionPlan?.warnings)
+    ? row.recommendation.executionPlan.warnings.filter(Boolean)
+    : [];
+  const gateWarnings = (Array.isArray(row?.gates) ? row.gates : [])
+    .filter((gate) => !gate.passed && getGateSeverity(gate) === 'warning')
+    .map((gate) => gate.name)
+    .filter(Boolean);
+
+  return [...new Set([...executionWarnings, ...gateWarnings])];
+}
+
+function formatTradeStatus(intent, row = null, canPrepare = false) {
+  if (intent?.status) {
+    return formatStatus(intent.status);
+  }
+
+  if (!row) {
+    return 'No Selection';
+  }
+
+  return canPrepare ? 'Ready' : 'Blocked';
 }
 
 function isDraftTradeIntent(intent) {
   return intent?.status === 'draft';
 }
 
-function getTradePolicyCopy(intent) {
+function getTradePolicyCopy(intent, row = null, canPrepare = false) {
   const blocker = intent?.liveTradingPolicy?.blocker
     ?? intent?.executionRequest?.liveRoutingBlockedReason
     ?? null;
@@ -402,10 +501,30 @@ function getTradePolicyCopy(intent) {
   }
 
   if (intent?.executionRequest?.constraints?.requiresManualSubmission === true) {
-    return 'This signal requires manual submission review before venue routing.';
+    return 'Backend review is required before venue routing this order.';
   }
 
-  return 'Manual submit will send this intent through the backend execution gates.';
+  if (!row) {
+    return 'Select a ranked Chicago weather bet to prepare or submit a trade.';
+  }
+
+  if (canPrepare) {
+    const warnings = getTradeWarnings(row);
+
+    if (warnings.length > 0) {
+      return `Warning: ${warnings.slice(0, 2).join('; ')}. Submit Trade still routes after your button confirmation.`;
+    }
+
+    return 'Submit Trade routes this order from Probis after your button confirmation.';
+  }
+
+  const blockers = getTradeBlockers(row);
+
+  if (blockers.length > 0) {
+    return `Blocked: ${blockers.slice(0, 2).join('; ')}.`;
+  }
+
+  return 'Prepare a draft or adjust the amount before submitting.';
 }
 
 function getMatchingTradeIntent(intents, row) {
@@ -455,22 +574,32 @@ function GateList({ gates }) {
 
   return (
     <div className="gate-list">
-      {gates.map((gate) => (
-        <span
-          key={gate.name}
-          className={gate.passed ? 'chip chip-good' : 'chip chip-bad'}
-          title={gate.name}
-        >
-          {gate.passed ? 'Pass' : 'Block'} {gate.name}
-        </span>
-      ))}
+      {gates.map((gate) => {
+        const severity = getGateSeverity(gate);
+        const className = gate.passed
+          ? 'chip chip-good'
+          : severity === 'warning'
+            ? 'chip chip-warn'
+            : 'chip chip-bad';
+        const label = gate.passed ? 'Pass' : severity === 'warning' ? 'Warn' : 'Block';
+
+        return (
+          <span
+            key={gate.name}
+            className={className}
+            title={gate.name}
+          >
+            {label} {gate.name}
+          </span>
+        );
+      })}
     </div>
   );
 }
 
 export default function App() {
   const [snapshot, setSnapshot] = useState(null);
-  const [catalog, setCatalog] = useState(null);
+  const [boardSnapshots, setBoardSnapshots] = useState([]);
   const [alerts, setAlerts] = useState(null);
   const [error, setError] = useState('');
   const [isLoading, setIsLoading] = useState(true);
@@ -487,8 +616,7 @@ export default function App() {
   const [isSubmittingTrade, setIsSubmittingTrade] = useState(false);
   const [isManagingTrade, setIsManagingTrade] = useState(false);
 
-  const rankedRows = useMemo(() => buildRankedBetRows(snapshot), [snapshot]);
-  const catalogRows = useMemo(() => buildCatalogRows(catalog), [catalog]);
+  const rankedRows = useMemo(() => buildBoardRankedRows(boardSnapshots), [boardSnapshots]);
   const temperatureRows = useMemo(() => getTemperatureDistributionRows(snapshot), [snapshot]);
   const activeAlerts = getActiveAlerts(alerts);
   const bestRow = rankedRows[0] ?? null;
@@ -496,15 +624,23 @@ export default function App() {
   const recommendedTradeAmount = getRecommendedTradeAmount(selectedTradeRow);
   const parsedTradeAmount = parseTradeAmount(tradeAmount);
   const selectedSharesEstimate = getSharesEstimate(parsedTradeAmount, selectedTradeRow?.marketPrice);
-  const canPrepareSelectedTrade = selectedTradeRow?.action === 'BUY YES'
-    && selectedTradeRow?.recommendation?.executionPlan?.executable === true
-    && Boolean(selectedTradeRow?.conditionId);
+  const selectedTradeBlockers = getTradeBlockers(selectedTradeRow);
+  const selectedTradeWarnings = getTradeWarnings(selectedTradeRow);
+  const canPrepareSelectedTrade = Boolean(selectedTradeRow?.conditionId)
+    && selectedTradeBlockers.length === 0
+    && (
+      selectedTradeRow?.action === 'BUY YES'
+      || selectedTradeRow?.recommendation?.executionPlan?.executable === true
+      || selectedTradeWarnings.length > 0
+    );
+  const hasSelectedTradeWarning = canPrepareSelectedTrade && selectedTradeWarnings.length > 0;
   const managedTradeIntents = tradeIntents
     .filter((intent) => isManagedChicagoIntent(intent, rankedRows))
     .slice(0, 4);
   const pollIntervalMs = getPollingIntervalMs(snapshot);
   const marketDataMode = formatMarketDataMode(snapshot?.marketDataPolicy);
   const rankByConditionId = new Map(rankedRows.map((row, index) => [row.conditionId, index + 1]));
+  const rankedDateRange = formatDateRange(rankedRows, snapshot?.targetDate);
 
   const refreshTradeIntents = useCallback(async (row = selectedTradeRow) => {
     const intents = await fetchTradeIntents(10);
@@ -527,25 +663,48 @@ export default function App() {
     }
 
     try {
-      const nextSnapshot = force ? await repriceChicagoMarkets() : await fetchChicagoSnapshot();
-      setSnapshot(nextSnapshot);
-
-      const [catalogResult, alertsResult] = await Promise.allSettled([
-        fetchChicagoMarketCatalog({ daysAhead: DEFAULT_CATALOG_DAYS_AHEAD }),
-        fetchChicagoAlerts(nextSnapshot?.targetDate, { limit: 8 })
+      const [primarySnapshotResult, catalogResult] = await Promise.allSettled([
+        force ? repriceChicagoMarkets() : fetchChicagoSnapshot(),
+        fetchChicagoMarketCatalog({
+          daysAhead: DEFAULT_CATALOG_DAYS_AHEAD,
+          openOnly: true,
+          includeOpenOutsideDateRange: true
+        })
       ]);
-      const tradeIntentsResult = await fetchTradeIntents(10).catch(() => null);
 
-      if (catalogResult.status === 'fulfilled') {
-        setCatalog(catalogResult.value);
+      if (primarySnapshotResult.status !== 'fulfilled') {
+        throw primarySnapshotResult.reason;
       }
+
+      const nextSnapshot = primarySnapshotResult.value;
+      const catalog = catalogResult.status === 'fulfilled' ? catalogResult.value : null;
+      const targetDates = getCatalogTargetDates(catalog, nextSnapshot?.targetDate);
+      const extraDates = targetDates.filter((targetDate) => (
+        targetDate && targetDate !== nextSnapshot?.targetDate
+      ));
+      const extraSnapshotResults = await Promise.allSettled(
+        extraDates.map((targetDate) => (
+          force ? repriceChicagoMarkets(targetDate) : fetchChicagoSnapshot(targetDate)
+        ))
+      );
+      const extraSnapshots = extraSnapshotResults
+        .filter((result) => result.status === 'fulfilled')
+        .map((result) => result.value);
+
+      setSnapshot(nextSnapshot);
+      setBoardSnapshots(sortSnapshotsByDate([nextSnapshot, ...extraSnapshots]));
+
+      const [alertsResult, tradeIntentsResult] = await Promise.allSettled([
+        fetchChicagoAlerts(nextSnapshot?.targetDate, { limit: 8 }),
+        fetchTradeIntents(10)
+      ]);
 
       if (alertsResult.status === 'fulfilled') {
         setAlerts(alertsResult.value);
       }
 
-      if (tradeIntentsResult) {
-        setTradeIntents(tradeIntentsResult);
+      if (tradeIntentsResult.status === 'fulfilled') {
+        setTradeIntents(tradeIntentsResult.value);
       }
 
       setLastRefreshAt(new Date());
@@ -601,7 +760,7 @@ export default function App() {
     setTradeIntent(getMatchingTradeIntent(tradeIntents, selectedTradeRow));
     setTradeNotice('');
     setTradeError('');
-  }, [selectedTradeRow?.conditionId]);
+  }, [selectedTradeRow?.conditionId, selectedTradeRow?.targetDate]);
 
   useEffect(() => {
     const matchingIntent = getMatchingTradeIntent(tradeIntents, selectedTradeRow);
@@ -609,7 +768,7 @@ export default function App() {
     if (matchingIntent) {
       setTradeIntent(matchingIntent);
     }
-  }, [tradeIntents, selectedTradeRow?.conditionId]);
+  }, [tradeIntents, selectedTradeRow?.conditionId, selectedTradeRow?.targetDate]);
 
   async function handlePrepareTrade() {
     if (!selectedTradeRow || !parsedTradeAmount) {
@@ -623,7 +782,7 @@ export default function App() {
 
     try {
       const intent = await createChicagoTradeIntent({
-        date: snapshot?.targetDate,
+        date: selectedTradeRow.targetDate ?? snapshot?.targetDate,
         conditionId: selectedTradeRow.conditionId,
         tradeAmount: parsedTradeAmount
       });
@@ -687,7 +846,7 @@ export default function App() {
       const baseIntent = tradeIntent?.id
         ? tradeIntent
         : await createChicagoTradeIntent({
-            date: snapshot?.targetDate,
+            date: selectedTradeRow.targetDate ?? snapshot?.targetDate,
             conditionId: selectedTradeRow.conditionId,
             tradeAmount: parsedTradeAmount
           });
@@ -839,7 +998,7 @@ export default function App() {
       {error ? <p className="system-banner">{error}</p> : null}
 
       <section className="summary-grid" aria-label="Chicago weather status">
-        <Metric label="Target Date" value={snapshot?.targetDate ?? 'n/a'} />
+        <Metric label="Dates" value={rankedDateRange} />
         <Metric label="Observed High" value={formatTemperature(snapshot?.observations?.observedHighSoFar)} />
         <Metric label="Current KMDW" value={formatTemperature(snapshot?.observations?.currentObservedTemp)} />
         <Metric label="Model Mean" value={formatTemperature(snapshot?.prediction?.expectedHigh)} />
@@ -863,7 +1022,7 @@ export default function App() {
               <div className="section-heading">
                 <div>
                   <p className="eyebrow">Ranking</p>
-                  <h2>Current Chicago Weather Bets</h2>
+                  <h2>Open Chicago Weather Bets</h2>
                 </div>
                 <span className="chip chip-muted">{rankedRows.length} bets</span>
               </div>
@@ -873,6 +1032,7 @@ export default function App() {
                   <thead>
                     <tr>
                       <th>Rank</th>
+                      <th>Date</th>
                       <th>Bet</th>
                       <th>Action</th>
                       <th>Manage</th>
@@ -892,12 +1052,13 @@ export default function App() {
 
                       return (
                         <tr
-                          key={row.conditionId}
+                          key={`${row.targetDate ?? 'undated'}-${row.conditionId}`}
                           className={row.conditionId === selectedTradeRow?.conditionId ? 'selected-market-row' : ''}
                         >
                           <td>
                             <span className="rank-number">{index + 1}</span>
                           </td>
+                          <td>{formatShortDate(row.targetDate)}</td>
                           <td className="bet-cell">
                             <strong>{row.label}</strong>
                             <span>{row.marketQuestion || row.eventTitle || row.conditionId}</span>
@@ -979,7 +1140,7 @@ export default function App() {
                       <span className="chip chip-muted">#{rankByConditionId.get(selectedTradeRow.conditionId) ?? 'n/a'}</span>
                       <div>
                         <strong>{selectedTradeRow.label}</strong>
-                        <p>{selectedTradeRow.marketQuestion || selectedTradeRow.eventTitle || selectedTradeRow.conditionId}</p>
+                        <p>Date: {formatDate(selectedTradeRow.targetDate)} | {selectedTradeRow.marketQuestion || selectedTradeRow.eventTitle || selectedTradeRow.conditionId}</p>
                       </div>
                     </div>
 
@@ -1047,12 +1208,12 @@ export default function App() {
                       ) : null}
                     </div>
 
-                    <div className="trade-status-box">
+                    <div className={hasSelectedTradeWarning ? 'trade-status-box trade-status-warning' : 'trade-status-box'}>
                       <div>
                         <span>Status</span>
-                        <strong>{formatTradeStatus(tradeIntent)}</strong>
+                        <strong>{formatTradeStatus(tradeIntent, selectedTradeRow, canPrepareSelectedTrade)}</strong>
                       </div>
-                      <p>{getTradePolicyCopy(tradeIntent)}</p>
+                      <p>{getTradePolicyCopy(tradeIntent, selectedTradeRow, canPrepareSelectedTrade)}</p>
                     </div>
 
                     {tradeNotice ? <p className="trade-notice">{tradeNotice}</p> : null}
@@ -1221,75 +1382,6 @@ export default function App() {
                 ) : null}
               </section>
             </aside>
-          </section>
-
-          <section className="panel catalog-panel">
-            <div className="section-heading">
-              <div>
-                <p className="eyebrow">All Chicago Weather Bets</p>
-                <h2>Current And Upcoming Market Board</h2>
-              </div>
-              <span className="chip chip-muted">{catalogRows.length} fetched</span>
-            </div>
-
-            <div className="table-scroll">
-              <table className="catalog-table">
-                <thead>
-                  <tr>
-                    <th>Date</th>
-                    <th>Bucket</th>
-                    <th>Rank</th>
-                    <th>Bid</th>
-                    <th>Ask</th>
-                    <th>Mid</th>
-                    <th>Spread</th>
-                    <th>Rules</th>
-                    <th>Volume</th>
-                    <th>Market</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {catalogRows.map((row) => {
-                    const rank = rankByConditionId.get(row.conditionId);
-                    const marketUrl = getMarketUrl(row);
-
-                    return (
-                      <tr key={`${row.targetDate ?? 'undated'}-${row.conditionId ?? row.marketSlug}`}>
-                        <td>{row.targetDate ? formatDate(row.targetDate) : 'n/a'}</td>
-                        <td className="bet-cell">
-                          <strong>{formatBucketLabel(row)}</strong>
-                          <span>{row.marketQuestion ?? row.marketTitle ?? row.conditionId}</span>
-                        </td>
-                        <td>{rank ? `#${rank}` : 'n/a'}</td>
-                        <td>{formatPrice(row.bestBid)}</td>
-                        <td>{formatPrice(row.bestAsk)}</td>
-                        <td>{formatPrice(row.marketProbability ?? row.midpoint)}</td>
-                        <td>{formatSignedPercent(row.spread, 1)}</td>
-                        <td>
-                          <span className={getVerificationLabel(row) === 'REVIEW' ? 'chip chip-warn' : 'chip chip-good'}>
-                            {getVerificationLabel(row)}
-                          </span>
-                        </td>
-                        <td>{formatCompactNumber(row.volume)}</td>
-                        <td>
-                          {marketUrl ? (
-                            <a href={marketUrl} target="_blank" rel="noreferrer">
-                              Open
-                            </a>
-                          ) : (
-                            'n/a'
-                          )}
-                        </td>
-                      </tr>
-                    );
-                  })}
-                </tbody>
-              </table>
-            </div>
-
-            {catalogRows.length === 0 ? (
-              <p className="empty-copy">No Chicago weather market catalog rows were returned.</p>
-            ) : null}
           </section>
         </>
       ) : null}

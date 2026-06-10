@@ -64,6 +64,7 @@ export function getEnv() {
     climdwUrl: process.env.CLIMDW_URL ?? 'https://forecast.weather.gov/product.php?format=CI&glossary=1&highlight=off&issuedby=MDW&product=CLI&site=NWS&version=1',
     weatherProviderId: process.env.WEATHER_PROVIDER_ID ?? 'kmdw-nws-climdw',
     chicagoMarketSearchQuery: process.env.CHICAGO_MARKET_SEARCH_QUERY ?? 'highest temperature chicago',
+    chicagoMarketSearchQueries: process.env.CHICAGO_MARKET_SEARCH_QUERIES ?? '',
     chicagoMarketSearchLimit: Number.parseInt(process.env.CHICAGO_MARKET_SEARCH_LIMIT ?? '60', 10),
     nbmEnabled: String(process.env.NBM_ENABLED ?? '').trim().toLowerCase() === 'true',
     nbmJsonUrl: process.env.NBM_JSON_URL ?? '',

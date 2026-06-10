@@ -165,7 +165,7 @@ function getDateStringInTimeZone(date, timeZone = CHICAGO_STATION.timezone) {
   ].join('-');
 }
 
-function normalizeDateString(value, fallback = getDateStringInTimeZone(new Date())) {
+function normalizeDateString(value, fallback = getChicagoDefaultTargetDate()) {
   const candidate = String(value ?? '').trim();
   const match = candidate.match(/^(\d{4})-(\d{2})-(\d{2})$/);
 
@@ -191,6 +191,16 @@ function addDays(dateString, days) {
   const date = new Date(`${dateString}T00:00:00Z`);
   date.setUTCDate(date.getUTCDate() + days);
   return date.toISOString().slice(0, 10);
+}
+
+export function getChicagoDefaultTargetDate(now = new Date()) {
+  const today = getDateStringInTimeZone(now, CHICAGO_STATION.timezone);
+  const localParts = getPartsInTimeZone(now, CHICAGO_STATION.timezone);
+  const eveningRolloverHour = 18;
+
+  return localParts.hour >= eveningRolloverHour
+    ? addDays(today, 1)
+    : today;
 }
 
 function getTimeZoneOffsetMs(date, timeZone) {
@@ -1211,6 +1221,7 @@ function normalizeMarketObject(raw, parentEvent = null, index = 0) {
     resolutionSource: market.resolutionSource ?? market.resolution_source ?? parentEvent?.resolutionSource ?? null,
     active: market.active !== false && parentEvent?.active !== false,
     closed: Boolean(market.closed ?? parentEvent?.closed),
+    archived: Boolean(market.archived ?? parentEvent?.archived),
     liquidity: toNumberOrNull(market.liquidity ?? parentEvent?.liquidity),
     volume: toNumberOrNull(market.volume ?? parentEvent?.volume),
     endDate: market.endDate ?? parentEvent?.endDate ?? null,
@@ -1375,6 +1386,9 @@ export function normalizeBucketMarket(market, targetDate) {
     askDepth: null,
     liquidity: market.liquidity,
     volume: market.volume,
+    active: market.active !== false,
+    closed: market.closed === true,
+    archived: market.archived === true,
     endDate: market.endDate,
     rulesText: text,
     rulesTextHash,
@@ -1481,12 +1495,65 @@ function summarizeCatalogVerification(buckets) {
   };
 }
 
+function isOpenBucketMarket(bucket) {
+  return bucket?.active !== false && bucket?.closed !== true && bucket?.archived !== true;
+}
+
+function getChicagoMarketSearchQueries(env) {
+  const configuredQueries = String(env?.chicagoMarketSearchQueries ?? '')
+    .split(',')
+    .map((entry) => entry.trim())
+    .filter(Boolean);
+  const primaryQuery = env?.chicagoMarketSearchQuery ?? 'highest temperature chicago';
+  const fallbackQueries = [
+    primaryQuery,
+    'chicago weather',
+    'chicago temperature',
+    'chicago midway weather',
+    'midway temperature'
+  ];
+
+  return [...new Set([...configuredQueries, ...fallbackQueries])];
+}
+
+async function fetchGatewaySearchPayload(client, pathCandidates, query, limit) {
+  let lastError = null;
+
+  for (const path of pathCandidates) {
+    try {
+      const response = await client.get(path, {
+        params: {
+          query,
+          limit
+        }
+      });
+      return response.data;
+    } catch (error) {
+      lastError = error;
+    }
+  }
+
+  throw lastError ?? new Error(`Unable to fetch Chicago market search results for "${query}"`);
+}
+
 export function buildChicagoMarketCatalogFromBuckets(bucketMarkets, options = {}) {
   const { dateFrom, dateTo, daysAhead } = resolveCatalogDateRange(options);
   const includeUndated = options.includeUndated === true;
+  const includeOpenOutsideDateRange = options.includeOpenOutsideDateRange === true;
+  const openOnly = options.openOnly === true;
   const buckets = sortChicagoMarketBuckets(
     (Array.isArray(bucketMarkets) ? bucketMarkets : [])
       .filter((bucket) => {
+        const isOpen = isOpenBucketMarket(bucket);
+
+        if (openOnly && !isOpen) {
+          return false;
+        }
+
+        if (includeOpenOutsideDateRange && isOpen) {
+          return true;
+        }
+
         if (!bucket?.targetDate) {
           return includeUndated;
         }
@@ -1529,7 +1596,10 @@ export function buildChicagoMarketCatalogFromBuckets(bucketMarkets, options = {}
     dateFrom,
     dateTo,
     daysAhead,
+    openOnly,
+    includeOpenOutsideDateRange,
     bucketCount: buckets.length,
+    openBucketCount: buckets.filter(isOpenBucketMarket).length,
     dateGroupCount: dateGroups.length,
     verification,
     dateGroups,
@@ -1539,40 +1609,43 @@ export function buildChicagoMarketCatalogFromBuckets(bucketMarkets, options = {}
 
 async function fetchChicagoMarketBuckets(env, targetDate) {
   const client = createGatewayClient(env);
-  const query = env.chicagoMarketSearchQuery ?? 'highest temperature chicago';
+  const queries = getChicagoMarketSearchQueries(env);
   const pathCandidates = ['/v1/search', '/search'];
-  let rawPayload = null;
+  const rawPayloads = [];
   let lastError = null;
+  const limit = Number.isFinite(env.chicagoMarketSearchLimit) ? env.chicagoMarketSearchLimit : 60;
 
-  for (const path of pathCandidates) {
+  for (const query of queries) {
     try {
-      const response = await client.get(path, {
-        params: {
-          query,
-          limit: Number.isFinite(env.chicagoMarketSearchLimit) ? env.chicagoMarketSearchLimit : 60
-        }
-      });
-      rawPayload = response.data;
-      break;
+      rawPayloads.push(await fetchGatewaySearchPayload(client, pathCandidates, query, limit));
     } catch (error) {
       lastError = error;
     }
   }
 
-  if (!rawPayload) {
+  if (rawPayloads.length === 0) {
     return {
       source: 'polymarket-us-search',
       status: 'unavailable',
-      query,
+      query: queries.join(' | '),
+      queries,
       buckets: [],
       error: lastError instanceof Error ? lastError.message : 'Unable to fetch Chicago market search results'
     };
   }
 
-  const markets = collectMarketsFromSearch(rawPayload)
+  const markets = collectMarketsFromSearch(rawPayloads)
     .filter((market) => {
       const text = normalizeText(compactText(market.question, market.title, market.subtitle, market.description, market.rules, market.eventTitle));
-      return text.includes('chicago') && (text.includes('temperature') || text.includes('high temp') || text.includes('highest'));
+      return text.includes('chicago')
+        && (
+          text.includes('temperature')
+          || text.includes('high temp')
+          || text.includes('highest')
+          || text.includes('weather')
+          || text.includes('kmdw')
+          || text.includes('midway')
+        );
     });
   const bucketMarkets = dedupeChicagoMarketBuckets(markets
     .map((market) => normalizeBucketMarket(market, targetDate))
@@ -1605,7 +1678,8 @@ async function fetchChicagoMarketBuckets(env, targetDate) {
   return {
     source: 'polymarket-us-search',
     status: buckets.length > 0 ? 'ready' : 'empty',
-    query,
+    query: queries.join(' | '),
+    queries,
     bucketCount: buckets.length,
     buckets
   };
@@ -1624,6 +1698,7 @@ export async function buildChicagoMarketCatalog(env, options = {}) {
     ...catalog,
     status,
     query: fetchedMarkets.query,
+    queries: fetchedMarkets.queries ?? [fetchedMarkets.query].filter(Boolean),
     fetchStatus: fetchedMarkets.status,
     rawBucketCount: fetchedMarkets.bucketCount ?? fetchedMarkets.buckets?.length ?? 0,
     error: fetchedMarkets.error ?? null
@@ -2410,11 +2485,14 @@ function buildExecutionPlan({
     : null;
   const depthOk = depthCoverage === null || depthCoverage >= MIN_FILL_DEPTH_COVERAGE;
   const askAboveLimit = typeof bestAsk === 'number' && typeof limitPrice === 'number' && bestAsk > limitPrice;
-  const failedGateNames = (Array.isArray(gates) ? gates : [])
-    .filter((gate) => !gate.passed)
+  const failedBlockingGateNames = (Array.isArray(gates) ? gates : [])
+    .filter((gate) => !gate.passed && gate.severity !== 'warning')
+    .map((gate) => gate.name);
+  const warningGateNames = (Array.isArray(gates) ? gates : [])
+    .filter((gate) => !gate.passed && gate.severity === 'warning')
     .map((gate) => gate.name);
   const blockers = [
-    passed ? null : `gate failed: ${failedGateNames.join(', ') || 'unknown'}`,
+    passed ? null : `gate failed: ${failedBlockingGateNames.join(', ') || 'unknown'}`,
     typeof bestAsk === 'number' ? null : 'no firm ask quote',
     askAboveLimit ? 'ask is above limit' : null,
     depthOk ? null : 'ask depth below recommended size'
@@ -2463,6 +2541,7 @@ function buildExecutionPlan({
         ? 'upcoming'
         : 'base',
     blockers,
+    warnings: warningGateNames,
     instruction: executable
       ? 'Live route allowed from Probis after manual button confirmation; use a limit no higher than limitPrice.'
       : 'Do not route: refresh quote/source data and wait for all execution blockers to clear.'
@@ -2515,14 +2594,14 @@ export function buildChicagoRecommendations(snapshot) {
     const liquidityValue = bucket.askDepth ?? bucket.liquidity ?? null;
     const liquidityOk = typeof liquidityValue === 'number' ? liquidityValue >= 10 : true;
     const gates = [
-      { name: 'edge >= 6pp', passed: edgeOk },
-      { name: 'spread <= 5pp', passed: spreadOk },
-      { name: 'fresh weather/market data', passed: sourceFresh },
-      { name: 'sufficient liquidity/depth', passed: liquidityOk },
-      { name: 'no KMDW/CLIMDW rule ambiguity', passed: ruleOk },
-      { name: 'confidence >= 55%', passed: confidenceOk }
+      { name: 'edge >= 6pp', passed: edgeOk, severity: 'blocker' },
+      { name: 'spread <= 5pp', passed: spreadOk, severity: 'warning' },
+      { name: 'fresh weather/market data', passed: sourceFresh, severity: 'blocker' },
+      { name: 'sufficient liquidity/depth', passed: liquidityOk, severity: 'blocker' },
+      { name: 'no KMDW/CLIMDW rule ambiguity', passed: ruleOk, severity: 'blocker' },
+      { name: 'confidence >= 55%', passed: confidenceOk, severity: 'blocker' }
     ];
-    const passed = gates.every((gate) => gate.passed);
+    const passed = gates.every((gate) => gate.passed || gate.severity === 'warning');
     const score = scoreRecommendation({
       edge: riskAdjustedEdge,
       confidence: prediction.confidence,
@@ -2584,7 +2663,7 @@ export function buildChicagoRecommendations(snapshot) {
       status: passed ? 'passed' : 'rejected',
       reason: passed
         ? `Fair ${Math.round(fairProbability * 100)}% vs entry ${Math.round(marketPrice * 100)}%.`
-        : gates.filter((gate) => !gate.passed).map((gate) => gate.name).join('; ')
+        : gates.filter((gate) => !gate.passed && gate.severity !== 'warning').map((gate) => gate.name).join('; ')
     };
   }).sort((left, right) => {
     if (left.status !== right.status) {

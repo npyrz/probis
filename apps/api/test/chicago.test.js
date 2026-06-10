@@ -18,6 +18,7 @@ import {
   detectRuleFlags,
   fuseBucketProbabilities,
   getChicagoClimateDayWindow,
+  getChicagoDefaultTargetDate,
   normalizeBucketMarket,
   parseClimdwProduct,
   parseTemperatureBucket
@@ -161,6 +162,11 @@ test('getChicagoClimateDayWindow uses midnight CST during standard time', () => 
   assert.equal(window.endExclusive, '2026-01-16T06:00:00.000Z');
   assert.equal(window.isDstAtStart, false);
   assert.match(window.startLocal, /12:00 AM CST/);
+});
+
+test('getChicagoDefaultTargetDate rolls to tomorrow after Chicago evening window', () => {
+  assert.equal(getChicagoDefaultTargetDate(new Date('2026-06-09T22:30:00.000Z')), '2026-06-09');
+  assert.equal(getChicagoDefaultTargetDate(new Date('2026-06-09T23:30:00.000Z')), '2026-06-10');
 });
 
 test('weather provider abstraction collects inputs through a pluggable interface', async () => {
@@ -457,6 +463,49 @@ test('buildChicagoMarketCatalogFromBuckets groups current and upcoming KMDW mark
   assert.equal(catalog.verification.allVerified, true);
 });
 
+test('buildChicagoMarketCatalogFromBuckets can include all open KMDW markets outside the date range', () => {
+  const baseBucket = {
+    conditionId: 'bucket-a',
+    marketSlug: 'bucket-a',
+    lowTemp: 57,
+    highTemp: 58,
+    bestBid: 0.2,
+    bestAsk: 0.25,
+    active: true,
+    closed: false,
+    archived: false,
+    designatedSource: {
+      verified: true
+    }
+  };
+  const catalog = buildChicagoMarketCatalogFromBuckets([{
+    ...baseBucket,
+    conditionId: 'open-prior',
+    marketSlug: 'open-prior',
+    targetDate: '2026-05-19'
+  }, {
+    ...baseBucket,
+    conditionId: 'open-current',
+    marketSlug: 'open-current',
+    targetDate: '2026-05-20'
+  }, {
+    ...baseBucket,
+    conditionId: 'closed-prior',
+    marketSlug: 'closed-prior',
+    targetDate: '2026-05-18',
+    closed: true
+  }], {
+    dateFrom: '2026-05-20',
+    daysAhead: 0,
+    openOnly: true,
+    includeOpenOutsideDateRange: true
+  });
+
+  assert.equal(catalog.bucketCount, 2);
+  assert.equal(catalog.openBucketCount, 2);
+  assert.deepEqual(catalog.dateGroups.map((group) => group.targetDate), ['2026-05-19', '2026-05-20']);
+});
+
 test('dedupeChicagoMarketBuckets collapses duplicate search hits by condition id', () => {
   const deduped = dedupeChicagoMarketBuckets([{
     conditionId: '30391',
@@ -584,6 +633,44 @@ test('buildChicagoRecommendations sizes passed entries with fractional Kelly', (
   assert.equal(recommendations.best.executionPlan.blockers.length, 0);
   assert.equal(recommendations.best.executionPlan.desiredContracts, 5.2632);
   assert.equal(recommendations.best.executionPlan.depthCoverage, 19);
+});
+
+test('buildChicagoRecommendations treats wide spread as a warning, not a blocker', () => {
+  const recommendations = buildChicagoRecommendations({
+    prediction: {
+      confidence: 0.8,
+      dayPhase: 'midday',
+      bucketProbabilities: {
+        bucketA: 0.7
+      },
+      sourceFreshness: {
+        isStale: false
+      }
+    },
+    markets: {
+      buckets: [{
+        conditionId: 'bucketA',
+        marketSlug: 'market-a',
+        outcomeLabel: '60-61',
+        lowTemp: 60,
+        highTemp: 61,
+        bestAsk: 0.3,
+        spread: 0.08,
+        askDepth: 100,
+        ruleFlags: detectRuleFlags('Resolves using KMDW from the National Weather Service.')
+      }]
+    }
+  });
+
+  assert.equal(recommendations.best.status, 'passed');
+  assert.equal(recommendations.best.action, 'recommend-buy-yes');
+  assert.equal(recommendations.best.executionPlan.executable, true);
+  assert.equal(recommendations.best.executionPlan.blockers.length, 0);
+  assert.deepEqual(recommendations.best.executionPlan.warnings, ['spread <= 5pp']);
+  assert.equal(
+    recommendations.best.gates.find((gate) => gate.name === 'spread <= 5pp')?.severity,
+    'warning'
+  );
 });
 
 test('buildChicagoRecommendations blocks execution when ask depth cannot fill recommended size', () => {

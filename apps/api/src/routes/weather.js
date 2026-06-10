@@ -170,7 +170,9 @@ router.get('/api/weather/chicago/markets', async (request, response) => {
     const catalog = await buildChicagoMarketCatalog(env, {
       dateFrom: normalizeDateQuery(request.query.dateFrom),
       dateTo: normalizeDateQuery(request.query.dateTo),
-      daysAhead: normalizeNumberQuery(request.query.daysAhead)
+      daysAhead: normalizeNumberQuery(request.query.daysAhead),
+      openOnly: normalizeBooleanQuery(request.query.openOnly),
+      includeOpenOutsideDateRange: normalizeBooleanQuery(request.query.includeOpenOutsideDateRange)
     });
 
     response.json({

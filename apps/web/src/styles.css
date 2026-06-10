@@ -251,8 +251,7 @@ h2 {
 
 .metric-cell span,
 .detail-list span,
-.rank-table th,
-.catalog-table th {
+.rank-table th {
   color: var(--muted);
   font-size: 0.72rem;
   font-weight: 800;
@@ -368,43 +367,33 @@ table {
 }
 
 .rank-table {
-  min-width: 1300px;
-}
-
-.catalog-table {
-  min-width: 1040px;
+  min-width: 1360px;
 }
 
 .rank-table th,
-.rank-table td,
-.catalog-table th,
-.catalog-table td {
+.rank-table td {
   border-bottom: 1px solid rgba(58, 74, 64, 0.7);
   padding: 10px 11px;
   text-align: left;
   vertical-align: top;
 }
 
-.rank-table th,
-.catalog-table th {
+.rank-table th {
   background: #182119;
   position: sticky;
   top: 0;
   z-index: 1;
 }
 
-.rank-table tbody tr,
-.catalog-table tbody tr {
+.rank-table tbody tr {
   background: rgba(18, 24, 19, 0.52);
 }
 
-.rank-table tbody tr:nth-child(even),
-.catalog-table tbody tr:nth-child(even) {
+.rank-table tbody tr:nth-child(even) {
   background: rgba(29, 38, 31, 0.52);
 }
 
-.rank-table tbody tr:hover,
-.catalog-table tbody tr:hover {
+.rank-table tbody tr:hover {
   background: rgba(47, 208, 189, 0.075);
 }
 
@@ -413,19 +402,16 @@ table {
   box-shadow: inset 3px 0 0 var(--accent);
 }
 
-.rank-table tbody tr:last-child td,
-.catalog-table tbody tr:last-child td {
+.rank-table tbody tr:last-child td {
   border-bottom: 0;
 }
 
-.rank-table td,
-.catalog-table td {
+.rank-table td {
   color: var(--text);
   font-weight: 650;
 }
 
 .rank-table small,
-.catalog-table small,
 .bet-cell span,
 .quote-row span,
 .detail-list span,
@@ -435,8 +421,7 @@ table {
   color: var(--muted);
 }
 
-.rank-table small,
-.catalog-table small {
+.rank-table small {
   display: block;
   margin-top: 4px;
   font-size: 0.76rem;
@@ -580,6 +565,15 @@ table {
   padding: 10px;
 }
 
+.trade-status-warning {
+  border-color: rgba(250, 204, 21, 0.42);
+  background: rgba(113, 63, 18, 0.24);
+}
+
+.trade-status-warning p {
+  color: #fde68a;
+}
+
 .trade-status-box div {
   display: flex;
   align-items: center;
@@ -715,10 +709,6 @@ table {
 
 .alert-row p {
   margin: 4px 0;
-}
-
-.catalog-panel {
-  margin-top: 12px;
 }
 
 .empty-copy {

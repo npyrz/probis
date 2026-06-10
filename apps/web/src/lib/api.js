@@ -144,6 +144,14 @@ export async function fetchChicagoMarketCatalog(options = {}) {
     query.set('daysAhead', String(options.daysAhead));
   }
 
+  if (options.openOnly !== undefined && options.openOnly !== null) {
+    query.set('openOnly', String(options.openOnly));
+  }
+
+  if (options.includeOpenOutsideDateRange !== undefined && options.includeOpenOutsideDateRange !== null) {
+    query.set('includeOpenOutsideDateRange', String(options.includeOpenOutsideDateRange));
+  }
+
   const suffix = query.size > 0 ? `?${query.toString()}` : '';
   const data = await requestJson(`/api/weather/chicago/markets${suffix}`);
   return data.catalog ?? data.markets;
