@@ -1,10 +1,17 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
 
 import {
+  createChicagoTradeIntent,
+  executeTradeIntent as executeTradeIntentRequest,
   fetchChicagoAlerts,
   fetchChicagoMarketCatalog,
   fetchChicagoSnapshot,
-  repriceChicagoMarkets
+  fetchTradeIntents,
+  pollTradeIntent,
+  repriceChicagoMarkets,
+  sellTradeIntent as sellTradeIntentRequest,
+  stopTradeIntent as stopTradeIntentRequest,
+  updateTradeIntent as updateTradeIntentRequest
 } from './lib/api.js';
 
 const DEFAULT_CATALOG_DAYS_AHEAD = 7;
@@ -32,6 +39,20 @@ function formatSignedPercent(value, digits = 1) {
 function formatPrice(value) {
   const number = numberOrNull(value);
   return number === null ? 'n/a' : `$${number.toFixed(3)}`;
+}
+
+function formatCurrency(value) {
+  const number = numberOrNull(value);
+
+  if (number === null) {
+    return 'n/a';
+  }
+
+  return new Intl.NumberFormat('en-US', {
+    style: 'currency',
+    currency: 'USD',
+    maximumFractionDigits: 2
+  }).format(number);
 }
 
 function formatCompactNumber(value) {
@@ -328,6 +349,90 @@ function getTemperatureDistributionRows(snapshot) {
     .slice(0, 8);
 }
 
+function formatAmountInput(value) {
+  const number = numberOrNull(value);
+
+  if (number === null || number <= 0) {
+    return '';
+  }
+
+  return number.toFixed(2);
+}
+
+function parseTradeAmount(value) {
+  const number = Number.parseFloat(value);
+  return Number.isFinite(number) && number > 0 ? number : null;
+}
+
+function getRecommendedTradeAmount(row) {
+  return numberOrNull(row?.recommendation?.suggestedSize)
+    ?? numberOrNull(row?.recommendation?.executionPlan?.suggestedNotional)
+    ?? numberOrNull(row?.recommendation?.tradeSuggestion?.amount)
+    ?? null;
+}
+
+function getSharesEstimate(amount, price) {
+  const tradeAmount = numberOrNull(amount);
+  const entryPrice = numberOrNull(price);
+
+  if (tradeAmount === null || entryPrice === null || entryPrice <= 0) {
+    return null;
+  }
+
+  return tradeAmount / entryPrice;
+}
+
+function formatTradeStatus(intent) {
+  return formatStatus(intent?.status ?? 'not prepared');
+}
+
+function getTradePolicyCopy(intent) {
+  const blocker = intent?.liveTradingPolicy?.blocker
+    ?? intent?.executionRequest?.liveRoutingBlockedReason
+    ?? null;
+
+  if (blocker) {
+    return blocker;
+  }
+
+  if (intent?.executionRequest?.constraints?.requiresManualSubmission === true) {
+    return 'This signal requires manual submission review before venue routing.';
+  }
+
+  return 'Manual submit will send this intent through the backend execution gates.';
+}
+
+function getMatchingTradeIntent(intents, row) {
+  if (!row) {
+    return null;
+  }
+
+  return (Array.isArray(intents) ? intents : []).find((intent) => (
+    (row.conditionId && intent.conditionId === row.conditionId)
+    || (row.marketSlug && intent.marketSlug === row.marketSlug)
+  )) ?? null;
+}
+
+function isManagedChicagoIntent(intent, rankedRows) {
+  if (!intent) {
+    return false;
+  }
+
+  const rankedConditionIds = new Set(rankedRows.map((row) => row.conditionId).filter(Boolean));
+  const text = [
+    intent.eventSlug,
+    intent.eventTitle,
+    intent.marketQuestion,
+    intent.input,
+    intent.executionRequest?.requestType
+  ].filter(Boolean).join(' ').toLowerCase();
+
+  return rankedConditionIds.has(intent.conditionId)
+    || text.includes('kmdw')
+    || text.includes('midway')
+    || text.includes('chicago');
+}
+
 function Metric({ label, value, tone = 'metric-neutral' }) {
   return (
     <article className="metric-cell">
@@ -366,15 +471,47 @@ export default function App() {
   const [isRepricing, setIsRepricing] = useState(false);
   const [lastRefreshAt, setLastRefreshAt] = useState(null);
   const [clock, setClock] = useState(() => new Date());
+  const [selectedConditionId, setSelectedConditionId] = useState(null);
+  const [tradeAmount, setTradeAmount] = useState('');
+  const [tradeIntent, setTradeIntent] = useState(null);
+  const [tradeIntents, setTradeIntents] = useState([]);
+  const [tradeNotice, setTradeNotice] = useState('');
+  const [tradeError, setTradeError] = useState('');
+  const [isPreparingTrade, setIsPreparingTrade] = useState(false);
+  const [isSubmittingTrade, setIsSubmittingTrade] = useState(false);
+  const [isManagingTrade, setIsManagingTrade] = useState(false);
 
   const rankedRows = useMemo(() => buildRankedBetRows(snapshot), [snapshot]);
   const catalogRows = useMemo(() => buildCatalogRows(catalog), [catalog]);
   const temperatureRows = useMemo(() => getTemperatureDistributionRows(snapshot), [snapshot]);
   const activeAlerts = getActiveAlerts(alerts);
   const bestRow = rankedRows[0] ?? null;
+  const selectedTradeRow = rankedRows.find((row) => row.conditionId === selectedConditionId) ?? bestRow;
+  const recommendedTradeAmount = getRecommendedTradeAmount(selectedTradeRow);
+  const parsedTradeAmount = parseTradeAmount(tradeAmount);
+  const selectedSharesEstimate = getSharesEstimate(parsedTradeAmount, selectedTradeRow?.marketPrice);
+  const canPrepareSelectedTrade = selectedTradeRow?.action === 'BUY YES'
+    && selectedTradeRow?.recommendation?.executionPlan?.executable === true
+    && Boolean(selectedTradeRow?.conditionId);
+  const managedTradeIntents = tradeIntents
+    .filter((intent) => isManagedChicagoIntent(intent, rankedRows))
+    .slice(0, 4);
   const pollIntervalMs = getPollingIntervalMs(snapshot);
   const marketDataMode = formatMarketDataMode(snapshot?.marketDataPolicy);
   const rankByConditionId = new Map(rankedRows.map((row, index) => [row.conditionId, index + 1]));
+
+  const refreshTradeIntents = useCallback(async (row = selectedTradeRow) => {
+    const intents = await fetchTradeIntents(10);
+    setTradeIntents(intents);
+
+    const matchingIntent = getMatchingTradeIntent(intents, row);
+
+    if (matchingIntent) {
+      setTradeIntent(matchingIntent);
+    }
+
+    return intents;
+  }, [selectedTradeRow]);
 
   const loadChicagoBoard = useCallback(async ({ force = false, silent = false } = {}) => {
     if (force) {
@@ -391,6 +528,7 @@ export default function App() {
         fetchChicagoMarketCatalog({ daysAhead: DEFAULT_CATALOG_DAYS_AHEAD }),
         fetchChicagoAlerts(nextSnapshot?.targetDate, { limit: 8 })
       ]);
+      const tradeIntentsResult = await fetchTradeIntents(10).catch(() => null);
 
       if (catalogResult.status === 'fulfilled') {
         setCatalog(catalogResult.value);
@@ -398,6 +536,10 @@ export default function App() {
 
       if (alertsResult.status === 'fulfilled') {
         setAlerts(alertsResult.value);
+      }
+
+      if (tradeIntentsResult) {
+        setTradeIntents(tradeIntentsResult);
       }
 
       setLastRefreshAt(new Date());
@@ -435,6 +577,200 @@ export default function App() {
       window.clearInterval(intervalId);
     };
   }, [loadChicagoBoard, pollIntervalMs]);
+
+  useEffect(() => {
+    if (!selectedConditionId && bestRow?.conditionId) {
+      setSelectedConditionId(bestRow.conditionId);
+    }
+  }, [bestRow?.conditionId, selectedConditionId]);
+
+  useEffect(() => {
+    if (!selectedTradeRow) {
+      setTradeAmount('');
+      setTradeIntent(null);
+      return;
+    }
+
+    setTradeAmount(formatAmountInput(getRecommendedTradeAmount(selectedTradeRow)));
+    setTradeIntent(getMatchingTradeIntent(tradeIntents, selectedTradeRow));
+    setTradeNotice('');
+    setTradeError('');
+  }, [selectedTradeRow?.conditionId]);
+
+  useEffect(() => {
+    const matchingIntent = getMatchingTradeIntent(tradeIntents, selectedTradeRow);
+
+    if (matchingIntent) {
+      setTradeIntent(matchingIntent);
+    }
+  }, [tradeIntents, selectedTradeRow?.conditionId]);
+
+  async function handlePrepareTrade() {
+    if (!selectedTradeRow || !parsedTradeAmount) {
+      setTradeError('Enter a positive trade amount first.');
+      return null;
+    }
+
+    setIsPreparingTrade(true);
+    setTradeNotice('');
+    setTradeError('');
+
+    try {
+      const intent = await createChicagoTradeIntent({
+        date: snapshot?.targetDate,
+        conditionId: selectedTradeRow.conditionId,
+        tradeAmount: parsedTradeAmount
+      });
+
+      setTradeIntent(intent);
+      setTradeNotice(`Prepared ${formatCurrency(intent.tradeAmount)} draft for ${intent.outcomeLabel}.`);
+      await refreshTradeIntents(selectedTradeRow);
+      return intent;
+    } catch (prepareError) {
+      const message = prepareError instanceof Error ? prepareError.message : 'Unable to prepare trade intent';
+      setTradeError(message);
+      return null;
+    } finally {
+      setIsPreparingTrade(false);
+    }
+  }
+
+  async function handleSaveTradeAmount() {
+    if (!tradeIntent?.id || !parsedTradeAmount) {
+      setTradeError('Prepare a trade and enter a positive amount first.');
+      return null;
+    }
+
+    setIsPreparingTrade(true);
+    setTradeNotice('');
+    setTradeError('');
+
+    try {
+      const intent = await updateTradeIntentRequest(tradeIntent.id, {
+        tradeAmount: parsedTradeAmount,
+        tradeSuggestion: {
+          ...(tradeIntent.tradeSuggestion ?? {}),
+          amount: parsedTradeAmount
+        }
+      });
+
+      setTradeIntent(intent);
+      setTradeNotice(`Saved amount override: ${formatCurrency(intent.tradeAmount)}.`);
+      await refreshTradeIntents(selectedTradeRow);
+      return intent;
+    } catch (saveError) {
+      const message = saveError instanceof Error ? saveError.message : 'Unable to save trade amount';
+      setTradeError(message);
+      return null;
+    } finally {
+      setIsPreparingTrade(false);
+    }
+  }
+
+  async function handleSubmitTrade() {
+    if (!selectedTradeRow || !parsedTradeAmount) {
+      setTradeError('Enter a positive trade amount first.');
+      return;
+    }
+
+    setIsSubmittingTrade(true);
+    setTradeNotice('');
+    setTradeError('');
+
+    try {
+      const baseIntent = tradeIntent?.id
+        ? tradeIntent
+        : await createChicagoTradeIntent({
+            date: snapshot?.targetDate,
+            conditionId: selectedTradeRow.conditionId,
+            tradeAmount: parsedTradeAmount
+          });
+      const confirmedIntent = await updateTradeIntentRequest(baseIntent.id, {
+        confirm: true,
+        tradeAmount: parsedTradeAmount,
+        tradeSuggestion: {
+          ...(baseIntent.tradeSuggestion ?? {}),
+          amount: parsedTradeAmount
+        }
+      });
+
+      setTradeIntent(confirmedIntent);
+
+      const executedIntent = await executeTradeIntentRequest(confirmedIntent.id);
+      setTradeIntent(executedIntent);
+      setTradeNotice(`Submitted trade and started tracking ${executedIntent.outcomeLabel}.`);
+      await refreshTradeIntents(selectedTradeRow);
+    } catch (submitError) {
+      const message = submitError instanceof Error ? submitError.message : 'Unable to submit trade';
+      setTradeError(message);
+      await refreshTradeIntents(selectedTradeRow).catch(() => null);
+    } finally {
+      setIsSubmittingTrade(false);
+    }
+  }
+
+  async function handleRefreshManagedTrade(intent = tradeIntent) {
+    if (!intent?.id) {
+      return;
+    }
+
+    setIsManagingTrade(true);
+    setTradeNotice('');
+    setTradeError('');
+
+    try {
+      const nextIntent = await pollTradeIntent(intent.id);
+      setTradeIntent(nextIntent);
+      setTradeNotice(`Refreshed ${nextIntent.outcomeLabel}.`);
+      await refreshTradeIntents(selectedTradeRow);
+    } catch (manageError) {
+      setTradeError(manageError instanceof Error ? manageError.message : 'Unable to refresh trade');
+    } finally {
+      setIsManagingTrade(false);
+    }
+  }
+
+  async function handleSellManagedTrade(intent = tradeIntent) {
+    if (!intent?.id) {
+      return;
+    }
+
+    setIsManagingTrade(true);
+    setTradeNotice('');
+    setTradeError('');
+
+    try {
+      const nextIntent = await sellTradeIntentRequest(intent.id);
+      setTradeIntent(nextIntent);
+      setTradeNotice(`Submitted sell request for ${nextIntent.outcomeLabel}.`);
+      await refreshTradeIntents(selectedTradeRow);
+    } catch (manageError) {
+      setTradeError(manageError instanceof Error ? manageError.message : 'Unable to sell trade');
+    } finally {
+      setIsManagingTrade(false);
+    }
+  }
+
+  async function handleStopManagedTrade(intent = tradeIntent) {
+    if (!intent?.id) {
+      return;
+    }
+
+    setIsManagingTrade(true);
+    setTradeNotice('');
+    setTradeError('');
+
+    try {
+      const nextIntent = await stopTradeIntentRequest(intent.id);
+      setTradeIntent(nextIntent);
+      setTradeNotice(`Stopped tracking ${nextIntent.outcomeLabel}.`);
+      await refreshTradeIntents(selectedTradeRow);
+    } catch (manageError) {
+      setTradeError(manageError instanceof Error ? manageError.message : 'Unable to stop tracking trade');
+    } finally {
+      setIsManagingTrade(false);
+    }
+  }
 
   return (
     <main className="app-shell">
@@ -507,6 +843,7 @@ export default function App() {
                       <th>Rank</th>
                       <th>Bet</th>
                       <th>Action</th>
+                      <th>Manage</th>
                       <th>Fair</th>
                       <th>Entry</th>
                       <th>Edge</th>
@@ -522,7 +859,10 @@ export default function App() {
                       const marketUrl = getMarketUrl(row);
 
                       return (
-                        <tr key={row.conditionId}>
+                        <tr
+                          key={row.conditionId}
+                          className={row.conditionId === selectedTradeRow?.conditionId ? 'selected-market-row' : ''}
+                        >
                           <td>
                             <span className="rank-number">{index + 1}</span>
                           </td>
@@ -545,6 +885,15 @@ export default function App() {
                               {row.action}
                             </span>
                             <small>{formatStatus(row.status)}</small>
+                          </td>
+                          <td>
+                            <button
+                              type="button"
+                              className="inline-action-button"
+                              onClick={() => setSelectedConditionId(row.conditionId)}
+                            >
+                              Manage
+                            </button>
                           </td>
                           <td>{formatPercent(row.fairProbability)}</td>
                           <td>{formatPrice(row.marketPrice)}</td>
@@ -581,6 +930,150 @@ export default function App() {
             </section>
 
             <aside className="side-stack">
+              <section className="panel trade-panel">
+                <div className="section-heading">
+                  <div>
+                    <p className="eyebrow">Trade</p>
+                    <h2>Manual Trade Control</h2>
+                  </div>
+                  <span className={canPrepareSelectedTrade ? 'chip chip-good' : 'chip chip-muted'}>
+                    {canPrepareSelectedTrade ? 'Ready' : 'Blocked'}
+                  </span>
+                </div>
+
+                {selectedTradeRow ? (
+                  <>
+                    <div className="trade-selected-card">
+                      <span className="chip chip-muted">#{rankByConditionId.get(selectedTradeRow.conditionId) ?? 'n/a'}</span>
+                      <div>
+                        <strong>{selectedTradeRow.label}</strong>
+                        <p>{selectedTradeRow.marketQuestion || selectedTradeRow.eventTitle || selectedTradeRow.conditionId}</p>
+                      </div>
+                    </div>
+
+                    <div className="trade-amount-grid">
+                      <label htmlFor="trade-amount-input">
+                        <span>Amount</span>
+                        <input
+                          id="trade-amount-input"
+                          type="number"
+                          min="1"
+                          step="0.01"
+                          inputMode="decimal"
+                          value={tradeAmount}
+                          onChange={(event) => setTradeAmount(event.target.value)}
+                        />
+                      </label>
+                      <article>
+                        <span>Recommended</span>
+                        <strong>{formatCurrency(recommendedTradeAmount)}</strong>
+                      </article>
+                      <article>
+                        <span>Shares Est.</span>
+                        <strong>{selectedSharesEstimate ? selectedSharesEstimate.toFixed(2) : 'n/a'}</strong>
+                      </article>
+                      <article>
+                        <span>Entry</span>
+                        <strong>{formatPrice(selectedTradeRow.marketPrice)}</strong>
+                      </article>
+                    </div>
+
+                    <div className="trade-actions">
+                      <button
+                        type="button"
+                        className="button button-secondary"
+                        onClick={() => void handlePrepareTrade()}
+                        disabled={!canPrepareSelectedTrade || !parsedTradeAmount || isPreparingTrade || isSubmittingTrade}
+                      >
+                        {isPreparingTrade ? 'Preparing' : 'Prepare Draft'}
+                      </button>
+                      <button
+                        type="button"
+                        className="button button-secondary"
+                        onClick={() => void handleSaveTradeAmount()}
+                        disabled={!tradeIntent?.id || !parsedTradeAmount || isPreparingTrade || isSubmittingTrade}
+                      >
+                        Save Amount
+                      </button>
+                      <button
+                        type="button"
+                        className="button button-primary"
+                        onClick={() => void handleSubmitTrade()}
+                        disabled={!canPrepareSelectedTrade || !parsedTradeAmount || isPreparingTrade || isSubmittingTrade}
+                      >
+                        {isSubmittingTrade ? 'Submitting' : 'Submit Trade'}
+                      </button>
+                    </div>
+
+                    <div className="trade-status-box">
+                      <div>
+                        <span>Status</span>
+                        <strong>{formatTradeStatus(tradeIntent)}</strong>
+                      </div>
+                      <p>{getTradePolicyCopy(tradeIntent)}</p>
+                    </div>
+
+                    {tradeNotice ? <p className="trade-notice">{tradeNotice}</p> : null}
+                    {tradeError ? <p className="trade-error">{tradeError}</p> : null}
+
+                    {managedTradeIntents.length > 0 ? (
+                      <div className="managed-trade-list">
+                        {managedTradeIntents.map((intent) => (
+                          <article key={intent.id} className="managed-trade-row">
+                            <div>
+                              <strong>{intent.outcomeLabel}</strong>
+                              <span>{formatCurrency(intent.tradeAmount)} / {formatTradeStatus(intent)}</span>
+                            </div>
+                            <div className="managed-trade-actions">
+                              <button
+                                type="button"
+                                className="inline-action-button"
+                                onClick={() => {
+                                  setTradeIntent(intent);
+                                  setTradeAmount(formatAmountInput(intent.tradeAmount));
+                                }}
+                              >
+                                Select
+                              </button>
+                              {intent.status === 'tracking' ? (
+                                <>
+                                  <button
+                                    type="button"
+                                    className="inline-action-button"
+                                    onClick={() => void handleRefreshManagedTrade(intent)}
+                                    disabled={isManagingTrade}
+                                  >
+                                    Poll
+                                  </button>
+                                  <button
+                                    type="button"
+                                    className="inline-action-button inline-action-danger"
+                                    onClick={() => void handleSellManagedTrade(intent)}
+                                    disabled={isManagingTrade}
+                                  >
+                                    Sell
+                                  </button>
+                                  <button
+                                    type="button"
+                                    className="inline-action-button"
+                                    onClick={() => void handleStopManagedTrade(intent)}
+                                    disabled={isManagingTrade}
+                                  >
+                                    Stop
+                                  </button>
+                                </>
+                              ) : null}
+                            </div>
+                          </article>
+                        ))}
+                      </div>
+                    ) : null}
+                  </>
+                ) : (
+                  <p className="empty-copy">Select a ranked Chicago weather bet to prepare a trade.</p>
+                )}
+              </section>
+
               <section className="panel">
                 <div className="section-heading">
                   <div>

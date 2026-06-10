@@ -304,13 +304,29 @@ router.post('/api/weather/chicago/intents', async (request, response) => {
     const env = getEnv();
     const date = normalizeDateQuery(request.body?.date ?? request.query.date);
     const conditionId = String(request.body?.conditionId ?? '').trim();
+    const tradeAmount = normalizeNumberQuery(request.body?.tradeAmount ?? request.query.tradeAmount);
     const snapshot = await buildChicagoSnapshot(env, { date, force: true });
     const persistence = await persistChicagoSnapshot(env, snapshot);
     const recommendation = conditionId
       ? snapshot.recommendations.recommendations.find((candidate) => candidate.conditionId === conditionId)
       : snapshot.recommendations.best;
     const payload = buildChicagoTradeIntentPayload(snapshot, recommendation);
-    const intent = await createTradeIntent(payload);
+
+    if (tradeAmount !== undefined && tradeAmount <= 0) {
+      throw new Error('KMDW trade draft requires a positive tradeAmount.');
+    }
+
+    const sizedPayload = tradeAmount
+      ? {
+          ...payload,
+          tradeAmount,
+          tradeSuggestion: {
+            ...payload.tradeSuggestion,
+            amount: tradeAmount
+          }
+        }
+      : payload;
+    const intent = await createTradeIntent(sizedPayload);
 
     response.status(201).json({
       ok: true,

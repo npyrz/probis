@@ -495,6 +495,7 @@ function replaceTradeIntent(intents, nextIntent) {
 
 function getEditablePatch(payload = {}) {
   const patch = {};
+  const allowedStatusValues = new Set(['draft', 'confirmed', 'paused']);
 
   if (payload.eventTitle !== undefined) {
     patch.eventTitle = payload.eventTitle;
@@ -515,6 +516,25 @@ function getEditablePatch(payload = {}) {
         ? Number.parseFloat(payload.tradeAmount)
         : Number.parseFloat(payload.tradeSuggestion.amount ?? NaN)
     };
+  }
+
+  if (payload.confirm === true) {
+    patch.status = 'confirmed';
+    patch.confirmedAt = new Date().toISOString();
+  } else if (payload.status !== undefined) {
+    const status = String(payload.status ?? '').trim();
+
+    if (allowedStatusValues.has(status)) {
+      patch.status = status;
+    }
+  }
+
+  if (payload.confirmedAt !== undefined) {
+    patch.confirmedAt = payload.confirmedAt;
+  } else if (patch.status === 'draft') {
+    patch.confirmedAt = null;
+  } else if (patch.status === 'confirmed') {
+    patch.confirmedAt = new Date().toISOString();
   }
 
   return patch;

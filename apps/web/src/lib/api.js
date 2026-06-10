@@ -122,7 +122,8 @@ export async function createChicagoTradeIntent(options = {}) {
     },
     body: JSON.stringify({
       date: options.date,
-      conditionId: options.conditionId
+      conditionId: options.conditionId,
+      tradeAmount: options.tradeAmount
     })
   });
   return data.intent;
