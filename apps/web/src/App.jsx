@@ -624,6 +624,10 @@ export default function App() {
   const recommendedTradeAmount = getRecommendedTradeAmount(selectedTradeRow);
   const parsedTradeAmount = parseTradeAmount(tradeAmount);
   const selectedSharesEstimate = getSharesEstimate(parsedTradeAmount, selectedTradeRow?.marketPrice);
+  const selectedPayoutEstimate = selectedSharesEstimate;
+  const selectedProfitEstimate = selectedPayoutEstimate === null || parsedTradeAmount === null
+    ? null
+    : selectedPayoutEstimate - parsedTradeAmount;
   const selectedTradeBlockers = getTradeBlockers(selectedTradeRow);
   const selectedTradeWarnings = getTradeWarnings(selectedTradeRow);
   const canPrepareSelectedTrade = Boolean(selectedTradeRow?.conditionId)
@@ -1168,6 +1172,14 @@ export default function App() {
                       <article>
                         <span>Entry</span>
                         <strong>{formatPrice(selectedTradeRow.marketPrice)}</strong>
+                      </article>
+                      <article>
+                        <span>Payout If Correct</span>
+                        <strong>{selectedPayoutEstimate === null ? 'n/a' : formatCurrency(selectedPayoutEstimate)}</strong>
+                      </article>
+                      <article>
+                        <span>Profit If Correct</span>
+                        <strong>{selectedProfitEstimate === null ? 'n/a' : formatCurrency(selectedProfitEstimate)}</strong>
                       </article>
                     </div>
 
