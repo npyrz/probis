@@ -23,10 +23,9 @@ const currentDirectory = path.dirname(fileURLToPath(import.meta.url));
 const repoRoot = path.resolve(currentDirectory, '../../../../');
 const DATA_DIRECTORY = path.join(repoRoot, 'data');
 const TRADE_INTENTS_FILE = path.join(DATA_DIRECTORY, 'trade-intents.json');
-const KMDW_LIVE_TRADING_POLICY_ID = 'kmdw-paper-manual-only-v1';
-const KMDW_POSITION_LIFECYCLE_POLICY_ID = 'kmdw-paper-position-lifecycle-v1';
+const KMDW_LIVE_TRADING_POLICY_ID = 'kmdw-live-routing-v1';
+const KMDW_POSITION_LIFECYCLE_POLICY_ID = 'kmdw-live-position-lifecycle-v1';
 const KMDW_MARKET_DATA_POLICY_ID = 'kmdw-rest-polling-market-data-v1';
-const KMDW_LIVE_TRADING_BLOCK_REASON = 'Live trading is intentionally disabled for KMDW weather signals. Keep this intent paper/manual-only and submit any order outside Probis after human source and quote review.';
 const KMDW_MARKET_DATA_STREAMING_BLOCK_REASON = 'Streaming KMDW market data is not implemented. KMDW weather markets use REST polling for the near-term plan.';
 
 async function ensureStore() {
@@ -183,10 +182,64 @@ export function getTradeIntentLiveTradingPolicy(intent) {
   return {
     scope: 'kmdw-weather',
     policyId: KMDW_LIVE_TRADING_POLICY_ID,
-    liveTradingAllowed: false,
-    requiresManualSubmission: true,
-    liveRoutingBlocked: true,
-    blocker: KMDW_LIVE_TRADING_BLOCK_REASON
+    liveTradingAllowed: true,
+    requiresManualSubmission: false,
+    liveRoutingBlocked: false,
+    blocker: null
+  };
+}
+
+function enableKmdwLiveRouting(intent) {
+  if (!isKmdwWeatherIntent(intent)) {
+    return intent;
+  }
+
+  const executionRequest = intent?.executionRequest ?? {};
+  const constraints = executionRequest.constraints ?? {};
+  const marketDataPolicy = buildKmdwIntentMarketDataPolicy(intent);
+
+  return {
+    ...intent,
+    liveTradingPolicy: {
+      scope: 'kmdw-weather',
+      policyId: KMDW_LIVE_TRADING_POLICY_ID,
+      liveTradingAllowed: true,
+      requiresManualSubmission: false,
+      liveRoutingBlocked: false,
+      blocker: null
+    },
+    executionRequest: {
+      ...executionRequest,
+      requestType: executionRequest.requestType === 'kmdw-paper-signal'
+        ? 'market-buy-intent'
+        : executionRequest.requestType ?? 'market-buy-intent',
+      mode: executionRequest.mode === 'paper-manual-only'
+        ? 'live-routing'
+        : executionRequest.mode,
+      liveRoutingBlockedReason: null,
+      marketDataPolicy,
+      constraints: {
+        ...constraints,
+        kmdwPaperManualOnly: false,
+        requiresManualSubmission: false,
+        liveTradingAllowed: true,
+        automatedExecutionAllowed: true,
+        liveReduceAllowed: true,
+        liveFlattenAllowed: true,
+        automatedExitAllowed: true,
+        liveRoutingBlocked: false,
+        venueOrderSubmissionAllowed: true,
+        pollingMarketDataRequired: true,
+        streamingMarketDataAllowed: false,
+        sourceAuditRequired: true,
+        positionLifecyclePolicyId: KMDW_POSITION_LIFECYCLE_POLICY_ID,
+        marketDataPolicyId: KMDW_MARKET_DATA_POLICY_ID,
+        marketDataTransport: 'polling',
+        policyId: KMDW_LIVE_TRADING_POLICY_ID,
+        policyScope: 'kmdw-weather',
+        manualReviewRequired: false
+      }
+    }
   };
 }
 
@@ -229,56 +282,56 @@ export function buildKmdwIntentPositionLifecycle(intent, { currentProbability = 
   const current = Number.parseFloat(currentProbability ?? intent?.monitoring?.currentProbability ?? NaN);
   let recommendedAction = existing.recommendedAction ?? 'manual-review-required';
   let manualAction = existing.manualAction ?? 'review';
-  let state = existing.state ?? 'paper-review';
+  let state = existing.state ?? 'live-review';
   let urgency = existing.urgency ?? 'base';
-  let instruction = existing.instruction ?? 'Review KMDW paper exposure manually; Probis live routing is disabled.';
+  let instruction = existing.instruction ?? 'Review KMDW live exposure before routing.';
 
   if (Number.isFinite(current) && Number.isFinite(stopLossProbability) && current <= stopLossProbability) {
     recommendedAction = 'manual-flatten-stop-loss';
     manualAction = 'flatten';
-    state = 'paper-flatten-stop-loss';
+    state = 'live-flatten-stop-loss';
     urgency = 'critical-window';
-    instruction = 'KMDW paper stop-loss threshold is breached. Manually flatten outside Probis; automated live exits are disabled.';
+    instruction = 'KMDW stop-loss threshold is breached. Live flattening is available through Probis.';
   } else if (Number.isFinite(current) && Number.isFinite(takeProfitProbability) && current >= takeProfitProbability) {
     recommendedAction = 'manual-reduce-take-profit';
     manualAction = 'reduce';
-    state = 'paper-reduce-take-profit';
+    state = 'live-reduce-take-profit';
     urgency = 'hot-window';
-    instruction = 'KMDW paper take-profit threshold is reached. Manually reduce or flatten outside Probis; automated live exits are disabled.';
+    instruction = 'KMDW take-profit threshold is reached. Live reduce or flatten is available through Probis.';
   }
 
   const monitoringState = manualAction === 'flatten'
-    ? 'kmdw-manual-flatten-required'
+    ? 'kmdw-live-flatten-ready'
     : manualAction === 'reduce'
-      ? 'kmdw-manual-reduce-required'
-      : manualAction === 'close-paper'
-        ? 'kmdw-paper-close-required'
-        : 'kmdw-paper-monitoring';
+      ? 'kmdw-live-reduce-ready'
+      : manualAction === 'close-live'
+        ? 'kmdw-live-close-ready'
+        : 'kmdw-live-monitoring';
 
   return {
     ...existing,
     policyId: KMDW_POSITION_LIFECYCLE_POLICY_ID,
     stationId: 'KMDW',
-    mode: 'paper-manual-only',
+    mode: 'live-routing',
     targetDate: existing.targetDate ?? null,
     dayPhase: existing.dayPhase ?? null,
     state,
     manualAction,
     recommendedAction,
     urgency,
-    livePositionAllowed: false,
-    liveReduceAllowed: false,
-    liveFlattenAllowed: false,
-    automatedExitAllowed: false,
+    livePositionAllowed: true,
+    liveReduceAllowed: true,
+    liveFlattenAllowed: true,
+    automatedExitAllowed: true,
     monitoringState,
     instruction,
     rules: Array.isArray(existing.rules) && existing.rules.length > 0
       ? existing.rules
       : [
-        'KMDW signals are paper/manual-only inside Probis.',
-        'Do not submit automated live entry, reduce, flatten, or exit orders for KMDW.',
-        'Reduce late-afternoon paper exposure manually before late prints.',
-        'Flatten evening paper exposure manually before final print or settlement ambiguity.'
+        'KMDW signals can route live from Probis after manual button confirmation.',
+        'Use current source, quote, and depth checks before submitting live entry orders.',
+        'Reduce late-afternoon exposure before late prints when risk warrants.',
+        'Flatten evening exposure before final print or settlement ambiguity when risk warrants.'
       ],
     evaluatedAt: new Date().toISOString()
   };
@@ -288,7 +341,7 @@ export function hardenTradeIntentLiveRouting(intent) {
   const policy = getTradeIntentLiveTradingPolicy(intent);
 
   if (policy.liveTradingAllowed !== false) {
-    return intent;
+    return enableKmdwLiveRouting(intent);
   }
 
   const constraints = intent?.executionRequest?.constraints ?? {};

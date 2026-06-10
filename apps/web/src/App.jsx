@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useState } from 'react';
 
 import {
   createChicagoTradeIntent,
+  deleteTradeIntent as deleteTradeIntentRequest,
   executeTradeIntent as executeTradeIntentRequest,
   fetchChicagoAlerts,
   fetchChicagoMarketCatalog,
@@ -365,10 +366,11 @@ function parseTradeAmount(value) {
 }
 
 function getRecommendedTradeAmount(row) {
-  return numberOrNull(row?.recommendation?.suggestedSize)
-    ?? numberOrNull(row?.recommendation?.executionPlan?.suggestedNotional)
-    ?? numberOrNull(row?.recommendation?.tradeSuggestion?.amount)
-    ?? null;
+  return [
+    row?.recommendation?.suggestedSize,
+    row?.recommendation?.executionPlan?.suggestedNotional,
+    row?.recommendation?.tradeSuggestion?.amount
+  ].map(numberOrNull).find((value) => typeof value === 'number' && value > 0) ?? null;
 }
 
 function getSharesEstimate(amount, price) {
@@ -384,6 +386,10 @@ function getSharesEstimate(amount, price) {
 
 function formatTradeStatus(intent) {
   return formatStatus(intent?.status ?? 'not prepared');
+}
+
+function isDraftTradeIntent(intent) {
+  return intent?.status === 'draft';
 }
 
 function getTradePolicyCopy(intent) {
@@ -772,6 +778,32 @@ export default function App() {
     }
   }
 
+  async function handleDeleteDraft(intent = tradeIntent) {
+    if (!intent?.id || !isDraftTradeIntent(intent)) {
+      return;
+    }
+
+    setIsManagingTrade(true);
+    setTradeNotice('');
+    setTradeError('');
+
+    try {
+      const deletedIntent = await deleteTradeIntentRequest(intent.id);
+      setTradeIntents((current) => current.filter((candidate) => candidate.id !== intent.id));
+
+      if (tradeIntent?.id === intent.id) {
+        setTradeIntent(null);
+      }
+
+      setTradeNotice(`Deleted draft for ${deletedIntent.outcomeLabel ?? intent.outcomeLabel}.`);
+      await refreshTradeIntents(selectedTradeRow);
+    } catch (deleteError) {
+      setTradeError(deleteError instanceof Error ? deleteError.message : 'Unable to delete draft');
+    } finally {
+      setIsManagingTrade(false);
+    }
+  }
+
   return (
     <main className="app-shell">
       <header className="topbar">
@@ -966,7 +998,7 @@ export default function App() {
                       </label>
                       <article>
                         <span>Recommended</span>
-                        <strong>{formatCurrency(recommendedTradeAmount)}</strong>
+                        <strong>{recommendedTradeAmount ? formatCurrency(recommendedTradeAmount) : 'n/a'}</strong>
                       </article>
                       <article>
                         <span>Shares Est.</span>
@@ -1003,6 +1035,16 @@ export default function App() {
                       >
                         {isSubmittingTrade ? 'Submitting' : 'Submit Trade'}
                       </button>
+                      {isDraftTradeIntent(tradeIntent) ? (
+                        <button
+                          type="button"
+                          className="button button-danger"
+                          onClick={() => void handleDeleteDraft()}
+                          disabled={isPreparingTrade || isSubmittingTrade || isManagingTrade}
+                        >
+                          Delete Draft
+                        </button>
+                      ) : null}
                     </div>
 
                     <div className="trade-status-box">
@@ -1062,6 +1104,16 @@ export default function App() {
                                     Stop
                                   </button>
                                 </>
+                              ) : null}
+                              {isDraftTradeIntent(intent) ? (
+                                <button
+                                  type="button"
+                                  className="inline-action-button inline-action-danger"
+                                  onClick={() => void handleDeleteDraft(intent)}
+                                  disabled={isManagingTrade}
+                                >
+                                  Delete
+                                </button>
                               ) : null}
                             </div>
                           </article>

@@ -579,14 +579,14 @@ test('buildChicagoRecommendations sizes passed entries with fractional Kelly', (
   assert.equal(recommendations.best.riskAdjustedEdge, 0.1095);
   assert.equal(recommendations.best.executionPlan.executable, true);
   assert.equal(recommendations.best.executionPlan.limitPrice, 0.38);
-  assert.equal(recommendations.best.executionPlan.liveTradingAllowed, false);
-  assert.equal(recommendations.best.executionPlan.mode, 'paper-manual-only');
+  assert.equal(recommendations.best.executionPlan.liveTradingAllowed, true);
+  assert.equal(recommendations.best.executionPlan.mode, 'live-routing');
   assert.equal(recommendations.best.executionPlan.blockers.length, 0);
   assert.equal(recommendations.best.executionPlan.desiredContracts, 5.2632);
   assert.equal(recommendations.best.executionPlan.depthCoverage, 19);
 });
 
-test('buildChicagoRecommendations blocks execution when ask depth cannot fill paper size', () => {
+test('buildChicagoRecommendations blocks execution when ask depth cannot fill recommended size', () => {
   const recommendations = buildChicagoRecommendations({
     prediction: {
       confidence: 0.8,
@@ -620,7 +620,7 @@ test('buildChicagoRecommendations blocks execution when ask depth cannot fill pa
   assert.match(recommendations.best.executionPlan.blockers.join('; '), /ask depth/);
 });
 
-test('buildChicagoTradeIntentPayload creates paper-only draft from executable KMDW signal', () => {
+test('buildChicagoTradeIntentPayload creates live-routable draft from executable KMDW signal', () => {
   const recommendation = buildChicagoRecommendations({
     targetDate: '2026-05-20',
     prediction: {
@@ -671,30 +671,34 @@ test('buildChicagoTradeIntentPayload creates paper-only draft from executable KM
 
   assert.equal(payload.status, 'draft');
   assert.equal(payload.confirmedAt, null);
-  assert.equal(payload.executionRequest.constraints.liveTradingAllowed, false);
-  assert.equal(payload.executionRequest.constraints.requiresManualSubmission, true);
-  assert.equal(payload.executionRequest.constraints.liveReduceAllowed, false);
-  assert.equal(payload.executionRequest.constraints.liveFlattenAllowed, false);
-  assert.equal(payload.executionRequest.constraints.automatedExitAllowed, false);
+  assert.equal(payload.executionRequest.constraints.liveTradingAllowed, true);
+  assert.equal(payload.executionRequest.constraints.requiresManualSubmission, false);
+  assert.equal(payload.executionRequest.constraints.liveReduceAllowed, true);
+  assert.equal(payload.executionRequest.constraints.liveFlattenAllowed, true);
+  assert.equal(payload.executionRequest.constraints.automatedExitAllowed, true);
+  assert.equal(payload.executionRequest.constraints.venueOrderSubmissionAllowed, true);
   assert.equal(payload.executionRequest.constraints.pollingMarketDataRequired, true);
   assert.equal(payload.executionRequest.constraints.streamingMarketDataAllowed, false);
   assert.equal(payload.executionRequest.constraints.weatherProviderId, 'kmdw-nws-climdw');
   assert.equal(payload.executionRequest.constraints.marketDataPolicyId, 'kmdw-rest-polling-market-data-v1');
   assert.equal(payload.executionRequest.constraints.marketDataTransport, 'polling');
-  assert.equal(payload.executionRequest.positionLifecycle.policyId, 'kmdw-paper-position-lifecycle-v1');
-  assert.equal(payload.executionRequest.positionLifecycle.liveFlattenAllowed, false);
+  assert.equal(payload.executionRequest.positionLifecycle.policyId, 'kmdw-live-position-lifecycle-v1');
+  assert.equal(payload.executionRequest.positionLifecycle.liveFlattenAllowed, true);
   assert.equal(payload.executionRequest.marketDataPolicy.policyId, 'kmdw-rest-polling-market-data-v1');
   assert.equal(payload.executionRequest.marketDataPolicy.streamingEnabled, false);
   assert.equal(payload.executionRequest.marketDataPolicy.streaming.supported, false);
   assert.equal(intent.status, 'draft');
   assert.equal(intent.confirmedAt, null);
-  assert.equal(intent.executionRequest.requestType, 'kmdw-paper-signal');
+  assert.equal(intent.executionRequest.requestType, 'market-buy-intent');
+  assert.equal(intent.executionRequest.constraints.liveTradingAllowed, true);
+  assert.equal(intent.executionRequest.constraints.requiresManualSubmission, false);
+  assert.equal(intent.executionRequest.constraints.venueOrderSubmissionAllowed, true);
   assert.equal(intent.executionRequest.marketDataPolicy.policyId, 'kmdw-rest-polling-market-data-v1');
   assert.equal(intent.executionRequest.marketDataPolicy.streaming.enabled, false);
   assert.equal(getTradeIntentExecutionBlocker(intent), 'Only confirmed trade intents can be submitted for live trading.');
 });
 
-test('buildKmdwPositionLifecycle recommends manual reduce and flatten windows without live routing', () => {
+test('buildKmdwPositionLifecycle recommends reduce and flatten windows with live routing', () => {
   const lateAfternoon = buildKmdwPositionLifecycle({
     targetDate: '2026-05-20',
     dayPhase: 'late-afternoon',
@@ -723,11 +727,11 @@ test('buildKmdwPositionLifecycle recommends manual reduce and flatten windows wi
   });
 
   assert.equal(lateAfternoon.recommendedAction, 'manual-reduce-before-late-print');
-  assert.equal(lateAfternoon.liveReduceAllowed, false);
-  assert.equal(lateAfternoon.automatedExitAllowed, false);
+  assert.equal(lateAfternoon.liveReduceAllowed, true);
+  assert.equal(lateAfternoon.automatedExitAllowed, true);
   assert.match(lateAfternoon.instruction, /Late-print risk/);
   assert.equal(evening.recommendedAction, 'manual-flatten-before-final-print');
-  assert.equal(evening.liveFlattenAllowed, false);
+  assert.equal(evening.liveFlattenAllowed, true);
   assert.match(evening.instruction, /Final-print risk/);
   assert.match(evening.instruction, /Threshold is knife-edge/);
 });
@@ -783,7 +787,7 @@ test('KMDW market data policy uses polling and explicitly disables streaming', (
   assert.equal(intentPolicy.streaming.websocketClient, false);
 });
 
-test('buildTradeIntentPayload hardens tampered KMDW live-routing fields', () => {
+test('buildTradeIntentPayload enables KMDW live routing fields', () => {
   const intent = buildTradeIntentPayload({
     status: 'confirmed',
     confirmedAt: '2026-05-20T15:00:00.000Z',
@@ -809,29 +813,28 @@ test('buildTradeIntentPayload hardens tampered KMDW live-routing fields', () => 
     }
   });
 
-  assert.equal(intent.executionRequest.requestType, 'kmdw-paper-signal');
-  assert.equal(intent.executionRequest.readyForExecution, false);
-  assert.equal(intent.executionRequest.constraints.kmdwPaperManualOnly, true);
-  assert.equal(intent.executionRequest.constraints.liveTradingAllowed, false);
-  assert.equal(intent.executionRequest.constraints.requiresManualSubmission, true);
-  assert.equal(intent.executionRequest.constraints.venueOrderSubmissionAllowed, false);
-  assert.equal(intent.executionRequest.constraints.liveReduceAllowed, false);
-  assert.equal(intent.executionRequest.constraints.liveFlattenAllowed, false);
-  assert.equal(intent.executionRequest.constraints.automatedExitAllowed, false);
+  assert.equal(intent.executionRequest.requestType, 'market-buy-intent');
+  assert.equal(intent.executionRequest.readyForExecution, true);
+  assert.equal(intent.executionRequest.constraints.kmdwPaperManualOnly, false);
+  assert.equal(intent.executionRequest.constraints.liveTradingAllowed, true);
+  assert.equal(intent.executionRequest.constraints.requiresManualSubmission, false);
+  assert.equal(intent.executionRequest.constraints.venueOrderSubmissionAllowed, true);
+  assert.equal(intent.executionRequest.constraints.liveReduceAllowed, true);
+  assert.equal(intent.executionRequest.constraints.liveFlattenAllowed, true);
+  assert.equal(intent.executionRequest.constraints.automatedExitAllowed, true);
   assert.equal(intent.executionRequest.constraints.pollingMarketDataRequired, true);
   assert.equal(intent.executionRequest.constraints.streamingMarketDataAllowed, false);
   assert.equal(intent.executionRequest.constraints.marketDataPolicyId, 'kmdw-rest-polling-market-data-v1');
   assert.equal(intent.executionRequest.constraints.marketDataTransport, 'polling');
-  assert.equal(intent.executionRequest.positionLifecycle.policyId, 'kmdw-paper-position-lifecycle-v1');
-  assert.equal(intent.executionRequest.positionLifecycle.automatedExitAllowed, false);
   assert.equal(intent.executionRequest.marketDataPolicy.policyId, 'kmdw-rest-polling-market-data-v1');
   assert.equal(intent.executionRequest.marketDataPolicy.streaming.enabled, false);
-  assert.equal(intent.liveTradingPolicy.liveRoutingBlocked, true);
+  assert.equal(intent.liveTradingPolicy.liveRoutingBlocked, false);
+  assert.equal(intent.liveTradingPolicy.liveTradingAllowed, true);
   assert.equal(getTradeIntentLiveTradingPolicy(intent).scope, 'kmdw-weather');
-  assert.match(getTradeIntentExecutionBlocker(intent), /Live trading is intentionally disabled/);
+  assert.equal(getTradeIntentExecutionBlocker(intent), null);
 });
 
-test('getTradeIntentExecutionBlocker blocks confirmed KMDW paper-only intents', () => {
+test('getTradeIntentExecutionBlocker allows confirmed KMDW live intents', () => {
   const intent = buildTradeIntentPayload({
     status: 'confirmed',
     confirmedAt: '2026-05-20T15:00:00.000Z',
@@ -854,10 +857,12 @@ test('getTradeIntentExecutionBlocker blocks confirmed KMDW paper-only intents', 
     }
   });
 
-  assert.match(getTradeIntentExecutionBlocker(intent), /Live trading is intentionally disabled/);
+  assert.equal(intent.executionRequest.constraints.liveTradingAllowed, true);
+  assert.equal(intent.executionRequest.constraints.requiresManualSubmission, false);
+  assert.equal(getTradeIntentExecutionBlocker(intent), null);
 });
 
-test('getTradeIntentLiveRoutingBlocker blocks tampered tracked KMDW exits', () => {
+test('getTradeIntentLiveRoutingBlocker allows tracked KMDW exits', () => {
   const hardened = hardenTradeIntentLiveRouting({
     id: 'tracked-kmdw',
     status: 'tracking',
@@ -886,20 +891,19 @@ test('getTradeIntentLiveRoutingBlocker blocks tampered tracked KMDW exits', () =
     }
   });
 
-  assert.equal(hardened.executionRequest.readyForExecution, false);
-  assert.equal(hardened.executionRequest.constraints.liveRoutingBlocked, true);
-  assert.equal(hardened.executionRequest.constraints.liveReduceAllowed, false);
-  assert.equal(hardened.executionRequest.constraints.liveFlattenAllowed, false);
-  assert.equal(hardened.executionRequest.constraints.automatedExitAllowed, false);
+  assert.equal(hardened.executionRequest.readyForExecution, true);
+  assert.equal(hardened.executionRequest.constraints.liveRoutingBlocked, false);
+  assert.equal(hardened.executionRequest.constraints.liveReduceAllowed, true);
+  assert.equal(hardened.executionRequest.constraints.liveFlattenAllowed, true);
+  assert.equal(hardened.executionRequest.constraints.automatedExitAllowed, true);
   assert.equal(hardened.executionRequest.constraints.pollingMarketDataRequired, true);
   assert.equal(hardened.executionRequest.constraints.streamingMarketDataAllowed, false);
   assert.equal(hardened.executionRequest.constraints.marketDataPolicyId, 'kmdw-rest-polling-market-data-v1');
   assert.equal(hardened.executionRequest.constraints.marketDataTransport, 'polling');
-  assert.equal(hardened.executionRequest.positionLifecycle.policyId, 'kmdw-paper-position-lifecycle-v1');
   assert.equal(hardened.executionRequest.marketDataPolicy.policyId, 'kmdw-rest-polling-market-data-v1');
   assert.equal(hardened.executionRequest.marketDataPolicy.streamingEnabled, false);
   assert.equal(hardened.executionRequest.marketDataPolicy.streaming.supported, false);
-  assert.match(getTradeIntentLiveRoutingBlocker(hardened), /Live trading is intentionally disabled/);
+  assert.equal(getTradeIntentLiveRoutingBlocker(hardened), null);
 });
 
 test('summarizeChicagoBacktestRows scores settled bucket recommendations', () => {

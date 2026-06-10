@@ -22,8 +22,7 @@ function getTradeIntentRouteErrorStatus(message, fallbackStatus = 400) {
   }
 
   if (
-    message.includes('Live trading is intentionally disabled')
-    || message.includes('Live trading is disabled')
+    message.includes('Live trading is disabled')
     || message.includes('requires manual submission')
     || message.includes('Live order routing is blocked')
   ) {

@@ -189,6 +189,17 @@ h2 {
   background: #17221b;
 }
 
+.button-danger {
+  border-color: rgba(251, 113, 133, 0.42);
+  background: rgba(127, 29, 29, 0.28);
+  color: #fecdd3;
+}
+
+.button-danger:hover {
+  border-color: rgba(251, 113, 133, 0.68);
+  background: rgba(127, 29, 29, 0.42);
+}
+
 .inline-action-button {
   min-height: 30px;
   border: 1px solid var(--border-strong);
@@ -506,7 +517,7 @@ table {
 
 .trade-amount-grid {
   display: grid;
-  grid-template-columns: minmax(0, 1.1fr) repeat(3, minmax(76px, 0.7fr));
+  grid-template-columns: repeat(2, minmax(0, 1fr));
   gap: 8px;
 }
 
@@ -524,7 +535,10 @@ table {
   font-size: 0.72rem;
   font-weight: 800;
   letter-spacing: 0.06em;
+  line-height: 1.15;
   text-transform: uppercase;
+  white-space: normal;
+  overflow-wrap: anywhere;
 }
 
 .trade-amount-grid input {

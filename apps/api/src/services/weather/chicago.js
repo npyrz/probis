@@ -40,7 +40,7 @@ const MIN_EXECUTION_COST = 0.005;
 const MAX_EXECUTION_COST = 0.08;
 const DEFAULT_MARKET_CATALOG_DAYS_AHEAD = 4;
 const MAX_MARKET_CATALOG_DAYS_AHEAD = 14;
-const KMDW_POSITION_LIFECYCLE_POLICY_ID = 'kmdw-paper-position-lifecycle-v1';
+const KMDW_POSITION_LIFECYCLE_POLICY_ID = 'kmdw-live-position-lifecycle-v1';
 const KMDW_MARKET_DATA_POLICY_ID = 'kmdw-rest-polling-market-data-v1';
 const MONTH_INDEX = new Map([
   ['jan', 0],
@@ -1673,86 +1673,86 @@ export function buildKmdwPositionLifecycle({
   const sourceStale = prediction?.sourceFreshness?.isStale === true;
   const phaseActions = {
     future: {
-      state: 'paper-no-position',
+      state: 'no-live-position',
       manualAction: 'wait',
       recommendedAction: 'wait-for-live-climate-day',
       urgency: 'low',
       instruction: 'No KMDW position should be opened before the target climate day.'
     },
     morning: {
-      state: 'paper-review',
-      manualAction: 'hold-or-skip',
+      state: 'live-review',
+      manualAction: 'review-entry',
       recommendedAction: 'manual-review-only',
       urgency: 'base',
-      instruction: 'Review KMDW observation freshness and market depth manually; no live routing is allowed.'
+      instruction: 'Review KMDW observation freshness and market depth before live routing.'
     },
     midday: {
-      state: 'paper-manage',
+      state: 'live-manage',
       manualAction: 'hold-or-reduce',
       recommendedAction: 'manual-risk-review',
       urgency: 'base',
-      instruction: 'Manage any paper exposure manually; reduce only outside Probis after source and quote review.'
+      instruction: 'Manage KMDW exposure with live routing available after manual button confirmation.'
     },
     'late-afternoon': {
-      state: 'paper-reduce-window',
+      state: 'live-reduce-window',
       manualAction: 'reduce',
       recommendedAction: 'manual-reduce-before-late-print',
       urgency: 'hot-window',
-      instruction: 'Late-print risk is elevated. Manually reduce paper exposure before the next KMDW observation or CLIMDW update; Probis will not submit live orders.'
+      instruction: 'Late-print risk is elevated. Consider reducing live exposure before the next KMDW observation or CLIMDW update.'
     },
     evening: {
-      state: 'paper-flatten-window',
+      state: 'live-flatten-window',
       manualAction: 'flatten',
       recommendedAction: 'manual-flatten-before-final-print',
       urgency: 'critical-window',
-      instruction: 'Final-print risk is elevated. Manually flatten paper exposure before settlement ambiguity increases; Probis will not submit live orders.'
+      instruction: 'Final-print risk is elevated. Consider flattening live exposure before settlement ambiguity increases.'
     },
     complete: {
-      state: 'paper-close-after-settlement',
-      manualAction: 'close-paper',
+      state: 'live-close-after-settlement',
+      manualAction: 'close-live',
       recommendedAction: 'close-paper-position-after-climdw',
       urgency: 'settlement',
-      instruction: 'The KMDW climate day is complete. Close or reconcile paper exposure after CLIMDW settlement; no live orders are permitted.'
+      instruction: 'The KMDW climate day is complete. Close or reconcile live exposure after CLIMDW settlement.'
     }
   };
   const base = phaseActions[activePhase] ?? {
-    state: 'paper-review',
+    state: 'live-review',
     manualAction: 'review',
     recommendedAction: 'manual-review-required',
     urgency: 'base',
-    instruction: 'Review KMDW paper exposure manually; Probis live routing is disabled.'
+    instruction: 'Review KMDW live exposure before routing.'
   };
   const thresholdAdjustment = thresholdStatus === 'knife-edge'
-    ? ' Threshold is knife-edge; prefer reducing or flattening paper exposure manually.'
+    ? ' Threshold is knife-edge; prefer reducing or flattening exposure.'
     : thresholdStatus === 'contested'
-      ? ' Threshold is contested; avoid adding paper exposure without manual review.'
+      ? ' Threshold is contested; avoid adding exposure without manual review.'
       : '';
   const freshnessAdjustment = sourceStale
-    ? ' Source freshness is stale; do not add exposure and review any paper position manually.'
+    ? ' Source freshness is stale; do not add exposure without review.'
     : '';
 
   return {
     policyId: KMDW_POSITION_LIFECYCLE_POLICY_ID,
     stationId: CHICAGO_STATION.stationId,
-    mode: 'paper-manual-only',
+    mode: 'live-routing',
     targetDate: activeTargetDate,
     dayPhase: activePhase,
     state: base.state,
     manualAction: base.manualAction,
     recommendedAction: base.recommendedAction,
     urgency: base.urgency,
-    livePositionAllowed: false,
-    liveReduceAllowed: false,
-    liveFlattenAllowed: false,
-    automatedExitAllowed: false,
+    livePositionAllowed: true,
+    liveReduceAllowed: true,
+    liveFlattenAllowed: true,
+    automatedExitAllowed: true,
     timeToResolutionMs: typeof timeToResolutionMs === 'number' ? timeToResolutionMs : null,
     generatedAt,
     instruction: `${base.instruction}${thresholdAdjustment}${freshnessAdjustment}`,
     rules: [
-      'KMDW signals are paper/manual-only inside Probis.',
-      'Do not submit automated live entry, reduce, flatten, or exit orders for KMDW.',
-      'Late-afternoon paper exposure should be manually reduced before late prints.',
-      'Evening paper exposure should be manually flattened before final print or settlement ambiguity.'
+      'KMDW signals can route live from Probis after manual button confirmation.',
+      'Use current source, quote, and depth checks before submitting live entry orders.',
+      'Late-afternoon exposure should be reviewed before late prints.',
+      'Evening exposure should be reviewed before final print or settlement ambiguity.'
     ]
   };
 }
@@ -2434,12 +2434,12 @@ function buildExecutionPlan({
   });
 
   return {
-    mode: 'paper-manual-only',
+    mode: 'live-routing',
     venue: 'polymarket-us',
     side: 'buy-yes',
     orderType: 'limit',
     executable,
-    liveTradingAllowed: false,
+    liveTradingAllowed: executable,
     canPaperSignal: passed === true,
     limitPrice,
     maxEntryPrice,
@@ -2464,7 +2464,7 @@ function buildExecutionPlan({
         : 'base',
     blockers,
     instruction: executable
-      ? 'Paper signal only: use a limit no higher than limitPrice after manual source and quote review.'
+      ? 'Live route allowed from Probis after manual button confirmation; use a limit no higher than limitPrice.'
       : 'Do not route: refresh quote/source data and wait for all execution blockers to clear.'
   };
 }
@@ -2606,7 +2606,7 @@ export function buildChicagoRecommendations(snapshot) {
       fractionalKellyShrink: FRACTIONAL_KELLY_SHRINK,
       maxStakeFraction: MAX_STAKE_FRACTION,
       researchBankroll: DEFAULT_RESEARCH_BANKROLL_USD,
-      mode: 'paper-manual-only',
+      mode: 'live-routing',
       marketDataPolicy
     },
     recommendations,
@@ -2711,7 +2711,8 @@ export function buildChicagoTradeIntentPayload(snapshot, recommendation = snapsh
     tradeSuggestion,
     executionRequest: {
       ...recommendation.executionPlan,
-      requestType: 'kmdw-paper-signal',
+      requestType: 'market-buy-intent',
+      mode: 'live-routing',
       readyForExecution: false,
       preparedAt: new Date().toISOString(),
       weatherProvider: snapshot.provider ?? null,
@@ -2721,14 +2722,17 @@ export function buildChicagoTradeIntentPayload(snapshot, recommendation = snapsh
       }),
       marketDataPolicy,
       constraints: {
-        requiresManualSubmission: true,
+        requiresManualSubmission: false,
         credentialsConfigured: true,
-        liveTradingAllowed: false,
-        automatedExecutionAllowed: false,
-        liveReduceAllowed: false,
-        liveFlattenAllowed: false,
-        automatedExitAllowed: false,
-        kmdwPaperManualOnly: true,
+        liveTradingAllowed: true,
+        automatedExecutionAllowed: true,
+        liveReduceAllowed: true,
+        liveFlattenAllowed: true,
+        automatedExitAllowed: true,
+        kmdwPaperManualOnly: false,
+        liveRoutingBlocked: false,
+        venueOrderSubmissionAllowed: true,
+        manualReviewRequired: false,
         pollingMarketDataRequired: true,
         streamingMarketDataAllowed: false,
         sourceVerified: recommendation.sourceVerification?.verified === true,
@@ -2742,7 +2746,7 @@ export function buildChicagoTradeIntentPayload(snapshot, recommendation = snapsh
       }
     },
     monitoring: null,
-    analysis: 'Generated from the KMDW weather tracker as a paper/manual-only signal.',
+    analysis: 'Generated from the KMDW weather tracker as a live-routable signal.',
     generatedAt: new Date().toISOString()
   };
 }
