@@ -215,6 +215,89 @@ export async function fetchChicagoSignalDrift(date) {
   return data.drift;
 }
 
+export async function backfillChicagoArchive(options = {}) {
+  const data = await requestJson('/api/weather/chicago/archive/backfill', {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json'
+    },
+    body: JSON.stringify({
+      dateFrom: options.dateFrom,
+      dateTo: options.dateTo
+    })
+  });
+
+  return data;
+}
+
+export async function backfillChicagoForecastVintages(options = {}) {
+  const data = await requestJson('/api/weather/chicago/forecast-vintages/backfill', {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json'
+    },
+    body: JSON.stringify({
+      dateFrom: options.dateFrom,
+      dateTo: options.dateTo,
+      leadDays: options.leadDays,
+      model: options.model
+    })
+  });
+
+  return data;
+}
+
+export async function backfillChicagoHistoricalBoards(options = {}) {
+  const data = await requestJson('/api/weather/chicago/historical-boards/backfill', {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json'
+    },
+    body: JSON.stringify({
+      dateFrom: options.dateFrom,
+      dateTo: options.dateTo,
+      fidelityMinutes: options.fidelityMinutes,
+      includeTrades: options.includeTrades
+    })
+  });
+
+  return data;
+}
+
+export async function trainChicagoWeatherModel(options = {}) {
+  const data = await requestJson('/api/weather/chicago/model/train', {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json'
+    },
+    body: JSON.stringify({
+      dateFrom: options.dateFrom,
+      dateTo: options.dateTo,
+      minSamples: options.minSamples,
+      minClassSamples: options.minClassSamples,
+      rollingFolds: options.rollingFolds,
+      holdoutFraction: options.holdoutFraction
+    })
+  });
+
+  return data.training;
+}
+
+export async function evaluateChicagoWeatherModel(options = {}) {
+  const data = await requestJson('/api/weather/chicago/model/evaluate', {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json'
+    },
+    body: JSON.stringify({
+      dateFrom: options.dateFrom,
+      dateTo: options.dateTo
+    })
+  });
+
+  return data.evaluation;
+}
+
 export async function refreshOpportunityScanner() {
   return fetchOpportunityScanner({ refresh: true, wait: true });
 }

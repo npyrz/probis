@@ -716,6 +716,154 @@ table {
   font-weight: 700;
 }
 
+.modal-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 20;
+  display: grid;
+  place-items: center;
+  overflow-y: auto;
+  background: rgba(2, 6, 4, 0.76);
+  padding: 22px;
+}
+
+.training-modal {
+  width: min(760px, 100%);
+  max-height: min(780px, calc(100vh - 44px));
+  overflow-y: auto;
+  border: 1px solid var(--border-strong);
+  border-radius: 8px;
+  background: linear-gradient(180deg, #17211a, #101611);
+  box-shadow: 0 28px 70px rgba(0, 0, 0, 0.48), inset 0 1px 0 rgba(255, 255, 255, 0.04);
+  padding: 16px;
+}
+
+.training-modal-header,
+.training-actions,
+.training-step div {
+  display: flex;
+  align-items: center;
+}
+
+.training-modal-header {
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 14px;
+}
+
+.training-form-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 10px;
+}
+
+.training-field,
+.training-check {
+  min-width: 0;
+}
+
+.training-field {
+  display: grid;
+  gap: 6px;
+}
+
+.training-field span,
+.training-check span,
+.training-step span {
+  color: var(--muted);
+  font-size: 0.72rem;
+  font-weight: 800;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+
+.training-field input,
+.training-field select {
+  width: 100%;
+  min-height: 38px;
+  border: 1px solid var(--border-strong);
+  border-radius: 8px;
+  background: #0b100d;
+  color: var(--text-strong);
+  padding: 7px 9px;
+  font-weight: 800;
+}
+
+.training-check {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 38px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: rgba(255, 255, 255, 0.03);
+  padding: 9px 10px;
+}
+
+.training-check input {
+  width: 16px;
+  height: 16px;
+  accent-color: var(--accent);
+}
+
+.training-actions {
+  justify-content: flex-end;
+  margin: 14px 0;
+}
+
+.training-step-list {
+  display: grid;
+  gap: 8px;
+  margin-top: 12px;
+}
+
+.training-step {
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: rgba(255, 255, 255, 0.032);
+  padding: 10px;
+}
+
+.training-step div {
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.training-step strong {
+  color: var(--text-strong);
+}
+
+.training-step p {
+  margin: 6px 0 0;
+  color: var(--muted);
+  font-weight: 700;
+}
+
+.training-step-running {
+  border-color: rgba(110, 231, 218, 0.46);
+}
+
+.training-step-running span {
+  color: var(--accent-strong);
+}
+
+.training-step-done {
+  border-color: rgba(74, 222, 128, 0.3);
+}
+
+.training-step-done span {
+  color: #bbf7d0;
+}
+
+.training-step-failed {
+  border-color: rgba(251, 113, 133, 0.42);
+}
+
+.training-step-failed span,
+.training-step-failed p {
+  color: #fecdd3;
+}
+
 @media (max-width: 1320px) {
   .summary-grid {
     grid-template-columns: repeat(4, minmax(0, 1fr));
@@ -753,6 +901,10 @@ table {
   .trade-amount-grid {
     grid-template-columns: repeat(2, minmax(0, 1fr));
   }
+
+  .training-form-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
 }
 
 @media (max-width: 600px) {
@@ -775,6 +927,10 @@ table {
   }
 
   .trade-amount-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .training-form-grid {
     grid-template-columns: 1fr;
   }
 
