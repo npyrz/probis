@@ -91,6 +91,7 @@ function normalizeAlertStatusQuery(value) {
 }
 
 function sendError(response, error, fallbackMessage) {
+  console.error('[probis] weather route error', error);
   response.status(502).json({
     ok: false,
     error: error instanceof Error ? error.message : fallbackMessage

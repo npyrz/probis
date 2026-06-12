@@ -1,6 +1,8 @@
 import { randomUUID } from 'node:crypto';
+import { createReadStream } from 'node:fs';
 import fs from 'node:fs/promises';
 import path from 'node:path';
+import { createInterface } from 'node:readline';
 
 import {
   getLocalAnalyticsStoreStatus,
@@ -727,28 +729,64 @@ async function writeJsonl(env, fileName, rows) {
   await fs.writeFile(path.join(directory, fileName), content ? `${content}\n` : '', 'utf8');
 }
 
-async function readJsonl(env, fileName) {
+function parseJsonlLine(line) {
   try {
-    const content = await fs.readFile(path.join(getWeatherDataDir(env), fileName), 'utf8');
-    return content
-      .split('\n')
-      .map((line) => line.trim())
-      .filter(Boolean)
-      .map((line) => {
-        try {
-          return JSON.parse(line);
-        } catch {
-          return null;
-        }
-      })
-      .filter(Boolean);
+    return JSON.parse(line);
+  } catch {
+    return null;
+  }
+}
+
+async function forEachJsonlRecord(env, fileName, onRecord) {
+  const filePath = path.join(getWeatherDataDir(env), fileName);
+
+  try {
+    await fs.access(filePath);
   } catch (error) {
     if (error?.code === 'ENOENT') {
-      return [];
+      return;
     }
 
     throw error;
   }
+
+  try {
+    const stream = createReadStream(filePath, { encoding: 'utf8' });
+    const lines = createInterface({
+      input: stream,
+      crlfDelay: Infinity
+    });
+
+    for await (const line of lines) {
+      const text = line.trim();
+
+      if (!text) {
+        continue;
+      }
+
+      const record = parseJsonlLine(text);
+
+      if (record) {
+        await onRecord(record);
+      }
+    }
+  } catch (error) {
+    if (error?.code === 'ENOENT') {
+      return;
+    }
+
+    throw error;
+  }
+}
+
+async function readJsonl(env, fileName) {
+  const records = [];
+
+  await forEachJsonlRecord(env, fileName, (record) => {
+    records.push(record);
+  });
+
+  return records;
 }
 
 async function persistChicagoSnapshotToFiles(env, snapshot, reason = null) {
@@ -773,7 +811,7 @@ async function persistChicagoSnapshotToFiles(env, snapshot, reason = null) {
 
 function snapshotRows(records, date = null) {
   return records
-    .map((record) => record?.snapshot ?? null)
+    .map((record) => record?.snapshot ?? record ?? null)
     .filter(Boolean)
     .filter((snapshot) => !date || snapshot.targetDate === date)
     .sort((left, right) => String(right.generatedAt ?? '').localeCompare(String(left.generatedAt ?? '')));
@@ -807,6 +845,87 @@ function marketSnapshotRows(snapshots) {
     captured_at: snapshot.generatedAt ?? null,
     raw_json: bucket
   })));
+}
+
+function insertLatestSnapshot(snapshots, snapshot, limit) {
+  snapshots.push(snapshot);
+  snapshots.sort((left, right) => String(right.generatedAt ?? '').localeCompare(String(left.generatedAt ?? '')));
+
+  if (Number.isInteger(limit) && limit > 0 && snapshots.length > limit) {
+    snapshots.length = limit;
+  }
+}
+
+async function getLatestSnapshotTargetDateFromJsonl(env) {
+  let latestTargetDate = null;
+  let latestGeneratedAt = '';
+
+  await forEachJsonlRecord(env, CHICAGO_SNAPSHOTS_FILE, (record) => {
+    const snapshot = record?.snapshot;
+    const targetDate = normalizeDateBound(snapshot?.targetDate);
+    const generatedAt = String(snapshot?.generatedAt ?? '');
+
+    if (!targetDate || !generatedAt) {
+      return;
+    }
+
+    if (!latestGeneratedAt || generatedAt > latestGeneratedAt) {
+      latestGeneratedAt = generatedAt;
+      latestTargetDate = targetDate;
+    }
+  });
+
+  return latestTargetDate;
+}
+
+async function readLatestSnapshotRowsFromJsonl(env, { date = null, limit = 50 } = {}) {
+  const normalizedDate = normalizeDateBound(date) ?? await getLatestSnapshotTargetDateFromJsonl(env);
+  const normalizedLimit = Number.parseInt(String(limit ?? ''), 10);
+  const safeLimit = Number.isInteger(normalizedLimit) && normalizedLimit > 0 ? normalizedLimit : null;
+  const snapshots = [];
+
+  if (!normalizedDate) {
+    return [];
+  }
+
+  await forEachJsonlRecord(env, CHICAGO_SNAPSHOTS_FILE, (record) => {
+    const snapshot = record?.snapshot;
+
+    if (!snapshot || snapshot.targetDate !== normalizedDate) {
+      return;
+    }
+
+    insertLatestSnapshot(snapshots, snapshot, safeLimit);
+  });
+
+  return snapshotRows(snapshots, normalizedDate);
+}
+
+async function readMarketSnapshotRowsFromJsonl(env, { date = null } = {}) {
+  const normalizedDate = normalizeDateBound(date) ?? await getLatestSnapshotTargetDateFromJsonl(env);
+  const rows = [];
+
+  if (!normalizedDate) {
+    return {
+      date: null,
+      rows
+    };
+  }
+
+  await forEachJsonlRecord(env, CHICAGO_SNAPSHOTS_FILE, (record) => {
+    const snapshot = record?.snapshot;
+
+    if (!snapshot || snapshot.targetDate !== normalizedDate) {
+      return;
+    }
+
+    rows.push(...marketSnapshotRows([snapshot]));
+  });
+
+  return {
+    date: normalizedDate,
+    rows
+  };
 }
 
 function normalizeAuditDate(value) {
@@ -1429,7 +1548,7 @@ async function getChicagoModelTrainingRowsFromFiles(env, init, { dateFrom = null
 }
 
 async function getChicagoHistoryFromFiles(env, init, { date } = {}) {
-  const snapshots = snapshotRows(await readJsonl(env, CHICAGO_SNAPSHOTS_FILE), date).slice(0, 50);
+  const snapshots = await readLatestSnapshotRowsFromJsonl(env, { date, limit: 50 });
   const marketSnapshots = marketSnapshotRows(snapshots).slice(0, 200);
   const observations = snapshots
     .flatMap((snapshot) => Array.isArray(snapshot?.observations?.observations) ? snapshot.observations.observations : [])
@@ -1480,9 +1599,8 @@ async function getChicagoHistoryFromFiles(env, init, { date } = {}) {
 }
 
 async function getChicagoSourceAuditFromFiles(env, init, { date } = {}) {
-  const normalizedDate = normalizeDateBound(date);
-  const snapshots = snapshotRows(await readJsonl(env, CHICAGO_SNAPSHOTS_FILE), normalizedDate);
-  const summary = summarizeChicagoSourceAuditRows(marketSnapshotRows(snapshots));
+  const snapshotRowsResult = await readMarketSnapshotRowsFromJsonl(env, { date });
+  const summary = summarizeChicagoSourceAuditRows(snapshotRowsResult.rows);
 
   return {
     enabled: true,
@@ -1490,7 +1608,7 @@ async function getChicagoSourceAuditFromFiles(env, init, { date } = {}) {
     databaseEnabled: false,
     reason: init.reason,
     ...summary,
-    date: normalizedDate
+    date: snapshotRowsResult.date
   };
 }
 
@@ -2449,12 +2567,11 @@ export function summarizeChicagoSignalDriftSnapshots(snapshots) {
 }
 
 async function getChicagoSignalDriftFromFiles(env, init, { date } = {}) {
-  const records = await readJsonl(env, CHICAGO_SNAPSHOTS_FILE);
-  const latestDate = snapshotRows(records)[0]?.targetDate ?? null;
-  const normalizedDate = normalizeDateBound(date) ?? latestDate;
-  const snapshots = normalizedDate
-    ? snapshotRows(records, normalizedDate)
-    : snapshotRows(records);
+  const normalizedDate = normalizeDateBound(date) ?? await getLatestSnapshotTargetDateFromJsonl(env);
+  const snapshots = await readLatestSnapshotRowsFromJsonl(env, {
+    date: normalizedDate,
+    limit: 2
+  });
   const summary = summarizeChicagoSignalDriftSnapshots(snapshots);
 
   return {
