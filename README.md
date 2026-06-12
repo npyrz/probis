@@ -20,41 +20,11 @@ Non-weather markets are out of scope for now.
 - Treats wide spread as a yellow warning, not a hard blocker.
 - Persists weather snapshots, historical market boards, official actuals, forecast vintages, alerts, model artifacts, and trade intent state locally.
 
-<<<<<<< weather
-## Current UI
-=======
 ## Demo
+
 https://drive.google.com/file/d/1P1RQcepRdpn_mv2iPgkjZIttwSmiNifE/view?usp=sharing
 
-## Quick Start
-
-You only need Node.js 20+, Ollama, and the default local API URL for a first run.
-
-1. Install dependencies.
-
-```bash
-npm install
-```
-
-2. Copy `.env.example` to `.env`.
-
-```bash
-cp .env.example .env
-```
-
-3. Start Ollama and make sure a model is available.
-
-```bash
-ollama serve
-ollama list
-```
-
-4. Start the API and web app.
-
-```bash
-npm run dev
-```
->>>>>>> main
+## Current UI
 
 The web app is centered on one workflow: finding and managing Chicago weather bets.
 
@@ -331,12 +301,8 @@ Postgres can be used where configured, but it is optional for local weather deve
 
 ## Current Limitations
 
-<<<<<<< weather
 - Only KMDW / Chicago Midway daily high-temperature markets are supported.
 - Open and future market visibility depends on what the Polymarket US gateway returns.
 - Market data tracking uses REST polling; streaming is not implemented for KMDW.
 - Model quality depends on how much archive, forecast vintage, and market-board history has been backfilled.
 - This is trading software, not financial advice. Review source data and quotes before submitting orders.
-=======
-That keeps the hot path grounded in market data and code while still giving the operator a fast interface for review, execution, and live monitoring.
->>>>>>> main
