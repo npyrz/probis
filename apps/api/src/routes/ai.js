@@ -4,6 +4,7 @@ import { getEnv } from '../config/env.js';
 import { combineDecisionRecommendation } from '../services/decision-engine.js';
 import { buildDecisionEnginePrompt, buildEventAnalysisPrompt, getOllamaStatus, runAiJson, runAiTest } from '../services/ollama.js';
 import { resolveEventAnalytics } from '../services/polymarket/event-data.js';
+import { UnsupportedMarketError } from '../services/polymarket/gamma.js';
 
 const router = Router();
 
@@ -52,23 +53,32 @@ router.post('/api/ai/analyze-event', async (request, response) => {
     }
 
     const forceRefresh = request.body?.refresh === true;
+    const tradeAmount = Number.parseFloat(request.body?.tradeAmount ?? request.body?.buyingAmount);
+    const amountContext = Number.isFinite(tradeAmount) && tradeAmount > 0
+      ? { tradeAmount }
+      : {};
     const analytics = await resolveEventAnalytics(env, input, { forceRefresh });
     const prompt = buildEventAnalysisPrompt(analytics.event, analytics.aggregation, analytics.statisticalModel);
     const result = await runAiTest(env, prompt);
-    const decisionPrompt = buildDecisionEnginePrompt(analytics.event, analytics.aggregation, analytics.statisticalModel);
+    const decisionPrompt = buildDecisionEnginePrompt(
+      analytics.event,
+      analytics.aggregation,
+      analytics.statisticalModel,
+      amountContext
+    );
     const decisionResult = await runAiJson(env, decisionPrompt);
     const decisionEngine = combineDecisionRecommendation(
       analytics.event,
       analytics.aggregation,
       analytics.statisticalModel,
       decisionResult.parsed,
-      decisionResult.response
+      decisionResult.response,
+      amountContext
     );
 
     response.json({
       ok: true,
       event: analytics.event,
-      sportsSync: analytics.sportsSync ?? null,
       aggregation: analytics.aggregation,
       statisticalModel: analytics.statisticalModel,
       analysis: result.response,
@@ -77,7 +87,7 @@ router.post('/api/ai/analyze-event', async (request, response) => {
       requestedModel: result.requestedModel
     });
   } catch (error) {
-    response.status(502).json({
+    response.status(error instanceof UnsupportedMarketError ? 400 : 502).json({
       ok: false,
       error: error instanceof Error ? error.message : 'Unable to analyze event'
     });

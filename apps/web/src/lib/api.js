@@ -76,6 +76,149 @@ export async function fetchActiveEvents(limit = 5) {
   return data.events;
 }
 
+export async function fetchOpportunityScanner(options = {}) {
+  const query = new URLSearchParams();
+
+  if (options.refresh) {
+    query.set('refresh', 'true');
+  }
+
+  if (options.wait) {
+    query.set('wait', 'true');
+  }
+
+  const suffix = query.size > 0 ? `?${query.toString()}` : '';
+  const data = await requestJson(`/api/polymarket/scanner${suffix}`);
+  return data.scanner;
+}
+
+export async function fetchPaperAccuracy() {
+  const data = await requestJson('/api/polymarket/paper-accuracy');
+  return data.accuracy;
+}
+
+export async function fetchChicagoSnapshot(date) {
+  const query = date ? `?date=${encodeURIComponent(date)}` : '';
+  const data = await requestJson(`/api/weather/chicago/snapshot${query}`);
+  return data.snapshot;
+}
+
+export async function repriceChicagoMarkets(date) {
+  const data = await requestJson('/api/weather/chicago/reprice', {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json'
+    },
+    body: JSON.stringify(date ? { date } : {})
+  });
+  return data.snapshot;
+}
+
+export async function createChicagoTradeIntent(options = {}) {
+  const data = await requestJson('/api/weather/chicago/intents', {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json'
+    },
+    body: JSON.stringify({
+      date: options.date,
+      conditionId: options.conditionId,
+      tradeAmount: options.tradeAmount
+    })
+  });
+  return data.intent;
+}
+
+export async function fetchChicagoMarketCatalog(options = {}) {
+  const query = new URLSearchParams();
+
+  if (options.dateFrom) {
+    query.set('dateFrom', options.dateFrom);
+  }
+
+  if (options.dateTo) {
+    query.set('dateTo', options.dateTo);
+  }
+
+  if (options.daysAhead !== undefined && options.daysAhead !== null) {
+    query.set('daysAhead', String(options.daysAhead));
+  }
+
+  if (options.openOnly !== undefined && options.openOnly !== null) {
+    query.set('openOnly', String(options.openOnly));
+  }
+
+  if (options.includeOpenOutsideDateRange !== undefined && options.includeOpenOutsideDateRange !== null) {
+    query.set('includeOpenOutsideDateRange', String(options.includeOpenOutsideDateRange));
+  }
+
+  const suffix = query.size > 0 ? `?${query.toString()}` : '';
+  const data = await requestJson(`/api/weather/chicago/markets${suffix}`);
+  return data.catalog ?? data.markets;
+}
+
+export async function fetchChicagoRecommendations(date) {
+  const query = date ? `?date=${encodeURIComponent(date)}` : '';
+  const data = await requestJson(`/api/recommendations/chicago${query}`);
+  return data;
+}
+
+export async function fetchChicagoBacktest(options = {}) {
+  const query = new URLSearchParams();
+
+  if (options.dateFrom) {
+    query.set('dateFrom', options.dateFrom);
+  }
+
+  if (options.dateTo) {
+    query.set('dateTo', options.dateTo);
+  }
+
+  if (options.minEdge !== undefined && options.minEdge !== null) {
+    query.set('minEdge', String(options.minEdge));
+  }
+
+  const suffix = query.size > 0 ? `?${query.toString()}` : '';
+  const data = await requestJson(`/api/weather/chicago/backtest${suffix}`);
+  return data.backtest;
+}
+
+export async function fetchChicagoSourceAudit(date) {
+  const query = date ? `?date=${encodeURIComponent(date)}` : '';
+  const data = await requestJson(`/api/weather/chicago/source-audit${query}`);
+  return data.audit;
+}
+
+export async function fetchChicagoAlerts(date, options = {}) {
+  const query = new URLSearchParams();
+
+  if (date) {
+    query.set('date', date);
+  }
+
+  if (options.status) {
+    query.set('status', options.status);
+  }
+
+  if (options.limit !== undefined && options.limit !== null) {
+    query.set('limit', String(options.limit));
+  }
+
+  const suffix = query.size > 0 ? `?${query.toString()}` : '';
+  const data = await requestJson(`/api/weather/chicago/alerts${suffix}`);
+  return data.alerts;
+}
+
+export async function fetchChicagoSignalDrift(date) {
+  const query = date ? `?date=${encodeURIComponent(date)}` : '';
+  const data = await requestJson(`/api/weather/chicago/drift${query}`);
+  return data.drift;
+}
+
+export async function refreshOpportunityScanner() {
+  return fetchOpportunityScanner({ refresh: true, wait: true });
+}
+
 export async function resolveEvent(input) {
   const data = await requestJson(
     `/api/polymarket/events/resolve?input=${encodeURIComponent(input)}`
@@ -89,12 +232,22 @@ export async function resolveEventAggregation(input, options = {}) {
 }
 
 export async function analyzeEvent(input, options = {}) {
+  const tradeAmount = Number.parseFloat(options.tradeAmount);
+  const payload = {
+    input,
+    refresh: options.refresh === true
+  };
+
+  if (Number.isFinite(tradeAmount) && tradeAmount > 0) {
+    payload.tradeAmount = tradeAmount;
+  }
+
   const data = await requestJson('/api/ai/analyze-event', {
     method: 'POST',
     headers: {
       'Content-Type': 'application/json'
     },
-    body: JSON.stringify({ input, refresh: options.refresh === true })
+    body: JSON.stringify(payload)
   });
 
   return data;

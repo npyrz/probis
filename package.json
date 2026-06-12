@@ -15,13 +15,17 @@
     "dev:web": "npm run dev --workspace @probis/web",
     "build": "npm run build --workspaces",
     "start": "npm run start --workspace @probis/api",
-    "sync:sports-universe": "node scripts/sync-polymarket-us-sports-universe.js",
-    "import:nba-history": "node --input-type=module -e \"import { importNbaHistory } from './apps/api/src/services/sports/nba-importer.js'; const result = await importNbaHistory({ season: process.env.SEASON, startDate: process.env.START_DATE, endDate: process.env.END_DATE, batchSize: process.env.BATCH_SIZE }); console.log(JSON.stringify(result, null, 2));\"",
-    "import:nba-history:all": "node --input-type=module -e \"import { importNbaHistory } from './apps/api/src/services/sports/nba-importer.js'; const seasons=['2020-21','2021-22','2022-23','2023-24','2024-25','2025-26']; const results=[]; for (const season of seasons) { results.push(await importNbaHistory({ season, batchSize: process.env.BATCH_SIZE })); } console.log(JSON.stringify(results, null, 2));\"",
-    "import:mlb-history": "node --input-type=module -e \"import { importMlbHistory } from './apps/api/src/services/sports/mlb-importer.js'; const result = await importMlbHistory({ season: process.env.SEASON, startDate: process.env.START_DATE, endDate: process.env.END_DATE, batchSize: process.env.BATCH_SIZE }); console.log(JSON.stringify(result, null, 2));\"",
-    "import:mlb-history:all": "node --input-type=module -e \"import { importMlbHistory } from './apps/api/src/services/sports/mlb-importer.js'; const seasons=['2020','2021','2022','2023','2024','2025','2026']; const results=[]; for (const season of seasons) { results.push(await importMlbHistory({ season, batchSize: process.env.BATCH_SIZE })); } console.log(JSON.stringify(results, null, 2));\"",
-    "backtest:nba": "node --input-type=module -e \"import { runSportsBacktest } from './apps/api/src/services/sports/backtest.js'; const result = await runSportsBacktest({ league: 'NBA', startDate: process.env.START_DATE, endDate: process.env.END_DATE, phase: process.env.PHASE ?? 'all', minTrainingGames: Number.parseInt(process.env.MIN_TRAINING_GAMES ?? '10', 10), calibrationBucketSize: Number.parseFloat(process.env.CALIBRATION_BUCKET_SIZE ?? '0.1') }); console.log(JSON.stringify(result, null, 2));\"",
-    "backtest:mlb": "node --input-type=module -e \"import { runSportsBacktest } from './apps/api/src/services/sports/backtest.js'; const result = await runSportsBacktest({ league: 'MLB', startDate: process.env.START_DATE, endDate: process.env.END_DATE, phase: process.env.PHASE ?? 'all', minTrainingGames: Number.parseInt(process.env.MIN_TRAINING_GAMES ?? '10', 10), calibrationBucketSize: Number.parseFloat(process.env.CALIBRATION_BUCKET_SIZE ?? '0.1') }); console.log(JSON.stringify(result, null, 2));\""
+    "test": "node --test apps/api/test/*.test.js",
+    "weather:snapshot": "node apps/api/src/scripts/chicago-snapshot.js",
+    "weather:backtest": "node apps/api/src/scripts/chicago-backtest.js",
+    "weather:source-audit": "node apps/api/src/scripts/chicago-source-audit.js",
+    "weather:alerts": "node apps/api/src/scripts/chicago-alerts.js",
+    "weather:archive-backfill": "node apps/api/src/scripts/chicago-archive-backfill.js",
+    "weather:forecast-vintage-backfill": "node apps/api/src/scripts/chicago-forecast-vintage-backfill.js",
+    "weather:market-board-backfill": "node apps/api/src/scripts/chicago-market-board-backfill.js",
+    "weather:model-train": "node apps/api/src/scripts/chicago-model-train.js",
+    "weather:model-evaluate": "node apps/api/src/scripts/chicago-model-evaluate.js",
+    "train:weather-ml": "python3 workers/weather_ml/train_weather_model.py"
   },
   "devDependencies": {
     "concurrently": "^9.2.1"

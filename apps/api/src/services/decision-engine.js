@@ -10,12 +10,13 @@ function clamp(value, min = 0, max = 1) {
   return Math.min(max, Math.max(min, value));
 }
 
-function getExpectedValuePerDollar(currentProbability, modelProbability) {
+function getExpectedValuePerDollar(currentProbability, modelProbability, estimatedCost = 0) {
   if (typeof currentProbability !== 'number' || typeof modelProbability !== 'number' || currentProbability <= 0) {
     return null;
   }
 
-  return modelProbability / currentProbability - 1;
+  const riskAdjustedProbability = clamp(modelProbability - (estimatedCost ?? 0), 0, 1);
+  return riskAdjustedProbability / currentProbability - 1;
 }
 
 function getSuggestedStakeFraction(action, edge, combinedConfidence) {
@@ -40,6 +41,36 @@ function getDefaultRiskTargets(currentProbability, edge) {
   const takeProfitDistance = Math.max(0.04, edgeMagnitude * 1.25);
   const stopLossProbability = clamp(currentProbability - stopLossDistance, 0.02, 0.97);
   const takeProfitProbability = clamp(currentProbability + takeProfitDistance, 0.03, 0.98);
+  const downside = currentProbability - stopLossProbability;
+  const upside = takeProfitProbability - currentProbability;
+
+  return {
+    stopLossProbability,
+    takeProfitProbability,
+    riskRewardRatio: downside > 0 ? upside / downside : null
+  };
+}
+
+function getAiRiskTargets(aiRecommendation, currentProbability, edge) {
+  const defaultTargets = getDefaultRiskTargets(currentProbability, edge);
+  const stopLossProbability = typeof aiRecommendation?.stopLossProbability === 'number'
+    ? clamp(aiRecommendation.stopLossProbability, 0.02, 0.97)
+    : defaultTargets.stopLossProbability;
+  const takeProfitProbability = typeof aiRecommendation?.takeProfitProbability === 'number'
+    ? clamp(aiRecommendation.takeProfitProbability, 0.03, 0.98)
+    : defaultTargets.takeProfitProbability;
+
+  if (
+    typeof currentProbability !== 'number'
+    || typeof stopLossProbability !== 'number'
+    || typeof takeProfitProbability !== 'number'
+    || stopLossProbability >= currentProbability
+    || takeProfitProbability <= currentProbability
+    || stopLossProbability >= takeProfitProbability
+  ) {
+    return defaultTargets;
+  }
+
   const downside = currentProbability - stopLossProbability;
   const upside = takeProfitProbability - currentProbability;
 
@@ -209,7 +240,7 @@ function resolveRecommendedSelection(event, statisticalModel, aiRecommendation) 
   return getRawEventFallbackSelection(event, aiRecommendation);
 }
 
-export function combineDecisionRecommendation(event, aggregation, statisticalModel, aiRecommendation, rawAnalysis) {
+export function combineDecisionRecommendation(event, aggregation, statisticalModel, aiRecommendation, rawAnalysis, options = {}) {
   const bestOpportunity = statisticalModel.summary.bestOpportunity;
   const validatedSelection = resolveRecommendedSelection(event, statisticalModel, aiRecommendation);
   const chosenMarket = validatedSelection.market;
@@ -223,18 +254,19 @@ export function combineDecisionRecommendation(event, aggregation, statisticalMod
   const agreement = aiRecommendation?.agreeWithModel ?? Boolean(bestOpportunity && chosenOutcome?.label === bestOpportunity.label);
 
   let action = 'watch';
-  if (edge > 0.01 && combinedConfidence >= 0.55 && agreement) {
+  if (edge >= 0.05 && combinedConfidence >= 0.55 && agreement) {
     action = 'buy';
-  } else if (edge < -0.01 || (llmConfidence !== null && llmConfidence < 0.4 && !agreement)) {
+  } else if (edge < 0 || (llmConfidence !== null && llmConfidence < 0.4 && !agreement)) {
     action = 'avoid';
   }
 
   const expectedValuePerDollar = getExpectedValuePerDollar(
     chosenOutcome?.currentProbability ?? null,
-    chosenOutcome?.estimatedProbability ?? null
+    chosenOutcome?.estimatedProbability ?? null,
+    chosenOutcome?.estimatedCost ?? chosenOutcome?.features?.estimatedCost ?? 0
   );
   const suggestedStakeFraction = getSuggestedStakeFraction(action, edge, combinedConfidence);
-  const riskTargets = getDefaultRiskTargets(chosenOutcome?.currentProbability ?? null, edge);
+  const riskTargets = getAiRiskTargets(aiRecommendation, chosenOutcome?.currentProbability ?? null, edge);
 
   return {
     generatedAt: new Date().toISOString(),
@@ -244,6 +276,9 @@ export function combineDecisionRecommendation(event, aggregation, statisticalMod
       outcomeLabel: recommendedOutcomeLabel,
       currentProbability: chosenOutcome?.currentProbability ?? null,
       modelProbability: chosenOutcome?.estimatedProbability ?? null,
+      grossEdge: chosenOutcome?.grossEdge ?? null,
+      estimatedCost: chosenOutcome?.estimatedCost ?? chosenOutcome?.features?.estimatedCost ?? null,
+      costBreakdown: chosenOutcome?.features?.costBreakdown ?? null,
       edge,
       expectedValuePerDollar,
       combinedConfidence,
@@ -258,6 +293,7 @@ export function combineDecisionRecommendation(event, aggregation, statisticalMod
       stopLossProbability: riskTargets.stopLossProbability,
       takeProfitProbability: riskTargets.takeProfitProbability,
       riskRewardRatio: riskTargets.riskRewardRatio,
+      plannedTradeAmount: typeof options.tradeAmount === 'number' ? options.tradeAmount : null,
       thesis: aiRecommendation?.thesis ?? null,
       keyRisk: aiRecommendation?.keyRisk ?? null,
       reasons: Array.isArray(aiRecommendation?.reasons) ? aiRecommendation.reasons : []

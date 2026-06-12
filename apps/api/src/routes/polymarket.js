@@ -2,11 +2,21 @@ import { Router } from 'express';
 
 import { getEnv } from '../config/env.js';
 import { getPolymarketStatus } from '../services/polymarket/client.js';
-import { fetchActiveEvents, fetchEventByInput } from '../services/polymarket/gamma.js';
+import { UnsupportedMarketError, fetchActiveEvents, fetchEventByInput } from '../services/polymarket/gamma.js';
 import { invalidateEventAnalyticsCache, resolveEventAnalytics } from '../services/polymarket/event-data.js';
+import { getOpportunityScannerSnapshot } from '../services/polymarket/opportunity-scanner.js';
 import { getPolymarketUsAccountIdentity } from '../services/polymarket/us-orders.js';
+import { getPaperTradingAccuracy } from '../services/persistence/postgres.js';
 
 const router = Router();
+
+function getErrorStatus(error, fallbackStatus = 502) {
+  if (error instanceof UnsupportedMarketError) {
+    return 400;
+  }
+
+  return fallbackStatus;
+}
 
 router.get('/api/polymarket/status', async (_request, response) => {
   try {
@@ -62,6 +72,42 @@ router.get('/api/polymarket/events', async (request, response) => {
   }
 });
 
+router.get('/api/polymarket/scanner', async (request, response) => {
+  try {
+    const env = getEnv();
+    const refresh = request.query.refresh === 'true';
+    const wait = request.query.wait === 'true';
+    const scanner = await getOpportunityScannerSnapshot(env, { refresh, wait });
+
+    response.json({
+      ok: true,
+      scanner
+    });
+  } catch (error) {
+    response.status(502).json({
+      ok: false,
+      error: error instanceof Error ? error.message : 'Unable to load opportunity scanner snapshot'
+    });
+  }
+});
+
+router.get('/api/polymarket/paper-accuracy', async (_request, response) => {
+  try {
+    const env = getEnv();
+    const accuracy = await getPaperTradingAccuracy(env);
+
+    response.json({
+      ok: true,
+      accuracy
+    });
+  } catch (error) {
+    response.status(502).json({
+      ok: false,
+      error: error instanceof Error ? error.message : 'Unable to load paper-trading accuracy'
+    });
+  }
+});
+
 router.get('/api/polymarket/events/resolve', async (request, response) => {
   try {
     const env = getEnv();
@@ -82,7 +128,7 @@ router.get('/api/polymarket/events/resolve', async (request, response) => {
       event
     });
   } catch (error) {
-    response.status(502).json({
+    response.status(getErrorStatus(error)).json({
       ok: false,
       error: error instanceof Error ? error.message : 'Unable to resolve Polymarket event'
     });
@@ -110,7 +156,7 @@ router.get('/api/polymarket/events/aggregation', async (request, response) => {
       ...analytics
     });
   } catch (error) {
-    response.status(502).json({
+    response.status(getErrorStatus(error)).json({
       ok: false,
       error: error instanceof Error ? error.message : 'Unable to resolve Polymarket analytics'
     });

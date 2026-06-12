@@ -7,15 +7,25 @@
   "scripts": {
     "dev": "node --watch src/index.js",
     "start": "node src/index.js",
-    "build": "node -e \"console.log('API build step not required yet')\""
+    "build": "node -e \"console.log('API build step not required yet')\"",
+    "weather:snapshot": "node src/scripts/chicago-snapshot.js",
+    "weather:backtest": "node src/scripts/chicago-backtest.js",
+    "weather:source-audit": "node src/scripts/chicago-source-audit.js",
+    "weather:alerts": "node src/scripts/chicago-alerts.js",
+    "weather:archive-backfill": "node src/scripts/chicago-archive-backfill.js",
+    "weather:forecast-vintage-backfill": "node src/scripts/chicago-forecast-vintage-backfill.js",
+    "weather:market-board-backfill": "node src/scripts/chicago-market-board-backfill.js",
+    "weather:model-train": "node src/scripts/chicago-model-train.js",
+    "weather:model-evaluate": "node src/scripts/chicago-model-evaluate.js"
   },
   "dependencies": {
-    "@ethersproject/wallet": "^5.8.0",
-    "@polymarket/clob-client": "^5.8.1",
     "axios": "^1.9.0",
     "cors": "^2.8.5",
     "dotenv": "^16.4.7",
     "express": "^5.1.0",
+    "parquetjs-lite": "^0.8.7",
+    "pg": "^8.20.0",
+    "sql.js": "^1.14.1",
     "tweetnacl": "^1.0.3",
     "ws": "^8.18.1"
   }

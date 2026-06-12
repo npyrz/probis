@@ -1,83 +1,61 @@
-import { Wallet } from '@ethersproject/wallet';
-import { ClobClient } from '@polymarket/clob-client';
 import { getPolymarketUsTradingStatus } from './us-orders.js';
 
-const POLYMARKET_HOST = 'https://clob.polymarket.com';
-const POLYMARKET_CHAIN_ID = 137;
+export const POLYMARKET_MARKET_DATA_POLICY_ID = 'polymarket-us-rest-polling-v1';
+export const POLYMARKET_MARKET_DATA_STREAMING_DISABLED_REASON = 'Streaming market data is not implemented. The near-term Polymarket US market-data plan uses REST polling.';
 
-function getErrorMessage(error) {
-  if (error instanceof Error) {
-    return error.message;
-  }
-
-  return 'Unknown Polymarket error';
+function positiveIntegerMs(value, fallback) {
+  const parsed = Number.parseInt(value, 10);
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : fallback;
 }
 
-export function createPolymarketSigner(env) {
-  if (!env.polymarketPrivateKey) {
-    return null;
-  }
+export function getPolymarketMarketDataPolicy(env = {}) {
+  const quotePollIntervalMs = positiveIntegerMs(env.polymarketMarketDataPollIntervalMs, 5000);
+  const statusPollIntervalMs = positiveIntegerMs(env.polymarketMarketDataStatusPollIntervalMs, quotePollIntervalMs);
+  const boardPollIntervalMs = positiveIntegerMs(env.polymarketMarketDataBoardPollIntervalMs, 120000);
 
-  try {
-    return new Wallet(env.polymarketPrivateKey);
-  } catch {
-    return null;
-  }
-}
-
-export function createPolymarketClient(env, signer = createPolymarketSigner(env)) {
-  return new ClobClient(POLYMARKET_HOST, POLYMARKET_CHAIN_ID, signer ?? undefined);
+  return {
+    policyId: POLYMARKET_MARKET_DATA_POLICY_ID,
+    scope: 'polymarket-us-market-data',
+    transport: 'polling',
+    mode: 'rest-polling',
+    pollingEnabled: true,
+    streamingEnabled: false,
+    polling: {
+      enabled: true,
+      quotePollIntervalMs,
+      statusPollIntervalMs,
+      boardPollIntervalMs,
+      sources: [
+        'polymarket-us-gateway-rest',
+        'polymarket-clob-rest',
+        'polymarket-data-api-rest'
+      ]
+    },
+    streaming: {
+      enabled: false,
+      supported: false,
+      websocketClient: false,
+      reason: POLYMARKET_MARKET_DATA_STREAMING_DISABLED_REASON
+    },
+    note: POLYMARKET_MARKET_DATA_STREAMING_DISABLED_REASON
+  };
 }
 
 export async function getPolymarketStatus(env) {
-  const signer = createPolymarketSigner(env);
-  const publicClient = createPolymarketClient(env, null);
   const usTrading = await getPolymarketUsTradingStatus(env);
 
-  const status = {
-    configured: env.hasTradingCredentials,
-    host: POLYMARKET_HOST,
-    chainId: POLYMARKET_CHAIN_ID,
+  return {
+    configured: env.hasUsTradingCredentials,
+    host: env.polymarketUsBaseUrl,
+    gateway: env.polymarketUsGatewayUrl,
+    marketData: getPolymarketMarketDataPolicy(env),
     usTrading,
-    publicReadOk: false,
+    publicReadOk: usTrading.authenticated,
     auth: {
-      privateKeyValid: Boolean(signer),
-      signerAddress: signer?.address ?? null,
-      derivedApiCredsReady: false,
-      derivedApiKeyMatchesEnv: null,
-      error: null
+      keyIdPresent: Boolean(env.polymarketUsKeyId),
+      secretKeyValid: usTrading.secretKeyValid,
+      authenticated: usTrading.authenticated,
+      error: usTrading.error
     }
   };
-
-  try {
-    const okResponse = await publicClient.getOk();
-    status.publicReadOk = Boolean(okResponse);
-  } catch (error) {
-    status.auth.error = getErrorMessage(error);
-    return status;
-  }
-
-  if (!signer) {
-    if (env.polymarketPrivateKey) {
-      status.auth.error = 'Private key format is not compatible with the Polymarket CLOB SDK.';
-    }
-
-    return status;
-  }
-
-  try {
-    const authClient = createPolymarketClient(env, signer);
-    const derivedCreds = await authClient.createOrDeriveApiKey();
-
-    status.auth.derivedApiCredsReady = Boolean(
-      derivedCreds?.apiKey && derivedCreds?.secret && derivedCreds?.passphrase
-    );
-    status.auth.derivedApiKeyMatchesEnv = env.polymarketApiKey
-      ? derivedCreds.apiKey === env.polymarketApiKey
-      : null;
-  } catch (error) {
-    status.auth.error = getErrorMessage(error);
-  }
-
-  return status;
 }

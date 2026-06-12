@@ -1,7 +1,8 @@
 import { buildEventAggregation } from './aggregation.js';
 import { extractEventSlug, fetchEventByInput } from './gamma.js';
 import { buildStatisticalModel } from './statistical-model.js';
-import { ensureSportsHistoryForEvent } from '../sports/auto-sync.js';
+import { loadWeatherMlModel } from '../ml/weather-model.js';
+import { getMlCalibrationStats, persistEventAnalytics } from '../persistence/postgres.js';
 
 const analyticsCache = new Map();
 
@@ -40,42 +41,57 @@ export function invalidateEventAnalyticsCache(input) {
   analyticsCache.delete(getCacheKey(input));
 }
 
-export async function resolveEventWithAggregation(env, input) {
-  const event = await fetchEventByInput(env, input);
-  const sportsSync = await ensureSportsHistoryForEvent(event);
-  const aggregation = await buildEventAggregation(env, event);
-  const statisticalModel = buildStatisticalModel(event, aggregation);
+async function buildMlCalibrationOptions(env, aggregation) {
+  const stationIds = [...new Set(
+    (Array.isArray(aggregation?.weatherSnapshots) ? aggregation.weatherSnapshots : [])
+      .map((snapshot) => snapshot?.stationId)
+      .filter(Boolean)
+  )];
+  const entries = await Promise.all(stationIds.map(async (stationId) => [
+    stationId,
+    await getMlCalibrationStats(env, { stationId })
+  ]));
+  const [mlCalibration, weatherMlModel] = await Promise.all([
+    getMlCalibrationStats(env),
+    loadWeatherMlModel(env)
+  ]);
 
   return {
+    mlCalibrationByStationId: new Map(entries),
+    mlCalibration,
+    weatherMlModel
+  };
+}
+
+export async function resolveEventWithAggregation(env, input) {
+  const event = await fetchEventByInput(env, input);
+  const aggregation = await buildEventAggregation(env, event);
+  const calibrationOptions = await buildMlCalibrationOptions(env, aggregation);
+  const statisticalModel = buildStatisticalModel(event, aggregation, calibrationOptions);
+  const result = {
     ...event,
-    sportsSync,
     aggregation,
     statisticalModel
   };
+
+  void persistEventAnalytics(env, { event, aggregation, statisticalModel });
+
+  return result;
 }
 
 export async function resolveEventAnalytics(env, input, options = {}) {
   const cacheKey = getCacheKey(input);
   const forceRefresh = options.forceRefresh === true;
   const event = await fetchEventByInput(env, input);
-  const sportsSync = await ensureSportsHistoryForEvent(event, { forceRefresh });
   const cached = forceRefresh ? null : getCachedAnalytics(cacheKey);
 
   if (cached) {
-    const recognizedMarketCount = cached.aggregation?.sportsContext?.recognizedMarketCount ?? 0;
-    const historyGameCount = cached.aggregation?.sportsContext?.historyGameCount ?? 0;
-    const sportsCacheStillValid = recognizedMarketCount === 0 || historyGameCount > 0 || !sportsSync.updated;
-
-    if (sportsCacheStillValid) {
-      return {
-        ...cached,
-        sportsSync
-      };
-    }
+    return cached;
   }
 
   const aggregation = await buildEventAggregation(env, event);
-  const statisticalModel = buildStatisticalModel(event, aggregation);
+  const calibrationOptions = await buildMlCalibrationOptions(env, aggregation);
+  const statisticalModel = buildStatisticalModel(event, aggregation, calibrationOptions);
 
   const result = {
     event: {
@@ -83,6 +99,9 @@ export async function resolveEventAnalytics(env, input, options = {}) {
       slug: event.slug,
       title: event.title,
       description: event.description ?? '',
+      category: event.category ?? null,
+      rules: event.rules ?? null,
+      resolutionSource: event.resolutionSource ?? null,
       active: Boolean(event.active),
       closed: Boolean(event.closed),
       endDate: event.endDate ?? null,
@@ -98,10 +117,11 @@ export async function resolveEventAnalytics(env, input, options = {}) {
       resolvedFromUsMarketSlug: event.resolvedFromUsMarketSlug ?? false,
       sourceMarketSlug: event.sourceMarketSlug ?? null
     },
-    sportsSync,
     aggregation,
     statisticalModel
   };
+
+  void persistEventAnalytics(env, result);
 
   setCachedAnalytics(cacheKey, result, env.analyticsCacheTtlMs);
 

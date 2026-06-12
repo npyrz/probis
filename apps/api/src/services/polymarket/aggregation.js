@@ -1,6 +1,6 @@
-import { createPolymarketClient } from './client.js';
-import { buildSportsContext } from '../sports/aggregation.js';
-import { buildEventIntelligence } from '../sports/event-intelligence.js';
+import { buildWeatherContext } from '../weather/event-intelligence.js';
+import { buildWeatherSnapshots } from '../weather/data-ingestion.js';
+import { fetchClobMarketSnapshots } from './clob.js';
 
 const HISTORY_WINDOW_SECONDS = 7 * 24 * 60 * 60;
 const HISTORY_FIDELITY_MINUTES = 1440;
@@ -122,45 +122,68 @@ function getHighestValueMarket(markets, field) {
   };
 }
 
-async function fetchOutcomeHistory(client, tokenId, startTs, endTs) {
-  if (!tokenId) {
-    return { points: [], summary: summarizeHistory([]) };
+function getImpliedSpreadFromOutcomes(outcomes) {
+  const probabilities = (Array.isArray(outcomes) ? outcomes : [])
+    .map((outcome) => toNumberOrNull(outcome?.probability ?? outcome?.currentProbability))
+    .filter((value) => typeof value === 'number');
+
+  if (probabilities.length < 2) {
+    return null;
   }
 
-  try {
-    const rawHistory = await client.getPricesHistory({
-      market: tokenId,
-      startTs,
-      endTs,
-      fidelity: HISTORY_FIDELITY_MINUTES
-    });
-    const points = normalizeHistoryPayload(rawHistory);
+  const total = probabilities.reduce((sum, value) => sum + value, 0);
+  return Math.abs(1 - total);
+}
 
-    return {
-      points,
-      summary: summarizeHistory(points)
-    };
-  } catch {
-    return { points: [], summary: summarizeHistory([]) };
+function getMarketSpreadFromOutcomes(outcomes) {
+  const clobSpreads = (Array.isArray(outcomes) ? outcomes : [])
+    .map((outcome) => toNumberOrNull(outcome?.spread))
+    .filter((value) => typeof value === 'number');
+
+  if (clobSpreads.length > 0) {
+    return Math.min(...clobSpreads);
   }
+
+  return getImpliedSpreadFromOutcomes(outcomes);
 }
 
 export async function buildEventAggregation(env, event) {
-  const client = createPolymarketClient(env, null);
   const endTs = Math.floor(Date.now() / 1000);
   const startTs = endTs - HISTORY_WINDOW_SECONDS;
   const liveMarkets = event.markets.filter((market) =>
-    market.outcomes.some((outcome) => typeof outcome.probability === 'number' && outcome.tokenId)
+    market.outcomes.some((outcome) => typeof outcome.probability === 'number')
   );
+  const clobSnapshots = await fetchClobMarketSnapshots(env, liveMarkets, { includeHistory: true });
 
   const aggregatedMarkets = await Promise.all(
     liveMarkets.map(async (market) => {
       const outcomes = await Promise.all(
         market.outcomes.map(async (outcome) => {
-          const history = await fetchOutcomeHistory(client, outcome.tokenId, startTs, endTs);
+          const clobSnapshot = outcome.tokenId ? clobSnapshots.byTokenId.get(String(outcome.tokenId)) : null;
+          const probability = clobSnapshot?.midpoint ?? outcome.probability;
+          const history = Array.isArray(clobSnapshot?.history) && clobSnapshot.history.length > 0
+            ? {
+                points: clobSnapshot.history,
+                summary: clobSnapshot.historySummary
+              }
+            : typeof probability === 'number'
+            ? {
+                points: [{ timestamp: endTs, price: probability }],
+                summary: summarizeHistory([{ timestamp: endTs, price: probability }])
+              }
+            : { points: [], summary: summarizeHistory([]) };
 
           return {
             ...outcome,
+            probability,
+            gammaProbability: outcome.probability ?? null,
+            midpoint: clobSnapshot?.midpoint ?? null,
+            bestBid: clobSnapshot?.bestBid ?? null,
+            bestAsk: clobSnapshot?.bestAsk ?? null,
+            spread: clobSnapshot?.spread ?? null,
+            bidDepth: clobSnapshot?.bidDepth ?? null,
+            askDepth: clobSnapshot?.askDepth ?? null,
+            clobSource: clobSnapshot?.source ?? null,
             history: history.points,
             historySummary: history.summary
           };
@@ -170,6 +193,12 @@ export async function buildEventAggregation(env, event) {
       return {
         conditionId: market.conditionId,
         question: market.question,
+        title: market.title ?? null,
+        subtitle: market.subtitle ?? null,
+        description: market.description ?? null,
+        rules: market.rules ?? null,
+        resolutionSource: market.resolutionSource ?? null,
+        category: typeof market?.category === 'string' ? market.category.toLowerCase() : null,
         liquidity: market.liquidity,
         volume: market.volume,
         outcomes,
@@ -180,10 +209,28 @@ export async function buildEventAggregation(env, event) {
     })
   );
 
-  const sportsContext = await buildSportsContext(event);
-  const eventIntelligence = await buildEventIntelligence(env, event, sportsContext);
-  const sportsMarketsByConditionId = new Map(
-    (Array.isArray(sportsContext.markets) ? sportsContext.markets : []).map((market) => [market.conditionId, market])
+  const weatherContext = buildWeatherContext(event, {
+    markets: aggregatedMarkets.map((market) => ({
+      conditionId: market.conditionId,
+      question: market.question,
+      title: market.title ?? null,
+      subtitle: market.subtitle ?? null,
+      category: market.category,
+      description: market.description ?? null,
+      rules: market.rules ?? null,
+      resolutionSource: market.resolutionSource ?? null,
+      outcomes: market.outcomes.map((outcome) => ({
+        label: outcome.label,
+        currentProbability: outcome.probability
+      }))
+    }))
+  });
+  const weatherMarketsByConditionId = new Map(
+    (Array.isArray(weatherContext.markets) ? weatherContext.markets : []).map((market) => [market.conditionId, market])
+  );
+  const weatherSnapshots = await buildWeatherSnapshots(env, weatherContext);
+  const weatherSnapshotsByConditionId = new Map(
+    weatherSnapshots.map((snapshot) => [snapshot.conditionId, snapshot])
   );
 
   return {
@@ -204,8 +251,10 @@ export async function buildEventAggregation(env, event) {
       markets: aggregatedMarkets.map((market) => ({
         conditionId: market.conditionId,
         question: market.question,
+        category: market.category,
         liquidity: market.liquidity,
         volume: market.volume,
+        spread: getMarketSpreadFromOutcomes(market.outcomes),
         liquidityShare: market.liquidityShare,
         volumeShare: market.volumeShare
       }))
@@ -222,13 +271,17 @@ export async function buildEventAggregation(env, event) {
         ? aggregatedMarkets.reduce((sum, market) => sum + (market.volume ?? 0), 0) / aggregatedMarkets.length
         : null
     },
-    sportsContext,
-    eventIntelligence,
+    weatherContext,
+    weatherSnapshots,
     historicalPrices: {
       markets: aggregatedMarkets.map((market) => ({
         conditionId: market.conditionId,
         question: market.question,
-        sportsContext: sportsMarketsByConditionId.get(market.conditionId) ?? null,
+        title: market.title,
+        subtitle: market.subtitle,
+        category: market.category,
+        weatherContext: weatherMarketsByConditionId.get(market.conditionId) ?? null,
+        weatherSnapshot: weatherSnapshotsByConditionId.get(market.conditionId) ?? null,
         leader: market.leader
           ? {
               label: market.leader.label,
@@ -239,6 +292,13 @@ export async function buildEventAggregation(env, event) {
           label: outcome.label,
           tokenId: outcome.tokenId,
           currentProbability: outcome.probability,
+          gammaProbability: outcome.gammaProbability ?? null,
+          bestBid: outcome.bestBid ?? null,
+          bestAsk: outcome.bestAsk ?? null,
+          midpoint: outcome.midpoint ?? null,
+          spread: outcome.spread ?? null,
+          bidDepth: outcome.bidDepth ?? null,
+          askDepth: outcome.askDepth ?? null,
           historySummary: outcome.historySummary,
           history: outcome.history
         }))
