@@ -1,8 +1,13 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
+import { createPortal } from 'react-dom';
 
 import {
+  backfillChicagoArchive,
+  backfillChicagoForecastVintages,
+  backfillChicagoHistoricalBoards,
   createChicagoTradeIntent,
   deleteTradeIntent as deleteTradeIntentRequest,
+  evaluateChicagoWeatherModel,
   executeTradeIntent as executeTradeIntentRequest,
   fetchChicagoAlerts,
   fetchChicagoMarketCatalog,
@@ -12,11 +17,67 @@ import {
   repriceChicagoMarkets,
   sellTradeIntent as sellTradeIntentRequest,
   stopTradeIntent as stopTradeIntentRequest,
+  trainChicagoWeatherModel,
   updateTradeIntent as updateTradeIntentRequest
 } from './lib/api.js';
 
 const DEFAULT_CATALOG_DAYS_AHEAD = 14;
 const DEFAULT_KMDW_SNAPSHOT_POLL_INTERVAL_MS = 180000;
+const DEFAULT_TRAINING_WINDOW_DAYS = 45;
+const DEFAULT_TRAINING_FIDELITY_MINUTES = 60;
+const DEFAULT_TRAINING_LEAD_DAYS = '1,2,3';
+
+const TRAINING_WINDOW_PRESETS = [
+  { value: '14', label: '14 days', days: 14 },
+  { value: '30', label: '30 days', days: 30 },
+  { value: '45', label: '45 days', days: 45 },
+  { value: '90', label: '90 days', days: 90 },
+  { value: 'custom', label: 'Custom', days: null }
+];
+
+const TRAINING_STEP_DEFINITIONS = [
+  { id: 'archive', label: 'Official Actuals' },
+  { id: 'forecastVintages', label: 'Forecast Vintages' },
+  { id: 'historicalBoards', label: 'Market Boards' },
+  { id: 'train', label: 'Train Model' },
+  { id: 'evaluate', label: 'Evaluate Model' }
+];
+
+function padDatePart(value) {
+  return String(value).padStart(2, '0');
+}
+
+function toDateInputValue(date) {
+  return [
+    date.getFullYear(),
+    padDatePart(date.getMonth() + 1),
+    padDatePart(date.getDate())
+  ].join('-');
+}
+
+function getDefaultTrainingDateRange(days = DEFAULT_TRAINING_WINDOW_DAYS) {
+  const dateTo = new Date();
+  dateTo.setHours(0, 0, 0, 0);
+  dateTo.setDate(dateTo.getDate() - 1);
+
+  const dateFrom = new Date(dateTo);
+  dateFrom.setDate(dateTo.getDate() - Math.max(1, days) + 1);
+
+  return {
+    dateFrom: toDateInputValue(dateFrom),
+    dateTo: toDateInputValue(dateTo)
+  };
+}
+
+function createTrainingSteps() {
+  return TRAINING_STEP_DEFINITIONS.map((step) => ({
+    ...step,
+    status: 'idle',
+    detail: '',
+    startedAt: null,
+    finishedAt: null
+  }));
+}
 
 function numberOrNull(value) {
   return typeof value === 'number' && Number.isFinite(value) ? value : null;
@@ -153,6 +214,90 @@ function formatRelativeAge(value, now = new Date()) {
 
   const hours = Math.floor(minutes / 60);
   return `${hours}h ago`;
+}
+
+function formatDuration(startedAt, finishedAt = new Date()) {
+  if (!startedAt) {
+    return '';
+  }
+
+  const start = startedAt instanceof Date ? startedAt : new Date(startedAt);
+  const end = finishedAt instanceof Date ? finishedAt : new Date(finishedAt);
+
+  if (Number.isNaN(start.getTime()) || Number.isNaN(end.getTime())) {
+    return '';
+  }
+
+  const seconds = Math.max(0, Math.round((end.getTime() - start.getTime()) / 1000));
+
+  if (seconds < 60) {
+    return `${seconds}s`;
+  }
+
+  const minutes = Math.floor(seconds / 60);
+  const remainderSeconds = seconds % 60;
+  return `${minutes}m ${remainderSeconds}s`;
+}
+
+function parseLeadDaysInput(value) {
+  const leadDays = String(value ?? '')
+    .split(',')
+    .map((entry) => Number.parseInt(entry.trim(), 10))
+    .filter((entry) => Number.isInteger(entry) && entry >= 0 && entry <= 7);
+
+  if (leadDays.length === 0) {
+    throw new Error('Lead days must include at least one value from 0 through 7.');
+  }
+
+  return [...new Set(leadDays)].sort((left, right) => left - right);
+}
+
+function parsePositiveInteger(value, label) {
+  const parsed = Number.parseInt(String(value ?? ''), 10);
+
+  if (!Number.isInteger(parsed) || parsed <= 0) {
+    throw new Error(`${label} must be a positive whole number.`);
+  }
+
+  return parsed;
+}
+
+function validateTrainingDateRange({ dateFrom, dateTo }) {
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(String(dateFrom)) || !/^\d{4}-\d{2}-\d{2}$/.test(String(dateTo))) {
+    throw new Error('Choose a valid training date range.');
+  }
+
+  if (dateFrom > dateTo) {
+    throw new Error('Training start date must be before the end date.');
+  }
+}
+
+function summarizeTrainingResult(stepId, result) {
+  if (stepId === 'archive') {
+    return `${result?.archive?.recordCount ?? 0} official actual rows`;
+  }
+
+  if (stepId === 'forecastVintages') {
+    return `${result?.archive?.recordCount ?? 0} forecast rows`;
+  }
+
+  if (stepId === 'historicalBoards') {
+    const summary = result?.archive?.summary ?? {};
+    return `${summary.boardSnapshotCount ?? 0} board snapshots, ${summary.pricePointCount ?? 0} prices`;
+  }
+
+  if (stepId === 'train') {
+    const rowCount = result?.trainingRows?.rowCount ?? 0;
+    const status = result?.model?.status ?? (result?.ok ? 'ready' : 'insufficient');
+    return `${formatStatus(status)} from ${rowCount} rows`;
+  }
+
+  if (stepId === 'evaluate') {
+    const rowCount = result?.trainingRows?.rowCount ?? 0;
+    return result?.ok ? `Evaluated ${rowCount} rows` : (result?.reason ?? 'Evaluation did not complete');
+  }
+
+  return 'Complete';
 }
 
 function formatBucketLabel(bucket) {
@@ -597,6 +742,164 @@ function GateList({ gates }) {
   );
 }
 
+function TrainingPortal({
+  isOpen,
+  config,
+  steps,
+  isRunning,
+  error,
+  notice,
+  onClose,
+  onRun,
+  onConfigChange,
+  onPresetChange
+}) {
+  if (!isOpen || typeof document === 'undefined') {
+    return null;
+  }
+
+  return createPortal(
+    <div
+      className="modal-backdrop"
+      role="presentation"
+      onMouseDown={(event) => {
+        if (event.target === event.currentTarget) {
+          onClose();
+        }
+      }}
+    >
+      <section
+        className="training-modal"
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="training-modal-title"
+      >
+        <div className="training-modal-header">
+          <div>
+            <p className="eyebrow">Local Training</p>
+            <h2 id="training-modal-title">Training Data Portal</h2>
+          </div>
+          <button
+            type="button"
+            className="inline-action-button"
+            onClick={onClose}
+          >
+            Close
+          </button>
+        </div>
+
+        <div className="training-form-grid">
+          <label className="training-field" htmlFor="training-window-preset">
+            <span>Window</span>
+            <select
+              id="training-window-preset"
+              value={config.windowPreset}
+              onChange={(event) => onPresetChange(event.target.value)}
+              disabled={isRunning}
+            >
+              {TRAINING_WINDOW_PRESETS.map((preset) => (
+                <option key={preset.value} value={preset.value}>
+                  {preset.label}
+                </option>
+              ))}
+            </select>
+          </label>
+
+          <label className="training-field" htmlFor="training-date-from">
+            <span>From</span>
+            <input
+              id="training-date-from"
+              type="date"
+              value={config.dateFrom}
+              onChange={(event) => onConfigChange({ dateFrom: event.target.value, windowPreset: 'custom' })}
+              disabled={isRunning}
+            />
+          </label>
+
+          <label className="training-field" htmlFor="training-date-to">
+            <span>To</span>
+            <input
+              id="training-date-to"
+              type="date"
+              value={config.dateTo}
+              onChange={(event) => onConfigChange({ dateTo: event.target.value, windowPreset: 'custom' })}
+              disabled={isRunning}
+            />
+          </label>
+
+          <label className="training-field" htmlFor="training-fidelity">
+            <span>Board Interval</span>
+            <select
+              id="training-fidelity"
+              value={config.fidelityMinutes}
+              onChange={(event) => onConfigChange({ fidelityMinutes: event.target.value })}
+              disabled={isRunning}
+            >
+              <option value="15">15 min</option>
+              <option value="30">30 min</option>
+              <option value="60">60 min</option>
+              <option value="120">2 hr</option>
+              <option value="240">4 hr</option>
+            </select>
+          </label>
+
+          <label className="training-field" htmlFor="training-lead-days">
+            <span>Lead Days</span>
+            <input
+              id="training-lead-days"
+              type="text"
+              value={config.leadDays}
+              onChange={(event) => onConfigChange({ leadDays: event.target.value })}
+              disabled={isRunning}
+            />
+          </label>
+
+          <label className="training-check" htmlFor="training-include-trades">
+            <input
+              id="training-include-trades"
+              type="checkbox"
+              checked={config.includeTrades}
+              onChange={(event) => onConfigChange({ includeTrades: event.target.checked })}
+              disabled={isRunning}
+            />
+            <span>Include trades</span>
+          </label>
+        </div>
+
+        <div className="training-actions">
+          <button
+            type="button"
+            className="button button-primary"
+            onClick={onRun}
+            disabled={isRunning}
+          >
+            {isRunning ? 'Running' : 'Run All Training Data'}
+          </button>
+        </div>
+
+        {notice ? <p className="trade-notice">{notice}</p> : null}
+        {error ? <p className="trade-error">{error}</p> : null}
+
+        <div className="training-step-list">
+          {steps.map((step) => (
+            <article key={step.id} className={`training-step training-step-${step.status}`}>
+              <div>
+                <strong>{step.label}</strong>
+                <span>{formatStatus(step.status)}</span>
+              </div>
+              <p>
+                {step.detail || (step.status === 'idle' ? 'Waiting' : '')}
+                {step.finishedAt ? ` (${formatDuration(step.startedAt, step.finishedAt)})` : ''}
+              </p>
+            </article>
+          ))}
+        </div>
+      </section>
+    </div>,
+    document.body
+  );
+}
+
 export default function App() {
   const [snapshot, setSnapshot] = useState(null);
   const [boardSnapshots, setBoardSnapshots] = useState([]);
@@ -615,6 +918,18 @@ export default function App() {
   const [isPreparingTrade, setIsPreparingTrade] = useState(false);
   const [isSubmittingTrade, setIsSubmittingTrade] = useState(false);
   const [isManagingTrade, setIsManagingTrade] = useState(false);
+  const [isTrainingPortalOpen, setIsTrainingPortalOpen] = useState(false);
+  const [isRunningTraining, setIsRunningTraining] = useState(false);
+  const [trainingError, setTrainingError] = useState('');
+  const [trainingNotice, setTrainingNotice] = useState('');
+  const [trainingSteps, setTrainingSteps] = useState(() => createTrainingSteps());
+  const [trainingConfig, setTrainingConfig] = useState(() => ({
+    windowPreset: String(DEFAULT_TRAINING_WINDOW_DAYS),
+    ...getDefaultTrainingDateRange(DEFAULT_TRAINING_WINDOW_DAYS),
+    fidelityMinutes: String(DEFAULT_TRAINING_FIDELITY_MINUTES),
+    leadDays: DEFAULT_TRAINING_LEAD_DAYS,
+    includeTrades: true
+  }));
 
   const rankedRows = useMemo(() => buildBoardRankedRows(boardSnapshots), [boardSnapshots]);
   const temperatureRows = useMemo(() => getTemperatureDistributionRows(snapshot), [snapshot]);
@@ -773,6 +1088,135 @@ export default function App() {
       setTradeIntent(matchingIntent);
     }
   }, [tradeIntents, selectedTradeRow?.conditionId, selectedTradeRow?.targetDate]);
+
+  function handleTrainingConfigChange(patch) {
+    setTrainingConfig((current) => ({
+      ...current,
+      ...patch
+    }));
+  }
+
+  function handleTrainingPresetChange(value) {
+    setTrainingConfig((current) => {
+      if (value === 'custom') {
+        return {
+          ...current,
+          windowPreset: value
+        };
+      }
+
+      const preset = TRAINING_WINDOW_PRESETS.find((candidate) => candidate.value === value);
+      const range = getDefaultTrainingDateRange(preset?.days ?? DEFAULT_TRAINING_WINDOW_DAYS);
+
+      return {
+        ...current,
+        ...range,
+        windowPreset: value
+      };
+    });
+  }
+
+  function updateTrainingStep(stepId, patch) {
+    setTrainingSteps((current) => current.map((step) => (
+      step.id === stepId
+        ? {
+            ...step,
+            ...patch
+          }
+        : step
+    )));
+  }
+
+  async function handleRunTrainingData() {
+    if (isRunningTraining) {
+      return;
+    }
+
+    let runOptions;
+
+    try {
+      validateTrainingDateRange(trainingConfig);
+
+      runOptions = {
+        dateFrom: trainingConfig.dateFrom,
+        dateTo: trainingConfig.dateTo,
+        fidelityMinutes: parsePositiveInteger(trainingConfig.fidelityMinutes, 'Board interval'),
+        leadDays: parseLeadDaysInput(trainingConfig.leadDays),
+        includeTrades: trainingConfig.includeTrades
+      };
+    } catch (validationError) {
+      setTrainingNotice('');
+      setTrainingError(validationError instanceof Error ? validationError.message : 'Training settings are invalid.');
+      return;
+    }
+
+    const jobs = [
+      {
+        id: 'archive',
+        run: () => backfillChicagoArchive(runOptions)
+      },
+      {
+        id: 'forecastVintages',
+        run: () => backfillChicagoForecastVintages(runOptions)
+      },
+      {
+        id: 'historicalBoards',
+        run: () => backfillChicagoHistoricalBoards(runOptions)
+      },
+      {
+        id: 'train',
+        run: () => trainChicagoWeatherModel(runOptions)
+      },
+      {
+        id: 'evaluate',
+        run: () => evaluateChicagoWeatherModel(runOptions)
+      }
+    ];
+
+    setIsRunningTraining(true);
+    setTrainingNotice('');
+    setTrainingError('');
+    setTrainingSteps(createTrainingSteps());
+
+    try {
+      for (const job of jobs) {
+        const startedAt = new Date();
+
+        updateTrainingStep(job.id, {
+          status: 'running',
+          detail: 'Running',
+          startedAt,
+          finishedAt: null
+        });
+
+        try {
+          const result = await job.run();
+          updateTrainingStep(job.id, {
+            status: 'done',
+            detail: summarizeTrainingResult(job.id, result),
+            finishedAt: new Date()
+          });
+        } catch (jobError) {
+          const message = jobError instanceof Error ? jobError.message : 'Training job failed.';
+
+          updateTrainingStep(job.id, {
+            status: 'failed',
+            detail: message,
+            finishedAt: new Date()
+          });
+
+          throw jobError;
+        }
+      }
+
+      setTrainingNotice(`Completed ${formatDate(runOptions.dateFrom)} to ${formatDate(runOptions.dateTo)}.`);
+      await loadChicagoBoard({ force: true, silent: true }).catch(() => null);
+    } catch (runError) {
+      setTrainingError(runError instanceof Error ? runError.message : 'Training data run failed.');
+    } finally {
+      setIsRunningTraining(false);
+    }
+  }
 
   async function handlePrepareTrade() {
     if (!selectedTradeRow || !parsedTradeAmount) {
@@ -983,6 +1427,13 @@ export default function App() {
           <button
             type="button"
             className="button button-secondary"
+            onClick={() => setIsTrainingPortalOpen(true)}
+          >
+            Training
+          </button>
+          <button
+            type="button"
+            className="button button-secondary"
             onClick={() => void loadChicagoBoard()}
             disabled={isLoading || isRepricing}
           >
@@ -998,6 +1449,19 @@ export default function App() {
           </button>
         </div>
       </header>
+
+      <TrainingPortal
+        isOpen={isTrainingPortalOpen}
+        config={trainingConfig}
+        steps={trainingSteps}
+        isRunning={isRunningTraining}
+        error={trainingError}
+        notice={trainingNotice}
+        onClose={() => setIsTrainingPortalOpen(false)}
+        onRun={() => void handleRunTrainingData()}
+        onConfigChange={handleTrainingConfigChange}
+        onPresetChange={handleTrainingPresetChange}
+      />
 
       {error ? <p className="system-banner">{error}</p> : null}
 
