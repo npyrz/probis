@@ -113,6 +113,8 @@ function buildExecutionRequestShape(payload) {
     conditionId: payload.conditionId ?? null,
     marketQuestion: payload.marketQuestion,
     outcomeLabel: payload.outcomeLabel,
+    venueOutcomeLabel: payload.venueOutcomeLabel ?? payload.executionRequest?.venueOutcomeLabel ?? null,
+    outcomeSide: payload.outcomeSide ?? payload.executionRequest?.outcomeSide ?? null,
     tradeAmount,
     entryProbability: Number.isFinite(entryProbability) ? entryProbability : null,
     sharesEstimate: getSharesEstimate(tradeAmount, entryProbability),
@@ -496,6 +498,17 @@ function getPositionSideFromEntryIntent(entryIntent) {
   return entryIntent === 'ORDER_INTENT_BUY_SHORT' ? 'short' : 'long';
 }
 
+function getIntentVenueOutcomeLabel(intent) {
+  return String(
+    intent?.executionRequest?.venueOutcomeLabel
+    ?? intent?.venueOutcomeLabel
+    ?? intent?.executionRequest?.outcomeSide
+    ?? intent?.outcomeSide
+    ?? intent?.outcomeLabel
+    ?? ''
+  ).trim();
+}
+
 function buildExitRequestShape(intent, exitReason) {
   return {
     requestId: randomUUID(),
@@ -510,6 +523,8 @@ function buildExitRequestShape(intent, exitReason) {
     conditionId: intent.conditionId ?? null,
     marketQuestion: intent.marketQuestion,
     outcomeLabel: intent.outcomeLabel,
+    venueOutcomeLabel: intent.executionRequest?.venueOutcomeLabel ?? intent.venueOutcomeLabel ?? null,
+    outcomeSide: intent.executionRequest?.outcomeSide ?? intent.outcomeSide ?? null,
     sharesEstimate: intent.executionRequest?.sharesEstimate ?? null,
     exitReason
   };
@@ -1379,7 +1394,7 @@ async function resolveTrackedProbability(env, intent) {
   const liveOutcomeProbability = await getLiveOutcomeProbabilityFromUsMarket(
     env,
     intent.marketSlug,
-    intent.outcomeLabel
+    getIntentVenueOutcomeLabel(intent)
   );
 
   if (typeof liveOutcomeProbability === 'number') {
@@ -1431,6 +1446,8 @@ export function buildTradeIntentPayload(payload) {
     conditionId: payload.conditionId ?? null,
     marketQuestion: payload.marketQuestion,
     outcomeLabel: payload.outcomeLabel,
+    venueOutcomeLabel: payload.venueOutcomeLabel ?? payload.executionRequest?.venueOutcomeLabel ?? null,
+    outcomeSide: payload.outcomeSide ?? payload.executionRequest?.outcomeSide ?? null,
     action: payload.action ?? 'watch',
     tradeAmount,
     recommendation: payload.recommendation ?? null,

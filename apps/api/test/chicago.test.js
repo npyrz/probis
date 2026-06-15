@@ -73,6 +73,9 @@ import {
   getTradeIntentLiveTradingPolicy,
   hardenTradeIntentLiveRouting
 } from '../src/services/trade-intents.js';
+import {
+  resolvePolymarketUsOutcomeSelection
+} from '../src/services/polymarket/us-orders.js';
 
 test('parseClimdwProduct extracts CHICAGO-MIDWAY yesterday maximum', () => {
   const product = `
@@ -262,6 +265,18 @@ test('parseTemperatureBucket handles common Polymarket labels', () => {
     inclusiveLow: true,
     inclusiveHigh: false
   });
+});
+
+test('Polymarket US outcome selection maps KMDW bucket labels to the binary Yes side', () => {
+  const bucketSelection = resolvePolymarketUsOutcomeSelection(['Yes', 'No'], '73 or below');
+  assert.equal(bucketSelection.matchingIndex, 0);
+  assert.equal(bucketSelection.label, 'Yes');
+  assert.equal(bucketSelection.matchType, 'binary-yes-fallback');
+
+  const noSelection = resolvePolymarketUsOutcomeSelection(['Yes', 'No'], 'No');
+  assert.equal(noSelection.matchingIndex, 1);
+  assert.equal(noSelection.label, 'No');
+  assert.equal(noSelection.matchType, 'exact');
 });
 
 test('bucketProbability sums integer temperature probabilities inclusively', () => {
@@ -758,6 +773,10 @@ test('buildChicagoTradeIntentPayload creates live-routable draft from executable
 
   assert.equal(payload.status, 'draft');
   assert.equal(payload.confirmedAt, null);
+  assert.equal(payload.venueOutcomeLabel, 'Yes');
+  assert.equal(payload.outcomeSide, 'yes');
+  assert.equal(payload.executionRequest.venueOutcomeLabel, 'Yes');
+  assert.equal(payload.executionRequest.outcomeSide, 'yes');
   assert.equal(payload.executionRequest.constraints.liveTradingAllowed, true);
   assert.equal(payload.executionRequest.constraints.requiresManualSubmission, false);
   assert.equal(payload.executionRequest.constraints.liveReduceAllowed, true);
@@ -776,6 +795,10 @@ test('buildChicagoTradeIntentPayload creates live-routable draft from executable
   assert.equal(payload.executionRequest.marketDataPolicy.streaming.supported, false);
   assert.equal(intent.status, 'draft');
   assert.equal(intent.confirmedAt, null);
+  assert.equal(intent.venueOutcomeLabel, 'Yes');
+  assert.equal(intent.outcomeSide, 'yes');
+  assert.equal(intent.executionRequest.venueOutcomeLabel, 'Yes');
+  assert.equal(intent.executionRequest.outcomeSide, 'yes');
   assert.equal(intent.executionRequest.requestType, 'market-buy-intent');
   assert.equal(intent.executionRequest.constraints.liveTradingAllowed, true);
   assert.equal(intent.executionRequest.constraints.requiresManualSubmission, false);
