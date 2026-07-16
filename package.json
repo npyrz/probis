@@ -2,7 +2,7 @@
   "name": "probis",
   "version": "0.1.0",
   "private": true,
-  "description": "AI-assisted prediction market trading system for Polymarket US.",
+  "description": "Weather betting assistant for Polymarket US — Chicago (KMDW) daily high-temperature markets, with multi-location support planned.",
   "workspaces": [
     "apps/*"
   ],

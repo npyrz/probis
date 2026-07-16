@@ -1,24 +1,37 @@
 ![Probis Logo](apps/web/public/logo.png)
 
-# Probis
+# Probis — Weather Betting Assistant for Polymarket
 
-Probis is a local-first weather trading workstation for Polymarket US. The current product scope is intentionally narrow: Chicago Midway Airport (`KMDW`) daily high-temperature markets only.
+Probis is a local-first assistant for placing weather bets on Polymarket US. It pulls authoritative weather data, prices daily high-temperature buckets with its own model, compares that fair value against live market quotes, and helps you place, size, and manage trades — with a human click required before any order goes out.
 
-Non-weather markets are out of scope for now.
+**Supported location today: Chicago (Chicago Midway Airport, `KMDW`) daily high-temperature markets.** The weather layer is built behind a provider interface (`weather-provider-v1`), so additional cities can be added later without rewriting the model or trading stack. See [ROADMAP.md](ROADMAP.md) for what is left to make this a complete product and how new locations get added.
 
-## Current Functionality
+Non-weather markets are out of scope.
 
-- Discovers open Chicago weather markets from the Polymarket US gateway.
-- Builds KMDW weather snapshots from NWS observations, NWS forecasts, CLIMDW settlement data, optional NBM guidance, and live market quotes.
-- Ranks Chicago temperature buckets by estimated fair probability, market price, edge, spread, liquidity, and source confidence.
-- Shows a dark-theme UI focused on open Chicago weather bets.
-- Supports future Chicago weather markets returned by Polymarket US, including a date column for multi-day market boards.
-- Defaults the target date to tomorrow after 6 PM America/Chicago, when the current day is typically near settlement.
-- Lets the user prepare, edit, submit, manage, sell, stop, or delete a trade draft.
-- Keeps manual control in the loop: Probis can route a trade only after the user clicks the submit action.
-- Shows recommended stake sizing, while allowing the user to override the amount before submission.
-- Treats wide spread as a yellow warning, not a hard blocker.
-- Persists weather snapshots, historical market boards, official actuals, forecast vintages, alerts, model artifacts, and trade intent state locally.
+## What Probis Does
+
+- **Discovers** open and upcoming Chicago weather markets from the Polymarket US gateway.
+- **Ingests** the data that actually settles and predicts these markets:
+  - NWS station observations for KMDW (intraday temperature path)
+  - NWS hourly/grid forecasts
+  - The official `CLIMDW` NWS climate report used for settlement
+  - Optional NBM (National Blend of Models) guidance
+  - Open-Meteo previous-run forecast vintages (for training)
+  - NOAA CDO official archived daily highs (ground truth for training/backtests)
+  - Live CLOB quotes, order-book depth, and public trade history
+- **Predicts** a probability distribution over the day's high temperature, projects it onto the market's temperature buckets, fuses it with the market-implied distribution, and optionally applies a trained ML calibration layer.
+- **Recommends** the best bucket by net edge after estimated execution cost, with confidence, spread/liquidity checks, and fractional-Kelly stake sizing.
+- **Executes with you in the loop**: prepare a draft, edit the amount, submit, poll, sell, stop, or close. Nothing is routed until you click submit.
+- **Learns**: every snapshot, market board, forecast vintage, and settled outcome is persisted locally so the model can be retrained, evaluated, and backtested.
+
+## How Predictions Are Made
+
+1. **Temperature distribution.** Observations, forecasts, settlement state, and time-of-day ("day phase") are combined into an expected daily high with an uncertainty estimate, producing an integer-degree probability distribution ([chicago.js](apps/api/src/services/weather/chicago.js)).
+2. **Bucket projection.** The distribution is integrated over each market bucket's temperature range to get weather-only bucket probabilities.
+3. **Market fusion.** Market-implied probabilities (from live quotes) are blended in with a weight that adapts to day phase, spread, and source freshness.
+4. **ML calibration (optional).** A trained logistic calibrator over ~35 features (forecast values, station bias, spread, depth, day phase, distribution percentiles, …) blends with the simulation probability ([weather-model.js](apps/api/src/services/ml/weather-model.js)).
+5. **Edge and gating.** Net edge = fair probability − ask − estimated execution cost. Hard gates block stale data, ambiguous settlement sources, missing firm asks, thin depth, or insufficient edge. Wide spread is a yellow warning, not a blocker.
+6. **Sizing.** Fractional Kelly against a configurable research bankroll, always user-overridable.
 
 ## Demo
 
@@ -32,8 +45,7 @@ The web app is centered on one workflow: finding and managing Chicago weather be
 - Ranking details: market date, bucket, title, entry price, fair probability, edge, spread warning, recommended amount, and estimated shares.
 - Trade panel: amount override, recommended amount, estimated shares, entry price, draft preparation, submission, polling, sell, stop, and delete draft actions.
 - Status panel: `No Selection`, `Ready`, or `Blocked`, with warning messages shown separately in yellow.
-
-The app intentionally does not show non-weather scanners or unrelated event workflows in the primary UI.
+- Defaults the target date to tomorrow after 6 PM America/Chicago, when the current day is typically near settlement.
 
 ## Runtime Architecture
 
@@ -87,9 +99,9 @@ stateDiagram-v2
   Blocked --> DraftPrepared: Edit amount or market
 ```
 
-Trades are not fired automatically from a ranking signal. The UI shows the recommendation, the user may change the amount, and the user must click the submit action. If required credentials and routing settings are available, Probis can send the order through the backend execution gates.
+Trades are never fired automatically from a ranking signal. The UI shows the recommendation, the user may change the amount, and the user must click the submit action. If required credentials and routing settings are available, Probis sends the order through the backend execution gates.
 
-Wide bid/ask spread is a warning only. Hard blockers still include stale data, source ambiguity, missing firm ask, ask above max limit, insufficient liquidity/depth, insufficient edge, or other execution-safety failures.
+Wide bid/ask spread is a warning only. Hard blockers include stale data, settlement-source ambiguity, missing firm ask, ask above max limit, insufficient liquidity/depth, insufficient edge, or other execution-safety failures.
 
 ## Data And Training Pipeline
 
@@ -125,8 +137,8 @@ Requirements:
 
 - Node.js 20+
 - A copied `.env` file based on `.env.example`
-- `NOAA_CDO_TOKEN` for official archive backfills
-- Polymarket US credentials for live order routing
+- `NOAA_CDO_TOKEN` for official archive backfills (free token from NOAA CDO)
+- Polymarket US credentials for live order routing (optional — everything else works without them)
 
 Install dependencies:
 
@@ -292,12 +304,25 @@ Other older routes may still exist in the codebase, but the current product focu
 
 Local-first persistence is used by default.
 
-- Weather analytics: `data/weather/`
-- Model artifacts: `data/models/`
+- Weather analytics: `data/weather/` (SQLite + Parquet)
+- Model artifacts, registry, evaluation logs: `data/models/`
 - Trade intents: `data/trade-intents.json`
-- JSONL fallback stores: `data/*.jsonl`
+- JSONL fallback stores: `data/weather/*.jsonl`
 
 Postgres can be used where configured, but it is optional for local weather development.
+
+## Adding More Locations
+
+The weather layer is location-agnostic behind [providers.js](apps/api/src/services/weather/providers.js). A location is a registered provider that implements `getTargetDate`, `getClimateDayWindow`, `fetchSettlement`, `fetchObservations`, `fetchForecasts`, `fetchModelForecast`, and `fetchMarkets`. Chicago (`kmdw-nws-climdw`) is the only registered provider today.
+
+What a new city needs — station config, settlement product, market discovery queries, its own model artifact, and route/UI generalization — is specified in [ROADMAP.md](ROADMAP.md#7-multi-location-support).
+
+## Documentation
+
+- [ROADMAP.md](ROADMAP.md) — what is left to make Probis a complete weather betting assistant: data sources still to add, model upgrades, trading/risk features, and multi-location support.
+- [AGENTS.md](AGENTS.md) — repository guidelines: structure, commands, style, testing, commit conventions.
+- [workers/weather_ml/README.md](workers/weather_ml/README.md) — optional Python trainer for the heavier ML calibration layer.
+- [deep-research-report.md](deep-research-report.md) — background research on Chicago weather markets, settlement-source risk, and modeling approach.
 
 ## Current Limitations
 
@@ -305,4 +330,4 @@ Postgres can be used where configured, but it is optional for local weather deve
 - Open and future market visibility depends on what the Polymarket US gateway returns.
 - Market data tracking uses REST polling; streaming is not implemented for KMDW.
 - Model quality depends on how much archive, forecast vintage, and market-board history has been backfilled.
-- This is trading software, not financial advice. Review source data and quotes before submitting orders.
+- This is trading software, not financial advice. Weather markets settle off a single designated station and carry settlement-source risk. Review source data and quotes before submitting orders.
