@@ -831,9 +831,23 @@ function normalizeOutcomeLabel(label) {
   return String(label ?? '').trim().toLowerCase();
 }
 
+function getOutcomeLabelValue(value) {
+  if (value && typeof value === 'object') {
+    return String(
+      value.label
+      ?? value.name
+      ?? value.description
+      ?? value.outcome
+      ?? ''
+    ).trim();
+  }
+
+  return String(value ?? '').trim();
+}
+
 function parseOutcomeLabels(value) {
   if (Array.isArray(value)) {
-    return value.map((label) => String(label ?? '').trim()).filter(Boolean);
+    return value.map(getOutcomeLabelValue).filter(Boolean);
   }
 
   if (typeof value !== 'string' || value.trim().length === 0) {
@@ -843,7 +857,7 @@ function parseOutcomeLabels(value) {
   try {
     const parsed = JSON.parse(value);
     return Array.isArray(parsed)
-      ? parsed.map((label) => String(label ?? '').trim()).filter(Boolean)
+      ? parsed.map(getOutcomeLabelValue).filter(Boolean)
       : [];
   } catch {
     return [];
@@ -875,6 +889,66 @@ function normalizeOutcomeForComparison(label) {
     .toLowerCase()
     .replace(/[^a-z0-9]+/g, ' ')
     .trim();
+}
+
+function isYesNoOutcomeSet(outcomes) {
+  if (!Array.isArray(outcomes) || outcomes.length !== 2) {
+    return false;
+  }
+
+  const normalizedOutcomes = new Set(outcomes.map(normalizeOutcomeForComparison));
+  return normalizedOutcomes.has('yes') && normalizedOutcomes.has('no');
+}
+
+function findOutcomeIndex(outcomes, outcomeLabel) {
+  const normalizedOutcome = normalizeOutcomeForComparison(outcomeLabel);
+
+  if (!normalizedOutcome) {
+    return -1;
+  }
+
+  return outcomes.findIndex((candidate) => normalizeOutcomeForComparison(candidate) === normalizedOutcome);
+}
+
+export function resolvePolymarketUsOutcomeSelection(outcomes, outcomeLabel) {
+  const labels = parseOutcomeLabels(outcomes);
+  const normalizedRequestedOutcome = normalizeOutcomeForComparison(outcomeLabel);
+
+  if (!normalizedRequestedOutcome) {
+    return {
+      matchingIndex: -1,
+      label: null,
+      matchType: 'none'
+    };
+  }
+
+  const matchingIndex = findOutcomeIndex(labels, outcomeLabel);
+
+  if (matchingIndex >= 0) {
+    return {
+      matchingIndex,
+      label: labels[matchingIndex],
+      matchType: 'exact'
+    };
+  }
+
+  if (isYesNoOutcomeSet(labels)) {
+    const yesIndex = findOutcomeIndex(labels, 'Yes');
+
+    if (yesIndex >= 0) {
+      return {
+        matchingIndex: yesIndex,
+        label: labels[yesIndex],
+        matchType: 'binary-yes-fallback'
+      };
+    }
+  }
+
+  return {
+    matchingIndex: -1,
+    label: null,
+    matchType: 'none'
+  };
 }
 
 function isLimitPriceRequiredError(error) {
@@ -1123,8 +1197,8 @@ async function resolveOutcomeMarketQuote(env, marketSlug, outcomeLabel) {
     throw new Error(`Polymarket US market "${marketSlug}" does not expose enough outcome pricing metadata.`);
   }
 
-  const normalizedOutcome = normalizeOutcomeForComparison(outcomeLabel);
-  const matchingIndex = outcomes.findIndex((candidate) => normalizeOutcomeForComparison(candidate) === normalizedOutcome);
+  const outcomeSelection = resolvePolymarketUsOutcomeSelection(outcomes, outcomeLabel);
+  const matchingIndex = outcomeSelection.matchingIndex;
 
   if (matchingIndex < 0 || matchingIndex >= outcomePrices.length) {
     throw new Error(
@@ -1141,6 +1215,8 @@ async function resolveOutcomeMarketQuote(env, marketSlug, outcomeLabel) {
   return {
     resolvedMarketSlug: market.slug ?? marketSlug,
     matchingIndex,
+    outcomeLabel: outcomeSelection.label,
+    outcomeMatchType: outcomeSelection.matchType,
     outcomePrice
   };
 }
@@ -1168,6 +1244,17 @@ export async function getLiveOutcomeProbabilityFromUsMarket(env, marketSlug, out
   }
 
   return null;
+}
+
+function getIntentVenueOutcomeLabel(intent) {
+  return String(
+    intent?.executionRequest?.venueOutcomeLabel
+    ?? intent?.venueOutcomeLabel
+    ?? intent?.executionRequest?.outcomeSide
+    ?? intent?.outcomeSide
+    ?? intent?.outcomeLabel
+    ?? ''
+  ).trim();
 }
 
 export async function getUsMarketBboSummary(env, marketSlug) {
@@ -1316,20 +1403,25 @@ async function resolveOrderIntentsForOutcome(env, marketSlug, outcomeLabel) {
     throw new Error(`Polymarket US market "${marketSlug}" does not expose at least two outcomes.`);
   }
 
-  const normalizedOutcome = normalizeOutcomeForComparison(outcomeLabel);
-  const matchingIndex = outcomes.findIndex((candidate) => normalizeOutcomeForComparison(candidate) === normalizedOutcome);
+  const outcomeSelection = resolvePolymarketUsOutcomeSelection(outcomes, outcomeLabel);
+  const matchingIndex = outcomeSelection.matchingIndex;
+  const normalizedMatchedOutcome = normalizeOutcomeForComparison(outcomeSelection.label);
 
-  if (matchingIndex === 0) {
+  if (normalizedMatchedOutcome === 'yes' || matchingIndex === 0) {
     return {
       resolvedMarketSlug: market.slug ?? marketSlug,
+      resolvedOutcomeLabel: outcomeSelection.label,
+      outcomeMatchType: outcomeSelection.matchType,
       buy: 'ORDER_INTENT_BUY_LONG',
       sell: 'ORDER_INTENT_SELL_LONG'
     };
   }
 
-  if (matchingIndex === 1) {
+  if (normalizedMatchedOutcome === 'no' || matchingIndex === 1) {
     return {
       resolvedMarketSlug: market.slug ?? marketSlug,
+      resolvedOutcomeLabel: outcomeSelection.label,
+      outcomeMatchType: outcomeSelection.matchType,
       buy: 'ORDER_INTENT_BUY_SHORT',
       sell: 'ORDER_INTENT_SELL_SHORT'
     };
@@ -1681,7 +1773,8 @@ export async function placeBuyOrderForIntent(env, intent) {
     throw new Error('Trade intent has invalid tradeAmount for market buy.');
   }
 
-  const orderIntents = await resolveOrderIntentsForOutcome(env, requestedMarketSlug, intent.outcomeLabel);
+  const venueOutcomeLabel = getIntentVenueOutcomeLabel(intent);
+  const orderIntents = await resolveOrderIntentsForOutcome(env, requestedMarketSlug, venueOutcomeLabel);
   const marketSlug = orderIntents.resolvedMarketSlug ?? requestedMarketSlug;
   const orderIntent = orderIntents.buy;
   const maxSlippageBps = Number.parseInt(intent.executionRequest?.maxSlippageBps ?? '100', 10);
@@ -1726,7 +1819,7 @@ export async function placeBuyOrderForIntent(env, intent) {
     }
   }
 
-  const quote = await resolveOutcomeMarketQuote(env, marketSlug, intent.outcomeLabel);
+  const quote = await resolveOutcomeMarketQuote(env, marketSlug, venueOutcomeLabel);
   const maxSlippageBpsForRetry = Number.isFinite(maxSlippageBps) ? maxSlippageBps : 100;
   const isShortBuy = isShortBuyOrderIntent(orderIntent);
   const boundary = isShortBuy
@@ -1787,7 +1880,8 @@ export async function placeSellOrderForIntent(env, intent) {
     throw new Error('Trade intent is missing marketSlug and cannot be sold automatically.');
   }
 
-  const orderIntents = await resolveOrderIntentsForOutcome(env, requestedMarketSlug, intent.outcomeLabel);
+  const venueOutcomeLabel = getIntentVenueOutcomeLabel(intent);
+  const orderIntents = await resolveOrderIntentsForOutcome(env, requestedMarketSlug, venueOutcomeLabel);
   const marketSlug = orderIntents.resolvedMarketSlug ?? requestedMarketSlug;
 
   const localShares = parseNumber(intent.position?.sharesFilled ?? intent.executionRequest?.sharesEstimate);
@@ -1848,8 +1942,8 @@ export async function placeSellOrderForIntent(env, intent) {
     }
   }
 
-  const liveExecutablePrice = await getLiveOutcomeProbabilityFromUsMarket(env, marketSlug, intent.outcomeLabel).catch(() => null);
-  const quote = await resolveOutcomeMarketQuote(env, marketSlug, intent.outcomeLabel);
+  const liveExecutablePrice = await getLiveOutcomeProbabilityFromUsMarket(env, marketSlug, venueOutcomeLabel).catch(() => null);
+  const quote = await resolveOutcomeMarketQuote(env, marketSlug, venueOutcomeLabel);
   const fallbackQuotePrice = typeof liveExecutablePrice === 'number'
     ? resolveFallbackSellQuotePrice(orderIntent, liveExecutablePrice)
     : resolveFallbackSellQuotePrice(orderIntent, quote.outcomePrice);

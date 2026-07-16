@@ -2772,6 +2772,8 @@ export function buildChicagoTradeIntentPayload(snapshot, recommendation = snapsh
     conditionId: recommendation.conditionId,
     marketQuestion,
     outcomeLabel: recommendation.outcomeLabel,
+    venueOutcomeLabel: 'Yes',
+    outcomeSide: 'yes',
     action: recommendation.action,
     tradeAmount: tradeSuggestion.amount,
     recommendation: {
@@ -2795,6 +2797,8 @@ export function buildChicagoTradeIntentPayload(snapshot, recommendation = snapsh
       readyForExecution: false,
       preparedAt: new Date().toISOString(),
       weatherProvider: snapshot.provider ?? null,
+      venueOutcomeLabel: 'Yes',
+      outcomeSide: 'yes',
       positionLifecycle: recommendation.executionPlan?.positionLifecycle ?? buildKmdwPositionLifecycle({
         prediction: snapshot?.prediction,
         targetDate: snapshot.targetDate
