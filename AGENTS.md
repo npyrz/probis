@@ -2,7 +2,7 @@
 
 ## Project Structure & Module Organization
 
-Probis is a weather betting assistant for Polymarket US — currently Chicago (KMDW) daily high-temperature markets only, with multi-location support planned (see `ROADMAP.md` for remaining work). It is a Node.js workspace with two main apps under `apps/`. `apps/api` contains the Express API, routes in `src/routes`, shared services in `src/services`, CLI weather scripts in `src/scripts`, and API tests in `test/`. `apps/web` contains the Vite/React UI in `src`, static assets in `public`, and built output in `dist`. The optional Python weather worker lives in `workers/weather_ml`. Local data and model artifacts are written under `data/`; do not commit secrets or machine-specific generated data unless intentionally required.
+Probis is a weather betting assistant for Polymarket US — currently Chicago (KMDW) daily high-temperature markets only, with multi-location support planned (see `REFACTOR-PLAN.md` for the project direction). It is a Node.js workspace with two main apps under `apps/`. `apps/api` contains the Express API, routes in `src/routes`, shared services in `src/services`, CLI weather scripts in `src/scripts`, and API tests in `test/`. `apps/web` contains the Vite/React UI in `src`, static assets in `public`, and built output in `dist`. The optional Python weather worker lives in `workers/weather_ml`. Local data and model artifacts are written under `data/`; do not commit secrets or machine-specific generated data unless intentionally required.
 
 ## Build, Test, and Development Commands
 

@@ -4,7 +4,7 @@
 
 Probis is a local-first assistant for placing weather bets on Polymarket US. It pulls authoritative weather data, prices daily high-temperature buckets with its own model, compares that fair value against live market quotes, and helps you place, size, and manage trades — with a human click required before any order goes out.
 
-**Supported location today: Chicago (Chicago Midway Airport, `KMDW`) daily high-temperature markets.** The weather layer is built behind a provider interface (`weather-provider-v1`), so additional cities can be added later without rewriting the model or trading stack. See [ROADMAP.md](ROADMAP.md) for what is left to make this a complete product and how new locations get added.
+**Supported location today: Chicago (Chicago Midway Airport, `KMDW`) daily high-temperature markets.** The weather layer is built behind a provider interface (`weather-provider-v1`), so additional cities can be added later without rewriting the model or trading stack. See [REFACTOR-PLAN.md](REFACTOR-PLAN.md) for where the project is headed: a general open-source Polymarket terminal with per-market data/news feeds, a recommendation layer, and agent mode.
 
 Non-weather markets are out of scope.
 
@@ -315,11 +315,11 @@ Postgres can be used where configured, but it is optional for local weather deve
 
 The weather layer is location-agnostic behind [providers.js](apps/api/src/services/weather/providers.js). A location is a registered provider that implements `getTargetDate`, `getClimateDayWindow`, `fetchSettlement`, `fetchObservations`, `fetchForecasts`, `fetchModelForecast`, and `fetchMarkets`. Chicago (`kmdw-nws-climdw`) is the only registered provider today.
 
-What a new city needs — station config, settlement product, market discovery queries, its own model artifact, and route/UI generalization — is specified in [ROADMAP.md](ROADMAP.md#7-multi-location-support).
+What a new city needs — station config, settlement product, market discovery queries, its own model artifact, and route/UI generalization — is summarized in [REFACTOR-PLAN.md](REFACTOR-PLAN.md#8-weather-family--surviving-roadmap-items).
 
 ## Documentation
 
-- [ROADMAP.md](ROADMAP.md) — what is left to make Probis a complete weather betting assistant: data sources still to add, model upgrades, trading/risk features, and multi-location support.
+- [REFACTOR-PLAN.md](REFACTOR-PLAN.md) — the plan for Probis's next form: an open-source Polymarket US terminal (all markets + news/data feeds), a cross-market recommendation layer, and agent mode.
 - [AGENTS.md](AGENTS.md) — repository guidelines: structure, commands, style, testing, commit conventions.
 - [workers/weather_ml/README.md](workers/weather_ml/README.md) — optional Python trainer for the heavier ML calibration layer.
 - [deep-research-report.md](deep-research-report.md) — background research on Chicago weather markets, settlement-source risk, and modeling approach.
