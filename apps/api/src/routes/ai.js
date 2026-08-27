@@ -4,7 +4,7 @@ import { getEnv } from '../config/env.js';
 import { combineDecisionRecommendation } from '../services/decision-engine.js';
 import { buildDecisionEnginePrompt, buildEventAnalysisPrompt, getOllamaStatus, runAiJson, runAiTest } from '../services/ollama.js';
 import { resolveEventAnalytics } from '../services/polymarket/event-data.js';
-import { UnsupportedMarketError } from '../services/polymarket/gamma.js';
+import { UnsupportedMarketError } from '../core/polymarket/gamma.js';
 
 const router = Router();
 

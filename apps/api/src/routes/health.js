@@ -2,7 +2,7 @@ import { Router } from 'express';
 
 import { getEnv } from '../config/env.js';
 import { getOllamaStatus } from '../services/ollama.js';
-import { getPolymarketStatus } from '../services/polymarket/client.js';
+import { getPolymarketStatus } from '../core/polymarket/client.js';
 
 const router = Router();
 

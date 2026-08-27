@@ -430,3 +430,27 @@ export async function closeTradeIntent(id) {
 
   return data.intent;
 }
+
+export async function fetchMarketFamilies() {
+  const data = await requestJson('/api/families');
+  return data.families ?? [];
+}
+
+export async function fetchMarketCatalog(options = {}) {
+  const query = new URLSearchParams();
+
+  if (options.limit !== undefined && options.limit !== null) {
+    query.set('limit', String(options.limit));
+  }
+
+  if (options.family) {
+    query.set('family', options.family);
+  }
+
+  if (options.search) {
+    query.set('search', options.search);
+  }
+
+  const suffix = query.size > 0 ? `?${query.toString()}` : '';
+  return requestJson(`/api/markets${suffix}`);
+}

@@ -938,3 +938,73 @@ table {
     text-align: left;
   }
 }
+
+/* Market explorer (all-markets catalog view) */
+.market-explorer {
+  width: min(1100px, 100%);
+  background: #0b1410;
+  border: 1px solid rgba(120, 200, 160, 0.18);
+  border-radius: 14px;
+  padding: 20px;
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  max-height: 90vh;
+  overflow-y: auto;
+}
+
+.market-explorer-header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 16px;
+}
+
+.market-explorer-controls {
+  display: flex;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+.market-explorer-search,
+.market-explorer-select {
+  background: rgba(9, 20, 15, 0.9);
+  border: 1px solid rgba(120, 200, 160, 0.22);
+  border-radius: 8px;
+  color: inherit;
+  padding: 8px 10px;
+  font: inherit;
+}
+
+.market-explorer-search {
+  flex: 1 1 240px;
+  min-width: 180px;
+}
+
+.market-explorer-table {
+  max-height: 46vh;
+  overflow-y: auto;
+}
+
+.market-explorer-table tbody tr {
+  cursor: pointer;
+}
+
+.market-explorer-table tbody tr.is-selected {
+  background: rgba(120, 200, 160, 0.1);
+}
+
+.market-title {
+  display: block;
+  font-weight: 600;
+}
+
+.market-slug {
+  display: block;
+  font-size: 0.78rem;
+  opacity: 0.6;
+}
+
+.market-explorer-detail {
+  margin-top: 4px;
+}

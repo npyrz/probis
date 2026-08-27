@@ -624,3 +624,8 @@ export function buildWeatherContext(event, options = {}) {
     markets: recognizedMarkets
   };
 }
+
+export const WEATHER_EVENT_FILTER = {
+  test: (event, markets = []) => isWeatherEvent(event, markets),
+  message: (slug) => `Only Polymarket US weather markets are supported. The slug "${slug}" does not look like a weather market.`
+};

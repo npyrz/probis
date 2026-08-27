@@ -22,12 +22,38 @@ The project is being built toward three headlines:
 | Chicago (KMDW) weather markets: discovery, model, backtest, trading | ✅ **Working today** |
 | Human-in-the-loop trade lifecycle (draft → submit → poll → sell/stop/close) | ✅ **Working today** |
 | Local analytics store, model training, evaluation, drift + alerts | ✅ **Working today** |
-| Extraction refactor (`core/`, `families/` layout; weather unchanged) | 🚧 Planned — Phase 0 |
-| Full market catalog, per-market news feeds, terminal UI (`apps/tui`) | 🚧 Planned — Phase 1 |
+| Extraction refactor (`core/`, `families/` layout; weather unchanged) | ✅ **Working today** |
+| Read-only catalog of every open Polymarket US market (`/api/markets`) | ✅ **Working today** |
+| Persisted catalog, per-market news feeds, scheduler, terminal UI (`apps/tui`) | 🚧 Planned — Phase 1 |
 | Cross-market recommender, crypto + econ families, screened tier | 🚧 Planned — Phase 2 |
 | Agent mode, chat interface, MCP server | 🚧 Planned — Phase 3 |
 
 Nothing marked 🚧 exists in the tree yet. Paths referenced in this README are paths that exist today.
+
+### Layout after Phase 0
+
+```
+apps/api/src/
+├── core/                    # family-agnostic machinery
+│   ├── polymarket/          # venue layer: client, clob, data-api, gamma, us-orders, history
+│   ├── engine/              # fusion, gating, sizing, execution-cost, number
+│   └── catalog/             # all open Polymarket US markets, normalized + family-tagged
+├── families/
+│   ├── registry.js          # the market-family-v1 plugin contract
+│   └── weather/             # the weather family, conforming to that contract
+├── routes/                  # markets.js (new) + weather.js, trades.js, polymarket.js, ai.js
+└── services/                # weather stack, ML, persistence, and the Phase 2 screening files
+```
+
+`core/` never imports from `families/` or `services/`. The weather family supplies its own
+event filter, station, and family resolver to the venue layer rather than the venue layer
+knowing about weather.
+
+**Market discovery uses two paths.** The Polymarket US `/events` listing does not return
+temperature markets — those are only reachable through gateway search. The catalog therefore
+merges the venue listing with markets each family discovers for itself, deduped by condition
+id. A family contributes via the optional `catalogMarkets()` method. Full paginated ingestion
+with persistence is Phase 1.
 
 ## Scope Decisions
 
@@ -67,7 +93,7 @@ Probis discovers, prices, and trades Chicago Midway (`KMDW`) daily high-temperat
 5. **Edge and gating.** Net edge = fair probability − ask − estimated execution cost. Hard gates block stale data, ambiguous settlement sources, missing firm asks, thin depth, or insufficient edge. Wide spread is a yellow warning, not a blocker.
 6. **Sizing.** Fractional Kelly against a configurable research bankroll, always user-overridable.
 
-Under the plan, steps 3, 5, and 6 are family-agnostic machinery and move to `core/engine/` in Phase 0 so every future family inherits them.
+Steps 3, 5, and 6 are family-agnostic and now live in `core/engine/` (`fusion.js`, `gating.js`, `sizing.js`, `execution-cost.js`), so every future family inherits them. The weather family supplies only what is weather-specific — the day-phase prior on market trust, and the timing score.
 
 ## Demo
 
@@ -296,8 +322,11 @@ duckdb -c "select target_date, count(*) from 'data/weather/parquet/kmdw_market_s
 
 ## API Surface
 
-The current app workflow uses these weather and trade endpoints. Phase 0 adds `/api/markets` and `/api/markets/:id` alongside these; the `/api/weather/*` routes keep working.
+Phase 0 added the catalog routes; the `/api/weather/*` routes are unchanged and keep working.
 
+- `GET /api/markets` — every open Polymarket US market, normalized and family-tagged
+- `GET /api/markets/:id` — one market, with its family (or `null` when unmodeled)
+- `GET /api/families` — registered market families and their capabilities
 - `GET /api/weather/providers`
 - `GET /api/weather/chicago/status`
 - `GET /api/weather/chicago/markets`
@@ -363,7 +392,7 @@ What a new city needs — station config, settlement product, market discovery q
 
 | Phase | Deliverable |
 |---|---|
-| **0** | Extraction refactor into `core/` + `families/`; weather behavior unchanged; read-only all-markets catalog |
+| **0** | ✅ Done — extraction refactor into `core/` + `families/`; weather behavior unchanged; read-only all-markets catalog |
 | **1** | API-key connection, market detail with feeds + past data, scheduler, terminal UI v1 (read-only) |
 | **2** | Cross-market recommender, crypto family, screened tier, TUI trading |
 | **3** | Agent mode (advise → semi-auto → full), chat, MCP server |
