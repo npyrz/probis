@@ -1,14 +1,48 @@
 ![Probis Logo](apps/web/public/logo.png)
 
-# Probis — Weather Betting Assistant for Polymarket
+# Probis — Open-Source Polymarket Terminal
 
-Probis is a local-first assistant for placing weather bets on Polymarket US. It pulls authoritative weather data, prices daily high-temperature buckets with its own model, compares that fair value against live market quotes, and helps you place, size, and manage trades — with a human click required before any order goes out.
+Probis is a local-first, open-source terminal for **Polymarket US**. Bring your own API key, run it on localhost, and keep custody of everything — keys never leave your machine.
 
-**Supported location today: Chicago (Chicago Midway Airport, `KMDW`) daily high-temperature markets.** The weather layer is built behind a provider interface (`weather-provider-v1`), so additional cities can be added later without rewriting the model or trading stack. See [ROADMAP.md](ROADMAP.md) for what is left to make this a complete product and how new locations get added.
+The project is being built toward three headlines:
 
-Non-weather markets are out of scope.
+1. **Connect your key, see everything.** Every open Polymarket US market with live quotes, order book, price history, attached news feeds, authoritative data sources, and past comparable markets.
+2. **Get a recommendation.** A model layer ranks the best trades available *right now* — fair probability, edge after execution cost, confidence, and suggested size.
+3. **Turn on agent mode.** An agent that enters, manages, and exits positions inside hard risk limits you set, with a full audit trail and a kill switch.
 
-## What Probis Does
+**Weather is the first market family, not the product.** Chicago (KMDW) daily high-temperature markets are the proof that the data → model → backtest → execution pipeline works end to end. That stack is being generalized, not rewritten.
+
+> [!IMPORTANT]
+> **This repository is mid-pivot.** The weather family below is fully built and working today. The general terminal, the cross-market recommender, and agent mode are planned work. See [REFACTOR-PLAN.md](REFACTOR-PLAN.md) for the phased plan, and the status table below for what actually runs right now.
+
+## Status
+
+| Capability | State |
+|---|---|
+| Chicago (KMDW) weather markets: discovery, model, backtest, trading | ✅ **Working today** |
+| Human-in-the-loop trade lifecycle (draft → submit → poll → sell/stop/close) | ✅ **Working today** |
+| Local analytics store, model training, evaluation, drift + alerts | ✅ **Working today** |
+| Extraction refactor (`core/`, `families/` layout; weather unchanged) | 🚧 Planned — Phase 0 |
+| Full market catalog, per-market news feeds, terminal UI (`apps/tui`) | 🚧 Planned — Phase 1 |
+| Cross-market recommender, crypto + econ families, screened tier | 🚧 Planned — Phase 2 |
+| Agent mode, chat interface, MCP server | 🚧 Planned — Phase 3 |
+
+Nothing marked 🚧 exists in the tree yet. Paths referenced in this README are paths that exist today.
+
+## Scope Decisions
+
+- **Polymarket US only.** The venue layer stays isolated so a second venue is cheap later, but none is planned.
+- **No Twitter/X.** News comes from RSS/Atom, GDELT, and official sources.
+- **Open source, BYO keys, localhost only.** No hosted or multi-user mode.
+- **Not a market-making platform.** This is a trading terminal.
+
+---
+
+# What Works Today: The Weather Family
+
+Probis discovers, prices, and trades Chicago Midway (`KMDW`) daily high-temperature markets on Polymarket US.
+
+## What It Does
 
 - **Discovers** open and upcoming Chicago weather markets from the Polymarket US gateway.
 - **Ingests** the data that actually settles and predicts these markets:
@@ -33,13 +67,15 @@ Non-weather markets are out of scope.
 5. **Edge and gating.** Net edge = fair probability − ask − estimated execution cost. Hard gates block stale data, ambiguous settlement sources, missing firm asks, thin depth, or insufficient edge. Wide spread is a yellow warning, not a blocker.
 6. **Sizing.** Fractional Kelly against a configurable research bankroll, always user-overridable.
 
+Under the plan, steps 3, 5, and 6 are family-agnostic machinery and move to `core/engine/` in Phase 0 so every future family inherits them.
+
 ## Demo
 
-https://drive.google.com/file/d/1P1RQcepRdpn_mv2iPgkjZIttwSmiNifE/view?usp=sharing
+[Walkthrough video](https://drive.google.com/file/d/1P1RQcepRdpn_mv2iPgkjZIttwSmiNifE/view?usp=sharing) — records the weather-era UI, which is the UI in the repo today.
 
 ## Current UI
 
-The web app is centered on one workflow: finding and managing Chicago weather bets.
+The web app is centered on one workflow: finding and managing Chicago weather bets. Phase 1 generalizes this into a market list driven by the full catalog, with the weather card becoming one family-specific detail panel.
 
 - `Open Chicago Weather Bets`: ranked cards/rows for current and future open Chicago weather markets returned by Polymarket US.
 - Ranking details: market date, bucket, title, entry price, fair probability, edge, spread warning, recommended amount, and estimated shares.
@@ -102,6 +138,8 @@ stateDiagram-v2
 Trades are never fired automatically from a ranking signal. The UI shows the recommendation, the user may change the amount, and the user must click the submit action. If required credentials and routing settings are available, Probis sends the order through the backend execution gates.
 
 Wide bid/ask spread is a warning only. Hard blockers include stale data, settlement-source ambiguity, missing firm ask, ask above max limit, insufficient liquidity/depth, insufficient edge, or other execution-safety failures.
+
+This human-click gate is a permanent property of the system. Agent mode (Phase 3) does not remove it — it adds opt-in levels above it, with the risk envelope enforced *below* the agent so agent code cannot exceed it.
 
 ## Data And Training Pipeline
 
@@ -256,9 +294,9 @@ If DuckDB is installed, inspect Parquet coverage with:
 duckdb -c "select target_date, count(*) from 'data/weather/parquet/kmdw_market_snapshots.parquet' group by target_date order by target_date desc;"
 ```
 
-## Weather API Surface
+## API Surface
 
-The public app workflow mainly uses these weather and trade endpoints:
+The current app workflow uses these weather and trade endpoints. Phase 0 adds `/api/markets` and `/api/markets/:id` alongside these; the `/api/weather/*` routes keep working.
 
 - `GET /api/weather/providers`
 - `GET /api/weather/chicago/status`
@@ -298,7 +336,7 @@ The public app workflow mainly uses these weather and trade endpoints:
 - `POST /api/trades/intents/:id/stop`
 - `POST /api/trades/intents/:id/close`
 
-Other older routes may still exist in the codebase, but the current product focus is the weather workflow above.
+Other older routes still exist in the codebase, but the current product focus is the weather workflow above.
 
 ## Storage
 
@@ -309,25 +347,45 @@ Local-first persistence is used by default.
 - Trade intents: `data/trade-intents.json`
 - JSONL fallback stores: `data/weather/*.jsonl`
 
-Postgres can be used where configured, but it is optional for local weather development.
+Postgres can be used where configured, but it is optional for local development. Everything under `data/` is gitignored and stays on your machine.
 
-## Adding More Locations
+## Adding More Weather Locations
 
-The weather layer is location-agnostic behind [providers.js](apps/api/src/services/weather/providers.js). A location is a registered provider that implements `getTargetDate`, `getClimateDayWindow`, `fetchSettlement`, `fetchObservations`, `fetchForecasts`, `fetchModelForecast`, and `fetchMarkets`. Chicago (`kmdw-nws-climdw`) is the only registered provider today.
+Within the weather family, the layer is location-agnostic behind [providers.js](apps/api/src/services/weather/providers.js). A location is a registered provider that implements `getTargetDate`, `getClimateDayWindow`, `fetchSettlement`, `fetchObservations`, `fetchForecasts`, `fetchModelForecast`, and `fetchMarkets`. Chicago (`kmdw-nws-climdw`) is the only registered provider today.
 
-What a new city needs — station config, settlement product, market discovery queries, its own model artifact, and route/UI generalization — is specified in [ROADMAP.md](ROADMAP.md#7-multi-location-support).
+What a new city needs — station config, settlement product, market discovery queries, its own model artifact, and route/UI generalization — is summarized in [REFACTOR-PLAN.md](REFACTOR-PLAN.md#8-weather-family--surviving-roadmap-items). This is now an intra-family concern; adding a whole *new* family (crypto, econ) is a different contract, described in the plan's §1.
+
+---
+
+## Where This Is Going
+
+[REFACTOR-PLAN.md](REFACTOR-PLAN.md) is the authoritative plan. In brief:
+
+| Phase | Deliverable |
+|---|---|
+| **0** | Extraction refactor into `core/` + `families/`; weather behavior unchanged; read-only all-markets catalog |
+| **1** | API-key connection, market detail with feeds + past data, scheduler, terminal UI v1 (read-only) |
+| **2** | Cross-market recommender, crypto family, screened tier, TUI trading |
+| **3** | Agent mode (advise → semi-auto → full), chat, MCP server |
+| **4** | Open-source release polish |
+
+A market with no family model stays first-class in the terminal — quotes, book, history, feeds, and rules all render. It just shows no fair-value/edge panel. That is what lets the terminal cover every market while models arrive family by family.
 
 ## Documentation
 
-- [ROADMAP.md](ROADMAP.md) — what is left to make Probis a complete weather betting assistant: data sources still to add, model upgrades, trading/risk features, and multi-location support.
+- [REFACTOR-PLAN.md](REFACTOR-PLAN.md) — the phased plan for the general terminal, recommendation layer, and agent mode.
 - [AGENTS.md](AGENTS.md) — repository guidelines: structure, commands, style, testing, commit conventions.
 - [workers/weather_ml/README.md](workers/weather_ml/README.md) — optional Python trainer for the heavier ML calibration layer.
-- [deep-research-report.md](deep-research-report.md) — background research on Chicago weather markets, settlement-source risk, and modeling approach.
+- [docs/research/weather-markets-research.md](docs/research/weather-markets-research.md) — archived background research on Chicago weather markets, settlement-source risk, and modeling approach. Written before the weather stack was built; kept for the settlement-risk reasoning, not as a current description of the code.
 
 ## Current Limitations
 
-- Only KMDW / Chicago Midway daily high-temperature markets are supported.
+- **Only the weather family is modeled.** Chicago Midway daily high-temperature markets are the only markets Probis prices today. The general catalog is Phase 1.
 - Open and future market visibility depends on what the Polymarket US gateway returns.
-- Market data tracking uses REST polling; streaming is not implemented for KMDW.
+- Market data tracking uses REST polling; streaming is not implemented.
 - Model quality depends on how much archive, forecast vintage, and market-board history has been backfilled.
 - This is trading software, not financial advice. Weather markets settle off a single designated station and carry settlement-source risk. Review source data and quotes before submitting orders.
+
+## License
+
+See [LICENSE](LICENSE).
