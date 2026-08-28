@@ -1,6 +1,5 @@
 import axios from 'axios';
 import { fetchUsMarketsBySlug, getUsMarketAvailabilityForEvent } from './us-orders.js';
-import { isWeatherEvent } from '../weather/event-intelligence.js';
 
 const STOP_WORDS = new Set(['the', 'and', 'for', 'will', 'with', 'after', 'before']);
 
@@ -247,8 +246,8 @@ function scoreEventCandidate(slug, event) {
   return score;
 }
 
-async function findFallbackEvent(env, slug) {
-  const candidates = await fetchActiveEvents(env, { limit: 100, offset: 0 });
+async function findFallbackEvent(env, slug, eventFilter = null) {
+  const candidates = await fetchActiveEvents(env, { limit: 100, offset: 0, eventFilter });
   const ranked = candidates
     .map((event) => ({
       event,
@@ -296,13 +295,15 @@ async function findUsEventByMarketSlug(env, slug) {
   };
 }
 
-function assertWeatherOnlyEvent(event, slug) {
-  if (isWeatherEvent(event, event?.markets ?? [])) {
+function assertEventSupported(event, slug, eventFilter = null) {
+  if (typeof eventFilter?.test !== 'function' || eventFilter.test(event, event?.markets ?? [])) {
     return event;
   }
 
   throw new UnsupportedMarketError(
-    `Only Polymarket US weather markets are supported. The slug "${slug}" does not look like a weather market.`
+    typeof eventFilter.message === 'function'
+      ? eventFilter.message(slug)
+      : `The slug "${slug}" is not a supported market for this request.`
   );
 }
 
@@ -338,7 +339,7 @@ export function extractEventSlug(input) {
   return segments[eventIndex + 1];
 }
 
-export async function fetchActiveEvents(env, { limit = 10, offset = 0 } = {}) {
+export async function fetchActiveEvents(env, { limit = 10, offset = 0, eventFilter = null } = {}) {
   const events = [];
   let pageOffset = offset;
   const pageLimit = Math.max(limit, 25);
@@ -351,7 +352,9 @@ export async function fetchActiveEvents(env, { limit = 10, offset = 0 } = {}) {
       break;
     }
 
-    events.push(...page.filter((event) => isWeatherEvent(event, event.markets)));
+    events.push(...page.filter((event) => (
+      typeof eventFilter?.test !== 'function' || eventFilter.test(event, event.markets)
+    )));
 
     if (page.length < pageLimit) {
       break;
@@ -363,14 +366,14 @@ export async function fetchActiveEvents(env, { limit = 10, offset = 0 } = {}) {
   return events.slice(0, limit);
 }
 
-export async function fetchEventByInput(env, input) {
+export async function fetchEventByInput(env, input, { eventFilter = null } = {}) {
   const slug = extractEventSlug(input);
 
   try {
     const event = await getUsGatewayEventBySlug(env, slug);
 
     if (event && (event.title || event.slug || event.markets)) {
-      return assertWeatherOnlyEvent(await filterEventMarketsToUs(env, event), slug);
+      return assertEventSupported(await filterEventMarketsToUs(env, event), slug, eventFilter);
     }
   } catch (error) {
     if (error instanceof UnsupportedMarketError) {
@@ -382,23 +385,23 @@ export async function fetchEventByInput(env, input) {
     const usEvent = await findUsEventByMarketSlug(env, slug);
 
     if (usEvent) {
-      return assertWeatherOnlyEvent(usEvent, slug);
+      return assertEventSupported(usEvent, slug, eventFilter);
     }
 
     if (status && status >= 500) {
       throw error;
     }
 
-    const fallbackEvent = await findFallbackEvent(env, slug);
+    const fallbackEvent = await findFallbackEvent(env, slug, eventFilter);
 
     if (!fallbackEvent) {
       throw new Error(`No Polymarket US event was found for slug "${slug}".`);
     }
 
-    return assertWeatherOnlyEvent(await filterEventMarketsToUs(env, {
+    return assertEventSupported(await filterEventMarketsToUs(env, {
       ...fallbackEvent,
       requestedSlug: slug,
       resolvedFromFallback: true
-    }), slug);
+    }), slug, eventFilter);
   }
 }

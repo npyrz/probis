@@ -23,7 +23,7 @@ import {
   parseClimdwProduct,
   parseTemperatureBucket
 } from '../src/services/weather/chicago.js';
-import { getPolymarketMarketDataPolicy } from '../src/services/polymarket/client.js';
+import { getPolymarketMarketDataPolicy } from '../src/core/polymarket/client.js';
 import {
   getChicagoDailyArchive,
   getChicagoAlerts,
@@ -75,7 +75,7 @@ import {
 } from '../src/services/trade-intents.js';
 import {
   resolvePolymarketUsOutcomeSelection
-} from '../src/services/polymarket/us-orders.js';
+} from '../src/core/polymarket/us-orders.js';
 
 test('parseClimdwProduct extracts CHICAGO-MIDWAY yesterday maximum', () => {
   const product = `

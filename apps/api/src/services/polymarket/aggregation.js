@@ -1,6 +1,6 @@
 import { buildWeatherContext } from '../weather/event-intelligence.js';
 import { buildWeatherSnapshots } from '../weather/data-ingestion.js';
-import { fetchClobMarketSnapshots } from './clob.js';
+import { fetchClobMarketSnapshots } from '../../core/polymarket/clob.js';
 
 const HISTORY_WINDOW_SECONDS = 7 * 24 * 60 * 60;
 const HISTORY_FIDELITY_MINUTES = 1440;

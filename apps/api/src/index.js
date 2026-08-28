@@ -5,11 +5,15 @@ import { getEnv } from './config/env.js';
 import { logStartup } from './lib/logger.js';
 import aiRouter from './routes/ai.js';
 import healthRouter from './routes/health.js';
+import marketsRouter from './routes/markets.js';
 import polymarketRouter from './routes/polymarket.js';
 import tradesRouter from './routes/trades.js';
 import weatherRouter from './routes/weather.js';
 import { startOpportunityScanner } from './services/polymarket/opportunity-scanner.js';
 import { startChicagoWeatherTracker } from './services/weather/chicago-monitor.js';
+
+// Registers the weather family with the family registry as a side effect of import.
+import './families/weather/index.js';
 
 const env = getEnv();
 const app = express();
@@ -23,6 +27,9 @@ app.get('/', (_request, response) => {
     status: 'ready',
     endpoints: [
       '/health',
+      '/api/families',
+      '/api/markets',
+      '/api/markets/:id',
       '/api/polymarket/status',
       '/api/polymarket/events',
       '/api/polymarket/scanner',
@@ -62,6 +69,7 @@ app.get('/', (_request, response) => {
 });
 
 app.use(healthRouter);
+app.use(marketsRouter);
 app.use(polymarketRouter);
 app.use(weatherRouter);
 app.use(aiRouter);

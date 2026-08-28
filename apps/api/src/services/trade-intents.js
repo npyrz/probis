@@ -3,8 +3,9 @@ import path from 'node:path';
 import { randomUUID } from 'node:crypto';
 import { fileURLToPath } from 'node:url';
 
-import { fetchEventByInput } from './polymarket/gamma.js';
-import { getPolymarketMarketDataPolicy } from './polymarket/client.js';
+import { fetchEventByInput } from '../core/polymarket/gamma.js';
+import { WEATHER_EVENT_FILTER } from './weather/event-intelligence.js';
+import { getPolymarketMarketDataPolicy } from '../core/polymarket/client.js';
 import {
   findRecentFilledSellOrderForIntent,
   getLiveOutcomeProbabilityFromUsMarket,
@@ -17,7 +18,7 @@ import {
   placeSellOrderForIntent,
   resolveIntentOrderFillState,
   resolveLivePositionShares
-} from './polymarket/us-orders.js';
+} from '../core/polymarket/us-orders.js';
 
 const currentDirectory = path.dirname(fileURLToPath(import.meta.url));
 const repoRoot = path.resolve(currentDirectory, '../../../../');
@@ -544,7 +545,7 @@ async function resolveIntentMarketMetadata(env, intent) {
     };
   }
 
-  const event = await fetchEventByInput(env, intent.input ?? intent.eventSlug);
+  const event = await fetchEventByInput(env, intent.input ?? intent.eventSlug, { eventFilter: WEATHER_EVENT_FILTER });
   const market = findMatchingMarket(event, intent);
 
   if (!market?.slug) {

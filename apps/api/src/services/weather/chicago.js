@@ -2,8 +2,27 @@ import { createHash } from 'node:crypto';
 
 import axios from 'axios';
 
-import { fetchClobMarketSnapshots } from '../polymarket/clob.js';
-import { getPolymarketMarketDataPolicy } from '../polymarket/client.js';
+import { fetchClobMarketSnapshots } from '../../core/polymarket/clob.js';
+import { getPolymarketMarketDataPolicy } from '../../core/polymarket/client.js';
+import { average, clamp, round } from '../../core/engine/number.js';
+import { MAX_EXECUTION_COST, MIN_EXECUTION_COST, estimateExecutionCost } from '../../core/engine/execution-cost.js';
+import {
+  DEFAULT_RESEARCH_BANKROLL_USD,
+  FRACTIONAL_KELLY_SHRINK,
+  MAX_STAKE_FRACTION,
+  fractionalKellyStake
+} from '../../core/engine/sizing.js';
+import {
+  buildMarketImpliedProbabilities,
+  fuseProbabilities,
+  getMarketBlendWeight as getEngineMarketBlendWeight
+} from '../../core/engine/fusion.js';
+import {
+  evaluateGates,
+  getLiquidityScore,
+  getSpreadScore,
+  scoreCandidate
+} from '../../core/engine/gating.js';
 import {
   createWeatherProvider,
   fetchWeatherProviderSnapshotInputs,
@@ -32,12 +51,7 @@ const DISTRIBUTION_MAX_TEMP = 115;
 const LIVE_OBSERVATION_STALE_MINUTES = 90;
 const FORECAST_STALE_MINUTES = 240;
 const DEFAULT_FORECAST_REFRESH_INTERVAL_MS = 10 * 60 * 1000;
-const DEFAULT_RESEARCH_BANKROLL_USD = 100;
-const FRACTIONAL_KELLY_SHRINK = 0.15;
-const MAX_STAKE_FRACTION = 0.02;
 const MIN_FILL_DEPTH_COVERAGE = 1;
-const MIN_EXECUTION_COST = 0.005;
-const MAX_EXECUTION_COST = 0.08;
 const DEFAULT_MARKET_CATALOG_DAYS_AHEAD = 4;
 const MAX_MARKET_CATALOG_DAYS_AHEAD = 14;
 const KMDW_POSITION_LIFECYCLE_POLICY_ID = 'kmdw-live-position-lifecycle-v1';
@@ -89,32 +103,9 @@ function positiveIntegerMs(value, fallback) {
   return Number.isFinite(parsed) && parsed > 0 ? parsed : fallback;
 }
 
-function round(value, digits = 2) {
-  if (typeof value !== 'number' || !Number.isFinite(value)) {
-    return null;
-  }
-
-  const factor = 10 ** digits;
-  return Math.round(value * factor) / factor;
-}
-
 function hashText(value) {
   const text = String(value ?? '').trim();
   return text ? createHash('sha256').update(text).digest('hex') : null;
-}
-
-function clamp(value, min = 0, max = 1) {
-  return Math.min(max, Math.max(min, value));
-}
-
-function average(values) {
-  const valid = values.filter((value) => typeof value === 'number' && Number.isFinite(value));
-
-  if (valid.length === 0) {
-    return null;
-  }
-
-  return valid.reduce((sum, value) => sum + value, 0) / valid.length;
 }
 
 function celsiusToFahrenheit(value) {
@@ -2009,101 +2000,43 @@ export function buildThresholdDiagnostics({
   };
 }
 
-function getBucketMarketPrice(bucket) {
-  if (typeof bucket.midpoint === 'number') {
-    return bucket.midpoint;
-  }
-
-  if (typeof bucket.marketProbability === 'number') {
-    return bucket.marketProbability;
-  }
-
-  if (typeof bucket.bestBid === 'number' && typeof bucket.bestAsk === 'number') {
-    return (bucket.bestBid + bucket.bestAsk) / 2;
-  }
-
-  return typeof bucket.bestAsk === 'number' ? bucket.bestAsk : bucket.bestBid ?? null;
-}
-
 export function buildMarketImpliedBucketProbabilities(marketBuckets) {
-  const rows = (Array.isArray(marketBuckets) ? marketBuckets : [])
-    .map((bucket) => ({
-      conditionId: bucket.conditionId,
-      probability: getBucketMarketPrice(bucket)
-    }))
-    .filter((row) => row.conditionId && typeof row.probability === 'number' && row.probability > 0 && row.probability < 1);
-  const total = rows.reduce((sum, row) => sum + row.probability, 0);
-
-  if (total <= 0) {
-    return {};
-  }
-
-  return Object.fromEntries(rows.map((row) => [row.conditionId, round(row.probability / total, 6)]));
+  return buildMarketImpliedProbabilities(marketBuckets);
 }
 
-function getAverageSpread(marketBuckets) {
-  return average((Array.isArray(marketBuckets) ? marketBuckets : [])
-    .map((bucket) => bucket.spread)
-    .filter((value) => typeof value === 'number'));
+// Day phase is the weather family's prior on how much to trust the market:
+// early in the day the market knows more than the forecast, late in the day less.
+function getDayPhaseBlendWeight(dayPhase) {
+  switch (dayPhase) {
+    case 'future':
+      return 0.35;
+    case 'morning':
+      return 0.28;
+    case 'midday':
+      return 0.22;
+    case 'late-afternoon':
+      return 0.16;
+    case 'evening':
+      return 0.1;
+    default:
+      return 0.2;
+  }
 }
 
 function getMarketBlendWeight({ dayPhase, marketBuckets, sourceFreshness }) {
-  const buckets = Array.isArray(marketBuckets) ? marketBuckets : [];
-
-  if (buckets.length === 0 || dayPhase === 'complete') {
+  if (dayPhase === 'complete') {
     return 0;
   }
 
-  const quotedCount = buckets.filter((bucket) => typeof getBucketMarketPrice(bucket) === 'number').length;
-  const quoteCoverage = quotedCount / buckets.length;
-  const averageSpread = getAverageSpread(buckets);
-  const spreadQuality = typeof averageSpread === 'number' ? 1 - clamp(averageSpread / 0.12, 0, 1) : 0.55;
-  const quality = clamp(0.7 * quoteCoverage + 0.3 * spreadQuality, 0, 1);
-  let baseWeight;
-
-  switch (dayPhase) {
-    case 'future':
-      baseWeight = 0.35;
-      break;
-    case 'morning':
-      baseWeight = 0.28;
-      break;
-    case 'midday':
-      baseWeight = 0.22;
-      break;
-    case 'late-afternoon':
-      baseWeight = 0.16;
-      break;
-    case 'evening':
-      baseWeight = 0.1;
-      break;
-    default:
-      baseWeight = 0.2;
-      break;
-  }
-
-  if (sourceFreshness?.isStale === true) {
-    baseWeight += 0.12;
-  }
-
-  return round(clamp(baseWeight * quality, 0, 0.45), 4) ?? 0;
+  return getEngineMarketBlendWeight({
+    outcomes: marketBuckets,
+    baseWeight: getDayPhaseBlendWeight(dayPhase),
+    isStale: sourceFreshness?.isStale === true
+  });
 }
 
 export function fuseBucketProbabilities(weatherProbabilities, marketProbabilities, marketBlendWeight) {
-  const fused = {};
-  const keys = new Set([
-    ...Object.keys(weatherProbabilities ?? {}),
-    ...Object.keys(marketProbabilities ?? {})
-  ]);
-
-  for (const key of keys) {
-    const weatherProbability = weatherProbabilities?.[key] ?? 0;
-    const marketProbability = marketProbabilities?.[key];
-    const blendWeight = typeof marketProbability === 'number' ? marketBlendWeight : 0;
-    fused[key] = round((1 - blendWeight) * weatherProbability + blendWeight * (marketProbability ?? 0), 6) ?? 0;
-  }
-
-  return fused;
+  return fuseProbabilities(weatherProbabilities, marketProbabilities, marketBlendWeight);
 }
 
 function getModelUncertainty({ dayPhase, forecastDisagreement, observations, forecasts, settlement }) {
@@ -2305,22 +2238,6 @@ function buildTemperaturePrediction({ climateDayWindow, observations, forecasts,
   };
 }
 
-function getLiquidityScore(value) {
-  if (typeof value !== 'number' || value <= 0) {
-    return 0.45;
-  }
-
-  return clamp(Math.log10(value + 1) / 4, 0, 1);
-}
-
-function getSpreadScore(value) {
-  if (typeof value !== 'number') {
-    return 0.55;
-  }
-
-  return 1 - clamp(value / 0.08, 0, 1);
-}
-
 function getTimingScore(dayPhase) {
   switch (dayPhase) {
     case 'late-afternoon':
@@ -2337,62 +2254,6 @@ function getTimingScore(dayPhase) {
     default:
       return 0.45;
   }
-}
-
-function scoreRecommendation({ edge, confidence, spread, liquidity, askDepth, dayPhase }) {
-  const expectedValueScore = clamp((edge ?? 0) / 0.14, 0, 1);
-  const liquidityScore = Math.max(getLiquidityScore(liquidity), getLiquidityScore(askDepth));
-  const modelAgreementScore = getSpreadScore(spread);
-  const timingScore = getTimingScore(dayPhase);
-
-  return round(
-    0.45 * expectedValueScore
-    + 0.2 * clamp(confidence ?? 0, 0, 1)
-    + 0.15 * liquidityScore
-    + 0.1 * modelAgreementScore
-    + 0.1 * timingScore,
-    4
-  );
-}
-
-function fractionalKellyStake({ probability, price, bankroll = DEFAULT_RESEARCH_BANKROLL_USD }) {
-  if (
-    typeof probability !== 'number'
-    || typeof price !== 'number'
-    || probability <= price
-    || price <= 0
-    || price >= 1
-  ) {
-    return {
-      kellyFraction: 0,
-      suggestedSize: 0
-    };
-  }
-
-  const fullKellyFraction = (probability - price) / (1 - price);
-  const shrunkFraction = clamp(fullKellyFraction * FRACTIONAL_KELLY_SHRINK, 0, MAX_STAKE_FRACTION);
-
-  return {
-    kellyFraction: round(shrunkFraction, 4),
-    suggestedSize: round(bankroll * shrunkFraction, 2)
-  };
-}
-
-function estimateExecutionCost(bucket) {
-  const spreadCost = typeof bucket?.spread === 'number'
-    ? clamp(bucket.spread * 0.35, 0, 0.04)
-    : 0.01;
-  const depthPenalty = typeof bucket?.askDepth === 'number' && bucket.askDepth < 20 ? 0.01 : 0;
-  const liquidityPenalty = typeof bucket?.liquidity === 'number' && bucket.liquidity < 100 ? 0.005 : 0;
-  const total = spreadCost + depthPenalty + liquidityPenalty;
-
-  return {
-    totalCost: round(clamp(total, MIN_EXECUTION_COST, MAX_EXECUTION_COST), 4),
-    spreadCost: round(spreadCost, 4),
-    depthPenalty: round(depthPenalty, 4),
-    liquidityPenalty: round(liquidityPenalty, 4),
-    feeCost: 0
-  };
 }
 
 function getRecommendationRefreshAgeMs(dayPhase) {
@@ -2485,12 +2346,7 @@ function buildExecutionPlan({
     : null;
   const depthOk = depthCoverage === null || depthCoverage >= MIN_FILL_DEPTH_COVERAGE;
   const askAboveLimit = typeof bestAsk === 'number' && typeof limitPrice === 'number' && bestAsk > limitPrice;
-  const failedBlockingGateNames = (Array.isArray(gates) ? gates : [])
-    .filter((gate) => !gate.passed && gate.severity !== 'warning')
-    .map((gate) => gate.name);
-  const warningGateNames = (Array.isArray(gates) ? gates : [])
-    .filter((gate) => !gate.passed && gate.severity === 'warning')
-    .map((gate) => gate.name);
+  const { failedBlockingGateNames, warningGateNames } = evaluateGates(gates);
   const blockers = [
     passed ? null : `gate failed: ${failedBlockingGateNames.join(', ') || 'unknown'}`,
     typeof bestAsk === 'number' ? null : 'no firm ask quote',
@@ -2601,14 +2457,14 @@ export function buildChicagoRecommendations(snapshot) {
       { name: 'no KMDW/CLIMDW rule ambiguity', passed: ruleOk, severity: 'blocker' },
       { name: 'confidence >= 55%', passed: confidenceOk, severity: 'blocker' }
     ];
-    const passed = gates.every((gate) => gate.passed || gate.severity === 'warning');
-    const score = scoreRecommendation({
+    const passed = evaluateGates(gates).passed;
+    const score = scoreCandidate({
       edge: riskAdjustedEdge,
       confidence: prediction.confidence,
       spread: bucket.spread,
       liquidity: bucket.liquidity,
       askDepth: bucket.askDepth,
-      dayPhase: prediction.dayPhase
+      timingScore: getTimingScore(prediction.dayPhase)
     });
     const maxEntryPrice = typeof fairProbability === 'number'
       ? round(Math.max(0.01, fairProbability - 0.06 - executionCost.totalCost - sourceRiskHaircut), 4)

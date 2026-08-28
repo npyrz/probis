@@ -20,6 +20,7 @@ import {
   trainChicagoWeatherModel,
   updateTradeIntent as updateTradeIntentRequest
 } from './lib/api.js';
+import MarketExplorer from './features/market-explorer/MarketExplorer.jsx';
 
 const DEFAULT_CATALOG_DAYS_AHEAD = 14;
 const DEFAULT_KMDW_SNAPSHOT_POLL_INTERVAL_MS = 180000;
@@ -901,6 +902,7 @@ function TrainingPortal({
 }
 
 export default function App() {
+  const [isMarketExplorerOpen, setIsMarketExplorerOpen] = useState(false);
   const [snapshot, setSnapshot] = useState(null);
   const [boardSnapshots, setBoardSnapshots] = useState([]);
   const [alerts, setAlerts] = useState(null);
@@ -1413,6 +1415,7 @@ export default function App() {
 
   return (
     <main className="app-shell">
+      {isMarketExplorerOpen ? <MarketExplorer onClose={() => setIsMarketExplorerOpen(false)} /> : null}
       <header className="topbar">
         <div className="brand-cluster">
           <img src="/logo.png" alt="Probis logo" className="brand-logo" />
@@ -1424,6 +1427,13 @@ export default function App() {
 
         <div className="topbar-actions">
           <span className="timestamp">Updated {formatRelativeAge(lastRefreshAt, clock)}</span>
+          <button
+            type="button"
+            className="button button-secondary"
+            onClick={() => setIsMarketExplorerOpen(true)}
+          >
+            All Markets
+          </button>
           <button
             type="button"
             className="button button-secondary"

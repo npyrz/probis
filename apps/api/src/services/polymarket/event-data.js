@@ -1,5 +1,6 @@
 import { buildEventAggregation } from './aggregation.js';
-import { extractEventSlug, fetchEventByInput } from './gamma.js';
+import { extractEventSlug, fetchEventByInput } from '../../core/polymarket/gamma.js';
+import { WEATHER_EVENT_FILTER } from '../weather/event-intelligence.js';
 import { buildStatisticalModel } from './statistical-model.js';
 import { loadWeatherMlModel } from '../ml/weather-model.js';
 import { getMlCalibrationStats, persistEventAnalytics } from '../persistence/postgres.js';
@@ -64,7 +65,7 @@ async function buildMlCalibrationOptions(env, aggregation) {
 }
 
 export async function resolveEventWithAggregation(env, input) {
-  const event = await fetchEventByInput(env, input);
+  const event = await fetchEventByInput(env, input, { eventFilter: WEATHER_EVENT_FILTER });
   const aggregation = await buildEventAggregation(env, event);
   const calibrationOptions = await buildMlCalibrationOptions(env, aggregation);
   const statisticalModel = buildStatisticalModel(event, aggregation, calibrationOptions);
@@ -82,7 +83,7 @@ export async function resolveEventWithAggregation(env, input) {
 export async function resolveEventAnalytics(env, input, options = {}) {
   const cacheKey = getCacheKey(input);
   const forceRefresh = options.forceRefresh === true;
-  const event = await fetchEventByInput(env, input);
+  const event = await fetchEventByInput(env, input, { eventFilter: WEATHER_EVENT_FILTER });
   const cached = forceRefresh ? null : getCachedAnalytics(cacheKey);
 
   if (cached) {

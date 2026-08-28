@@ -1,7 +1,7 @@
 import axios from 'axios';
 
 import { buildStatisticalModel } from './statistical-model.js';
-import { fetchClobMarketSnapshots } from './clob.js';
+import { fetchClobMarketSnapshots } from '../../core/polymarket/clob.js';
 import { buildWeatherContext, isWeatherEvent } from '../weather/event-intelligence.js';
 import { buildWeatherSnapshots } from '../weather/data-ingestion.js';
 import { loadWeatherMlModel } from '../ml/weather-model.js';

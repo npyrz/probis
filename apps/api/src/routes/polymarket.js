@@ -1,11 +1,12 @@
 import { Router } from 'express';
 
 import { getEnv } from '../config/env.js';
-import { getPolymarketStatus } from '../services/polymarket/client.js';
-import { UnsupportedMarketError, fetchActiveEvents, fetchEventByInput } from '../services/polymarket/gamma.js';
+import { getPolymarketStatus } from '../core/polymarket/client.js';
+import { UnsupportedMarketError, fetchActiveEvents, fetchEventByInput } from '../core/polymarket/gamma.js';
+import { WEATHER_EVENT_FILTER } from '../services/weather/event-intelligence.js';
 import { invalidateEventAnalyticsCache, resolveEventAnalytics } from '../services/polymarket/event-data.js';
 import { getOpportunityScannerSnapshot } from '../services/polymarket/opportunity-scanner.js';
-import { getPolymarketUsAccountIdentity } from '../services/polymarket/us-orders.js';
+import { getPolymarketUsAccountIdentity } from '../core/polymarket/us-orders.js';
 import { getPaperTradingAccuracy } from '../services/persistence/postgres.js';
 
 const router = Router();
@@ -57,7 +58,7 @@ router.get('/api/polymarket/events', async (request, response) => {
     const env = getEnv();
     const limit = Number.parseInt(request.query.limit ?? '10', 10);
     const offset = Number.parseInt(request.query.offset ?? '0', 10);
-    const events = await fetchActiveEvents(env, { limit, offset });
+    const events = await fetchActiveEvents(env, { limit, offset, eventFilter: WEATHER_EVENT_FILTER });
 
     response.json({
       ok: true,
@@ -121,7 +122,7 @@ router.get('/api/polymarket/events/resolve', async (request, response) => {
       return;
     }
 
-    const event = await fetchEventByInput(env, input);
+    const event = await fetchEventByInput(env, input, { eventFilter: WEATHER_EVENT_FILTER });
 
     response.json({
       ok: true,
